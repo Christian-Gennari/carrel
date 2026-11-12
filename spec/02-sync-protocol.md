@@ -104,7 +104,9 @@ release URL during a sync session only.
 - The client ID/secret are kept outside git, in
   `~/.config/stylos/oauth.toml` on the build server. The image build copies
   that file to `/usr/share/stylos/oauth.toml`.
-- Status: **Testing**. Only listed test users can connect, and Google expires
+- Real-account test passed on 2026-11-12 (`stylosd gdrive-pair` + `gdrive-sync --docx`):
+  first mirror, no-op second sync, one edit, delete to `.deleted/`.
+- Status: **Testing** (owner account is a test user). Only listed test users can connect, and Google expires
   their refresh tokens after 7 days. Before a public release, publish the app
   ("In production"): this needs a public home page and privacy policy URL on a
   verified domain. `drive.file` is non-sensitive, so no Google review is
