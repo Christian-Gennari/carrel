@@ -582,8 +582,11 @@ impl SettingsPage {
         }
         self.note.remove_css_class("error-text");
         self.note.set_text(&state.hint_for(&settings));
-        self.mark
-            .set_opacity(if state.row() == SettingRow::About { 1.0 } else { 0.0 });
+        self.mark.set_opacity(if state.row() == SettingRow::About {
+            1.0
+        } else {
+            0.0
+        });
         self.hint.set_text(HINT);
     }
 }

@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+use carrel_protocol::sha256_hex;
 use rcgen::{CertificateParams, DnType, KeyPair};
 use rustls::pki_types::PrivateKeyDer;
-use carrel_protocol::sha256_hex;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 

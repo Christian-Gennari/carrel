@@ -297,6 +297,107 @@ dependencies = [
 ]
 
 [[package]]
+name = "carrel-export"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "zbus",
+ "zip",
+]
+
+[[package]]
+name = "carrel-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "uuid",
+]
+
+[[package]]
+name = "carrel-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "base64 0.22.1",
+ "carrel-protocol",
+ "clap",
+ "mdns-sd",
+ "rand 0.8.8",
+ "rcgen",
+ "rusqlite",
+ "rustls",
+ "rustls-pemfile",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "carrel-shell"
+version = "0.1.0"
+dependencies = [
+ "async-channel",
+ "carrel-protocol",
+ "carreld",
+ "futures-util",
+ "gtk4",
+ "qrcode",
+ "serde",
+ "serde_json",
+ "sourceview5",
+ "tempfile",
+ "tokio",
+ "zbus",
+]
+
+[[package]]
+name = "carreld"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "carrel-export",
+ "carrel-protocol",
+ "carrel-server",
+ "clap",
+ "futures-util",
+ "git2",
+ "rcgen",
+ "reqwest",
+ "ring",
+ "rusqlite",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tokio-rustls",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "webpki-roots",
+ "zbus",
+ "zip",
+]
+
+[[package]]
 name = "cc"
 version = "1.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2265,107 +2366,6 @@ name = "strsim"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
-
-[[package]]
-name = "carrel-export"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "tempfile",
- "thiserror",
- "zbus",
- "zip",
-]
-
-[[package]]
-name = "carrel-protocol"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
- "sha2",
- "uuid",
-]
-
-[[package]]
-name = "carrel-server"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "axum",
- "base64 0.22.1",
- "clap",
- "mdns-sd",
- "rand 0.8.8",
- "rcgen",
- "rusqlite",
- "rustls",
- "rustls-pemfile",
- "serde",
- "serde_json",
- "carrel-protocol",
- "tempfile",
- "tokio",
- "tokio-rustls",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "carrel-shell"
-version = "0.1.0"
-dependencies = [
- "async-channel",
- "futures-util",
- "gtk4",
- "qrcode",
- "serde",
- "serde_json",
- "sourceview5",
- "carrel-protocol",
- "carreld",
- "tempfile",
- "tokio",
- "zbus",
-]
-
-[[package]]
-name = "carreld"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "base64 0.22.1",
- "clap",
- "futures-util",
- "git2",
- "rcgen",
- "reqwest",
- "ring",
- "rusqlite",
- "rustls",
- "serde",
- "serde_json",
- "carrel-export",
- "carrel-protocol",
- "carrel-server",
- "tempfile",
- "thiserror",
- "tokio",
- "tokio-rustls",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
- "url",
- "uuid",
- "webpki-roots",
- "zbus",
- "zip",
-]
 
 [[package]]
 name = "subtle"

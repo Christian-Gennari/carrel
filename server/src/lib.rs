@@ -20,8 +20,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use mdns_sd::{ServiceDaemon, ServiceInfo};
 use carrel_protocol::{MAX_FILE_BYTES, MDNS_SERVICE_TYPE};
+use mdns_sd::{ServiceDaemon, ServiceInfo};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;

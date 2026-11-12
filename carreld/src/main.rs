@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use clap::{Args, Parser, Subcommand};
 use carreld::dbus::RunConfig;
 use carreld::export::PandocDocxConverter;
 use carreld::gdrive::{DriveSyncRunner, GdriveConfig, OAuthApp, OAuthClient, OAuthEndpoints};
@@ -19,6 +18,7 @@ use carreld::{
     generate_device_pubkey, sync_once, GdriveRunner, PairingSession, SyncConfig, SyncOptions,
     Updater,
 };
+use clap::{Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
 #[command(

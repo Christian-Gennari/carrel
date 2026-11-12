@@ -12,12 +12,12 @@
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-use ring::rand::SystemRandom;
-use ring::signature::{Ed25519KeyPair, KeyPair};
 use carrel_protocol::{
     endpoints, hex_encode, normalize_pairing_code, PairStartRequest, PairStartResponse, PairStatus,
     PairStatusResponse,
 };
+use ring::rand::SystemRandom;
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use url::Url;
 
 use crate::config::SyncConfig;

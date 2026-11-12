@@ -17,9 +17,9 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use carrel_protocol::{endpoints, LibraryPage};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
-use carrel_protocol::{endpoints, LibraryPage};
 
 use crate::config::library_database;
 use crate::http::HttpClient;
@@ -785,8 +785,8 @@ fn snippet(text: &str, tokens: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
     use carrel_protocol::{LibraryBook, LibraryCitation, LibraryItem, LibraryItemKind};
+    use std::time::Instant;
 
     fn page(cursor: &str) -> LibraryPage {
         LibraryPage {

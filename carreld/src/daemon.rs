@@ -13,9 +13,9 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
 use carrel_export::{Drives, ExportReport};
 use carrel_protocol::now_unix;
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::config::{state_database, SyncConfig};

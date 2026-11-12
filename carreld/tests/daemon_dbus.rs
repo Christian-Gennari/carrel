@@ -13,11 +13,11 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use futures_util::StreamExt;
 use carrel_protocol::{LibraryBook, LibraryItem, LibraryItemKind, LibraryPage};
 use carreld::history::HistoryEntry;
 use carreld::library::{LibraryCache, LibraryFilterOptions, LibraryHit};
 use carreld::SyncConfig;
+use futures_util::StreamExt;
 
 /// Kills a child process when the test ends, even on panic.
 struct KillOnDrop(Child);
@@ -114,8 +114,9 @@ async fn wait_for_name(connection: &zbus::Connection) {
         .await
         .expect("DBus proxy");
     for _ in 0..200 {
-        let name: zbus::names::BusName<'_> =
-            "page.nostos.Carrel.Daemon1".try_into().expect("valid bus name");
+        let name: zbus::names::BusName<'_> = "page.nostos.Carrel.Daemon1"
+            .try_into()
+            .expect("valid bus name");
         if dbus.name_has_owner(name).await.unwrap_or(false) {
             return;
         }

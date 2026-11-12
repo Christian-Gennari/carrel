@@ -13,8 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
-use serde::{Deserialize, Serialize};
 use carrel_export::{DriveInfo, Drives, FakeDrives, Format, MapCitations, Selection, UDisksDrives};
+use serde::{Deserialize, Serialize};
 
 use crate::gdrive::DocxConverter;
 

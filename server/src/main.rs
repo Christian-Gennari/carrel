@@ -4,8 +4,8 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use anyhow::Result;
-use clap::Parser;
 use carrel_server::{start, Config};
+use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Debug, Parser)]

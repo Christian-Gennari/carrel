@@ -13,12 +13,12 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Context, Result};
+use carrel_protocol::{decode_sha256_hex, sha256_hex};
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::client::WebPkiServerVerifier;
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{DigitallySignedStruct, Error, RootCertStore, SignatureScheme};
-use carrel_protocol::{decode_sha256_hex, sha256_hex};
 
 /// How the client decides whether to trust the server certificate.
 #[derive(Debug, Clone)]

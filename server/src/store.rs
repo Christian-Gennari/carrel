@@ -11,11 +11,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use carrel_protocol::{
     content_hash, new_pair_id, normalize_pairing_code, pairing_code_from_bytes, validate_path,
     ConflictInfo, FileContent, FileEntry, PairStatus, MAX_FILE_BYTES, PAIRING_TTL_SECONDS,
 };
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use uuid::Uuid;
 
 const SCHEMA: &str = r#"
