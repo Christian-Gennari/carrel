@@ -202,7 +202,10 @@ impl FirstRunPage {
         let intro = ui::hint("A quiet place to write. Four short answers, then the page.");
 
         let column = ui::column(640);
-        column.append(&ui::title("Carrel"));
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+        header.append(&ui::mark(34));
+        header.append(&ui::title("Carrel"));
+        column.append(&header);
         column.append(&intro);
         column.append(&step_title);
         column.append(&scroller);

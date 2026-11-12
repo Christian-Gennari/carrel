@@ -26,6 +26,10 @@ install -D -m 0644 "$SRCDIR/carreld/systemd/carreld.service" \
 install -D -m 0644 "$SRCDIR/carreld/dbus/page.nostos.Carrel.Daemon1.conf" \
     "$DESTDIR/usr/share/dbus-1/system.d/page.nostos.Carrel.Daemon1.conf"
 
+# The Carrel icon (the primary mark from brand/) for the icon theme.
+install -D -m 0644 "$SRCDIR/brand/carrel-mark-primary.svg" \
+    "$DESTDIR/usr/share/icons/hicolor/scalable/apps/carrel.svg"
+
 # Public release keys.  The private half never enters the image; systemd-
 # sysupdate verifies SHA256SUMS.gpg with the keyring installed here and the
 # verity/UKI certificate is kept for diagnostics and future Secure Boot work.

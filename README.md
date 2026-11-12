@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="brand/carrel-mark-primary.svg" alt="Carrel" width="128" height="128">
+</p>
+
 # Carrel
 
 Carrel is a free operating system that turns an old laptop into a dedicated,

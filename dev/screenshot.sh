@@ -154,6 +154,7 @@ shoot settings-paper paper true true settings ""
 shoot settings-night night true true settings ""
 # The last rows (Update, About) must scroll into view at 800 px.
 shoot settings-last-paper paper true true settings "" CARREL_SETTINGS_SELECT=99
+shoot settings-last-night night true true settings "" CARREL_SETTINGS_SELECT=99
 
 # Wi-Fi scan list.
 shoot wifi-paper paper true true wifi ""
@@ -165,6 +166,7 @@ shoot export-empty-paper paper true true export-drive "" CARREL_FAKE_NO_DRIVE=1
 
 # First run.
 shoot first-run-paper paper false true first-run ""
+shoot first-run-night night false true first-run ""
 
 # Battery: the bottom line charging, and the 5 s note with the line hidden.
 shoot battery-paper paper true true editor "18,charging"

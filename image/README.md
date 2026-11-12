@@ -13,6 +13,9 @@ One GPT disk image, bootable on both:
 installer *and* the installed system; the installer only starts when the
 running root is on removable/USB media.
 
+The icon `carrel.svg` (from `brand/`) is installed in
+`/usr/share/icons/hicolor/scalable/apps/`.
+
 ## Partition layout
 
 systemd-repart creates the table from `mkosi.repart/`:

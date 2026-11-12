@@ -331,6 +331,7 @@ pub struct SettingsPage {
     scroller: gtk::ScrolledWindow,
     hint: gtk::Label,
     note: gtk::Label,
+    mark: gtk::DrawingArea,
     state: RefCell<SettingsState>,
     settings: Rc<RefCell<Settings>>,
     root: PathBuf,
@@ -357,9 +358,18 @@ impl SettingsPage {
         note.set_margin_bottom(6);
         note.add_css_class("row-note");
 
+        // The mark sits beside the note and shows only on the About row. It
+        // always takes its space, so the list does not move.
+        let mark = ui::mark(30);
+        mark.set_opacity(0.0);
+        let note_row = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+        note_row.append(&mark);
+        note.set_hexpand(true);
+        note_row.append(&note);
+
         let column = ui::column(820);
         column.append(&ui::title("Settings"));
-        column.append(&note);
+        column.append(&note_row);
         column.append(&scroller);
         column.append(&hint);
 
@@ -382,6 +392,7 @@ impl SettingsPage {
             scroller,
             hint,
             note,
+            mark,
             state: RefCell::new(initial),
             settings,
             root,
@@ -571,6 +582,8 @@ impl SettingsPage {
         }
         self.note.remove_css_class("error-text");
         self.note.set_text(&state.hint_for(&settings));
+        self.mark
+            .set_opacity(if state.row() == SettingRow::About { 1.0 } else { 0.0 });
         self.hint.set_text(HINT);
     }
 }
