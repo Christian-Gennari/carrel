@@ -52,11 +52,14 @@ is committed on its branch. The orchestrator reviews and merges to `main`.
 
 - **WP4 · Daemon + D-Bus** — `stylosd` service: D-Bus API, local Git history
   (libgit2), radio control, Wi-Fi via NetworkManager, Tailscale on/off,
-  logind inhibitor. Gate: integration tests in a systemd container.
-- **WP5 · Shell screens** — History, Sync, Settings, First run, Export/Import,
+  UPower battery (low-battery suspend at 3 %), logind inhibitor. Gate: integration tests in a systemd container.
+- **WP5 · Shell screens** — History, Sync, Settings, Wi-Fi, Battery, First run, Export/Import,
   wired to D-Bus. Gate: scripted UI tests + screenshots.
 - **WP6 · Export** — pandoc/typst pipeline + Lua citation filter, USB mount
   rules. Gate: export fixture docs to all formats; validate outputs.
+- **WP6b · Cloud folders** — Google Drive (device flow) and Dropbox (PKCE
+  code paste) one-way mirror in `stylosd`, per `spec/02-sync-protocol.md`.
+  Gate: tests against mocked APIs; one manual run against real accounts.
 - **WP7 · Image integration** — install real binaries into the image; A/B
   partitions, sysupdate, boot counting, recovery menu, installer with "type
   ERASE". Gate: QEMU tests: install from USB image to a blank disk, power-cut
