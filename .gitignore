@@ -8,3 +8,6 @@ target/
 *.img
 *.qcow2
 __pycache__/
+
+# Real Google OAuth client credentials (see spec/02-sync-protocol.md).
+oauth.toml

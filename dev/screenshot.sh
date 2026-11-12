@@ -1,18 +1,22 @@
 #!/usr/bin/env bash
-# Headless screenshots of the editor for the WP2 gate.
+# Headless screenshots of every screen for the WP5 gate.
 #
 # Runs inside the dev container after `cargo build --release -p stylos-shell`:
 #   dev/run.sh bash dev/screenshot.sh
 #
 # Xvfb is already part of dev/Dockerfile; no GPU, compositor or display is
-# needed. Writes out/editor-paper.png and out/editor-night.png.
+# needed. The shell runs with STYLOS_FAKE_DAEMON=1, so every screen has
+# deterministic data and the daemon is never required.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 out="$PWD/out"
 root="$out/screenshot-data"
+if [ ! -x target/release/stylos-shell ]; then
+    cargo build --release -p stylos-shell
+fi
 rm -rf "$root"
-mkdir -p "$root/.stylos"
+mkdir -p "$root/.stylos" "$root/Novel"
 
 cat > "$root/The quiet morning.md" <<'EOF'
 # The quiet morning
@@ -21,23 +25,45 @@ The kettle clicks off at six. I write at the kitchen table while the house is st
 
 > A sentence is a small room. You walk in, close the door, and look around.
 
-Some mornings the words come *slowly*; other mornings they arrive all at once, like rain on a tin roof. I keep a **notebook** beside the plate and write down what the light touches first.[^1](nostos:cite/quiet-mornings-42)
+Some mornings the words come *slowly*.[^1](nostos:cite/quiet-mornings-42)
 EOF
 
-# Last file and stats are also stored under .stylos; create only settings.
+cat > "$root/Novel/Chapter one.md" <<'EOF'
+# Chapter one
+
+The train left before the light did.
+EOF
+
+cat > "$root/Notes.md" <<'EOF'
+# Notes
+
+- buy ink
+- fix the back gate
+EOF
+
+# Open the sample essay, not whichever file was written last.
+cat > "$root/.stylos/state.json" <<'EOF'
+{"last_file": "The quiet morning.md"}
+EOF
+
 write_settings() {
-    python3 - "$root" "$1" <<'PY'
+    python3 - "$root" "$1" "$2" "$3" <<'PY'
 import json, sys
-root, theme = sys.argv[1], sys.argv[2]
+root, theme, first_run, bottom_line = sys.argv[1:5]
 settings = {
     "theme": theme,
     "font": "serif",
     "font_size": 18,
     "daily_goal": 500,
-    "show_bottom_line": True,
+    "show_bottom_line": bottom_line == "true",
     "typewriter_mode": False,
     "spellcheck": False,
     "clock": False,
+    "language": "English",
+    "keyboard": "us",
+    "time_zone": "Local time",
+    "sync_at_shutdown": False,
+    "first_run_complete": first_run == "true",
 }
 with open(f"{root}/.stylos/settings.json", "w", encoding="utf-8") as handle:
     json.dump(settings, handle)
@@ -66,26 +92,70 @@ cleanup() {
 trap cleanup EXIT
 sleep 1
 
+# shoot <name> <theme> <first-run true|false> <bottom-line true|false> <start> <battery> [extra env...]
 shoot() {
-    theme=$1
-    output=$2
-    write_settings "$theme"
-    STYLOS_WRITING_DIR="$root" DISPLAY=:99 \
-        ./target/release/stylos-shell >"$out/app-$theme.log" 2>&1 &
+    name=$1
+    theme=$2
+    first_run=$3
+    bottom_line=$4
+    start=$5
+    battery=${6:-}
+    shift 6 || true
+    write_settings "$theme" "$first_run" "$bottom_line"
+    env STYLOS_WRITING_DIR="$root" DISPLAY=:99 \
+        STYLOS_FAKE_DAEMON=1 STYLOS_START_SCREEN="$start" STYLOS_BATTERY="$battery" \
+        "$@" ./target/release/stylos-shell >"$out/app-$name.log" 2>&1 &
     app_pid=$!
-    sleep 3
+    sleep 2.5
     if ! kill -0 "$app_pid" 2>/dev/null; then
-        echo "stylos-shell exited before the screenshot; see out/app-$theme.log" >&2
-        cat "$out/app-$theme.log" >&2
+        echo "stylos-shell exited before $name; see out/app-$name.log" >&2
+        cat "$out/app-$name.log" >&2
         exit 1
     fi
-    DISPLAY=:99 import -window root "$output"
+    DISPLAY=:99 import -window root "$out/$name.png"
     kill "$app_pid" 2>/dev/null || true
     wait "$app_pid" 2>/dev/null || true
     app_pid=
 }
 
-shoot paper "$out/editor-paper.png"
-shoot night "$out/editor-night.png"
+# The editor, both themes.
+shoot editor-paper paper true true editor "" 
+shoot editor-night night true true editor ""
 
-echo "wrote out/editor-paper.png and out/editor-night.png"
+# History with a preview.
+shoot history-paper paper true true history ""
+
+# Sync: the overview, then each pairing flow.
+shoot sync-paper paper true true sync ""
+shoot sync-pair-nostos-paper paper true true pair-nostos ""
+shoot sync-pair-selfhosted-paper paper true true pair-selfhosted ""
+shoot sync-pair-selfhosted-code-paper paper true true pair-selfhosted-code ""
+shoot sync-pair-gdrive-paper paper true true pair-gdrive ""
+
+# Settings, Paper and Night.
+shoot settings-paper paper true true settings ""
+shoot settings-night night true true settings ""
+
+# Wi-Fi scan list.
+shoot wifi-paper paper true true wifi ""
+
+# Export: with a drive, and with none.
+shoot export-paper paper true true export ""
+shoot export-drive-paper paper true true export-drive ""
+shoot export-empty-paper paper true true export-drive "" STYLOS_FAKE_NO_DRIVE=1
+
+# First run.
+shoot first-run-paper paper false true first-run ""
+
+# Battery: the bottom line charging, and the 5 s note with the line hidden.
+shoot battery-paper paper true true editor "18,charging"
+shoot battery-low-paper paper true false editor "10"
+
+echo "wrote:"
+ls -1 "$out"/*.png
+
+echo "--- app logs (empty is good) ---"
+for log in "$out"/app-*.log; do
+    [ -s "$log" ] && { echo "$log:"; cat "$log"; }
+done
+true

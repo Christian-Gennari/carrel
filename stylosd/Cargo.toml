@@ -16,11 +16,14 @@ clap.workspace = true
 futures-util.workspace = true
 git2.workspace = true
 ring.workspace = true
+reqwest.workspace = true
 rusqlite.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+stylos-export = { path = "../export" }
 stylos-protocol = { path = "../protocol" }
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
@@ -33,6 +36,7 @@ webpki-roots.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
+axum.workspace = true
 base64.workspace = true
 stylos-server = { path = "../server" }
-tempfile.workspace = true
+zip.workspace = true

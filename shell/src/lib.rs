@@ -6,9 +6,19 @@
 
 pub mod app;
 pub mod battery;
+pub mod daemon;
 pub mod editor;
+pub mod export;
 pub mod files;
+pub mod first_run;
+pub mod history;
+pub mod locale;
 pub mod markdown;
+pub mod nav;
 pub mod settings;
+pub mod settings_page;
 pub mod store;
+pub mod sync;
 pub mod theme;
+pub mod ui;
+pub mod wifi;

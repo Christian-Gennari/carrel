@@ -13,10 +13,17 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use stylos_export::{Drives, ExportReport};
 use stylos_protocol::now_unix;
 use url::Url;
 
 use crate::config::{state_database, SyncConfig};
+use crate::export::{
+    import_sources, list_drives, parse_format, selection_from_request, MountedDrive, UsbDrive,
+};
+use crate::gdrive::{
+    GdriveConfig, GdriveReport, GdriveRunner, OAuthApp, OAuthClient, OAuthEndpoints,
+};
 use crate::history::{History, HistoryEntry};
 use crate::network::{Connectivity, Network, WifiNetwork, PORTAL_MESSAGE};
 use crate::pairing::{generate_device_pubkey, PairingSession};
@@ -68,6 +75,32 @@ pub struct PairingInfo {
     pub expires_at: i64,
 }
 
+/// The Export screen's progress line.
+///
+/// `state` is `"exporting"`, `"done"` or `"error"`. While a file is being
+/// written, `destination` is that file; when the export finished it is the
+/// folder the writer may unplug the drive after.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
+pub struct ExportProgress {
+    pub state: String,
+    pub message: String,
+    /// 1-based index of the file just written, 0 before the first one.
+    pub index: u32,
+    /// Number of files in this export, 0 until the plan is known.
+    pub total: u32,
+    /// File just written, or the export folder when the export is done.
+    pub destination: String,
+}
+
+/// Result of one sync across every configured backend, in run order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SyncSummary {
+    /// The Nostos/self-hosted server sync, when one is paired.
+    pub server: Option<SyncReport>,
+    /// The Google Drive mirror, when one is paired.
+    pub gdrive: Option<GdriveReport>,
+}
+
 /// Something the daemon wants to tell the shell.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DaemonEvent {
@@ -81,6 +114,8 @@ pub enum DaemonEvent {
         code: String,
         message: String,
     },
+    /// An export started, wrote a file, finished or failed.
+    ExportProgress(ExportProgress),
 }
 
 /// Where events go. The daemon emits zbus signals; tests record them.
@@ -125,6 +160,11 @@ pub struct DaemonDeps {
     pub power: Arc<dyn Power>,
     pub session: Arc<dyn Session>,
     pub runner: Arc<dyn SyncRunner>,
+    /// Removable drives for the Export screen (udisks2, or the test fake).
+    pub drives: Arc<dyn Drives>,
+    /// The Google Drive backend, when this build has one. `None` in tests
+    /// that only exercise the server backend.
+    pub gdrive: Option<Arc<dyn GdriveRunner>>,
     pub events: Arc<dyn EventSink>,
 }
 
@@ -136,6 +176,8 @@ struct CoreStatus {
     sync: SyncInfo,
     sync_running: bool,
     pairing_running: bool,
+    /// A USB export or import is in progress; mounting is one at a time.
+    drive_operation_running: bool,
 }
 
 /// The daemon's policy, independent of D-Bus and the kernel.
@@ -147,6 +189,8 @@ pub struct DaemonCore {
     power: Arc<dyn Power>,
     session: Arc<dyn Session>,
     runner: Arc<dyn SyncRunner>,
+    drives: Arc<dyn Drives>,
+    gdrive: Option<Arc<dyn GdriveRunner>>,
     events: Arc<dyn EventSink>,
     history: Mutex<History>,
     status: Mutex<CoreStatus>,
@@ -165,6 +209,8 @@ impl DaemonCore {
             power: deps.power,
             session: deps.session,
             runner: deps.runner,
+            drives: deps.drives,
+            gdrive: deps.gdrive,
             events: deps.events,
             history: Mutex::new(history),
             status: Mutex::new(CoreStatus::default()),
@@ -270,44 +316,224 @@ impl DaemonCore {
         Ok(())
     }
 
-    fn finish_sync(&self, result: Result<SyncReport>) {
+    fn finish_sync(&self, result: Result<SyncSummary>) {
         let info = {
             let mut status = self.status.lock().expect("status lock poisoned");
             status.sync_running = false;
             status.sync = match result {
-                Ok(report) => SyncInfo {
+                Ok(summary) => SyncInfo {
                     state: "idle".into(),
-                    message: describe_report(&report),
+                    message: describe_summary(&summary),
                     last_sync: now_unix(),
                 },
-                Err(error) => SyncInfo {
-                    state: "error".into(),
-                    message: format!("{error:#}"),
-                    last_sync: status.sync.last_sync,
-                },
+                Err(error) => {
+                    tracing::warn!(%error, "sync failed");
+                    SyncInfo {
+                        state: "error".into(),
+                        message: format!("{error:#}"),
+                        last_sync: status.sync.last_sync,
+                    }
+                }
             };
             status.sync.clone()
         };
         self.emit(DaemonEvent::SyncStatus(info));
     }
 
-    /// One sync, end to end: commit, radio on, sync, radio off (also on error).
-    pub async fn run_sync_now(&self) -> Result<SyncReport> {
+    /// One sync, end to end: commit, radio on, every configured backend in
+    /// order, radio off (also on error).
+    pub async fn run_sync_now(&self) -> Result<SyncSummary> {
         self.commit("before sync")?;
         // The guard blocks the radio again when it drops, after both success and
         // failure. A panic unwinding through this function drops it as well.
         let _guard: RadioGuard = self.radio.hold("sync")?;
-        let result = self.runner.sync(&self.writing_dir, &self.state_dir).await;
-        match &result {
-            Ok(report) => tracing::info!(
+
+        let server_configured = SyncConfig::is_configured(&self.state_dir)?;
+        let gdrive_configured = match &self.gdrive {
+            Some(_) => GdriveConfig::is_configured(&self.state_dir)?,
+            None => false,
+        };
+        if self.gdrive.is_some() && !server_configured && !gdrive_configured {
+            bail!("this device is not paired with a sync server or Google Drive");
+        }
+
+        let mut summary = SyncSummary::default();
+        // Order is part of the spec: server first, then Google Drive. An error
+        // in either ends the sync before the next backend starts.
+        if server_configured || self.gdrive.is_none() {
+            summary.server = Some(self.runner.sync(&self.writing_dir, &self.state_dir).await?);
+        }
+        if gdrive_configured {
+            let runner = self
+                .gdrive
+                .as_ref()
+                .expect("gdrive is configured only when the backend exists");
+            summary.gdrive = Some(
+                runner
+                    .sync(&self.writing_dir, &self.state_dir)
+                    .await
+                    .context("Google Drive mirror")?,
+            );
+        }
+        match (&summary.server, &summary.gdrive) {
+            (Some(report), None) => tracing::info!(
                 pulled = report.pulled,
                 pushed = report.pushed,
                 conflicts = report.conflicts,
                 "sync finished"
             ),
-            Err(error) => tracing::warn!(%error, "sync failed"),
+            (None, Some(report)) => tracing::info!(
+                uploaded = report.uploaded,
+                deleted = report.deleted,
+                "Google Drive mirror finished"
+            ),
+            (Some(server), Some(gdrive)) => tracing::info!(
+                pulled = server.pulled,
+                pushed = server.pushed,
+                uploaded = gdrive.uploaded,
+                deleted = gdrive.deleted,
+                "sync and Google Drive mirror finished"
+            ),
+            (None, None) => tracing::info!("sync finished with no backends"),
         }
-        result
+        Ok(summary)
+    }
+
+    // ----- export and import ----------------------------------------------
+
+    /// Removable drives attached to this device, for the Export screen.
+    pub fn list_drives(&self) -> Result<Vec<UsbDrive>> {
+        list_drives(self.drives.as_ref())
+    }
+
+    /// Export one selection to `drive_id`, then unmount and power the drive off.
+    ///
+    /// The filesystem and pandoc work runs on a blocking thread; progress
+    /// arrives through [`DaemonEvent::ExportProgress`]. The returned path is the
+    /// folder the writer may unplug the drive after ("Safe to remove").
+    pub async fn export(
+        self: &Arc<Self>,
+        selection: Vec<String>,
+        format: String,
+        drive_id: String,
+    ) -> Result<String> {
+        self.begin_drive_operation()?;
+        self.emit(DaemonEvent::ExportProgress(ExportProgress {
+            state: "exporting".into(),
+            message: "Exporting…".into(),
+            index: 0,
+            total: 0,
+            destination: String::new(),
+        }));
+        let core = Arc::clone(self);
+        let outcome = tokio::task::spawn_blocking(move || {
+            core.export_blocking(&selection, &format, &drive_id)
+        })
+        .await;
+        let result = match outcome {
+            Ok(result) => result,
+            Err(error) => Err(anyhow::anyhow!("the export task stopped: {error}")),
+        };
+        self.finish_export(&result);
+        self.end_drive_operation();
+        result.map(|report| report.destination.display().to_string())
+    }
+
+    fn export_blocking(
+        &self,
+        selection: &[String],
+        format: &str,
+        drive_id: &str,
+    ) -> Result<ExportReport> {
+        let selection = selection_from_request(selection, &self.writing_dir)?;
+        let format = parse_format(format)?;
+        let drive = MountedDrive::mount(Arc::clone(&self.drives), drive_id)?;
+        let report = stylos_export::export(
+            selection,
+            format,
+            &self.writing_dir,
+            drive.path(),
+            &stylos_export::MapCitations::new(),
+            |progress| {
+                self.emit(DaemonEvent::ExportProgress(ExportProgress {
+                    state: "exporting".into(),
+                    message: format!("Writing file {} of {}.", progress.index, progress.total),
+                    index: progress.index as u32,
+                    total: progress.total as u32,
+                    destination: progress.destination.display().to_string(),
+                }));
+            },
+        )
+        .context("export to the USB drive")?;
+        Ok(report)
+    }
+
+    fn finish_export(&self, result: &Result<ExportReport>) {
+        let progress = match result {
+            Ok(report) => ExportProgress {
+                state: "done".into(),
+                message: format!("Exported {} file(s). Safe to remove.", report.count()),
+                index: report.count() as u32,
+                total: report.count() as u32,
+                destination: report.destination.display().to_string(),
+            },
+            Err(error) => ExportProgress {
+                state: "error".into(),
+                message: format!("{error:#}"),
+                index: 0,
+                total: 0,
+                destination: String::new(),
+            },
+        };
+        self.emit(DaemonEvent::ExportProgress(progress));
+    }
+
+    /// Copy files from `drive_id` into `<writing>/Imported/`.
+    ///
+    /// No paths means everything on the drive. Like an export, the drive is
+    /// mounted only for this call and powered off afterwards.
+    pub async fn import(
+        self: &Arc<Self>,
+        drive_id: String,
+        paths: Vec<String>,
+    ) -> Result<Vec<String>> {
+        self.begin_drive_operation()?;
+        let core = Arc::clone(self);
+        let outcome =
+            tokio::task::spawn_blocking(move || core.import_blocking(&drive_id, &paths)).await;
+        self.end_drive_operation();
+        match outcome {
+            Ok(result) => result,
+            Err(error) => Err(anyhow::anyhow!("the import task stopped: {error}")),
+        }
+    }
+
+    fn import_blocking(&self, drive_id: &str, paths: &[String]) -> Result<Vec<String>> {
+        let drive = MountedDrive::mount(Arc::clone(&self.drives), drive_id)?;
+        let sources = import_sources(drive.path(), paths)?;
+        let report = stylos_export::import(&sources, &self.writing_dir)
+            .context("import from the USB drive")?;
+        Ok(report
+            .files
+            .into_iter()
+            .map(|file| file.destination.display().to_string())
+            .collect())
+    }
+
+    fn begin_drive_operation(&self) -> Result<()> {
+        let mut status = self.status.lock().expect("status lock poisoned");
+        if status.drive_operation_running {
+            bail!("an export or import is already running");
+        }
+        status.drive_operation_running = true;
+        Ok(())
+    }
+
+    fn end_drive_operation(&self) {
+        self.status
+            .lock()
+            .expect("status lock poisoned")
+            .drive_operation_running = false;
     }
 
     // ----- pairing ---------------------------------------------------------
@@ -316,8 +542,8 @@ impl DaemonCore {
     /// through [`DaemonEvent::PairStatus`]; the radio stays on until then.
     pub async fn pair(self: &Arc<Self>, backend: &str, url: &str) -> Result<PairingInfo> {
         match backend {
+            "gdrive" | "google-drive" => return self.pair_gdrive().await,
             "nostos" | "self-hosted" => {}
-            "google-drive" => bail!("the Google Drive backend arrives in WP6b"),
             other => bail!("unknown sync backend {other:?}"),
         }
         let url = resolve_server_url(backend, url)?;
@@ -386,13 +612,115 @@ impl DaemonCore {
         Ok(info)
     }
 
+    /// Start the Google device authorization flow: return the URL and user
+    /// code, then poll in the background inside the same radio window.
+    async fn pair_gdrive(self: &Arc<Self>) -> Result<PairingInfo> {
+        {
+            let mut status = self.status.lock().expect("status lock poisoned");
+            if status.pairing_running {
+                bail!("a pairing is already in progress");
+            }
+            status.pairing_running = true;
+        }
+        // Fail before touching the radio when the image has no OAuth client.
+        let client = match OAuthApp::load()
+            .and_then(|app| OAuthClient::new(app, OAuthEndpoints::from_env_or_default()))
+        {
+            Ok(client) => client,
+            Err(error) => {
+                self.finish_pairing_attempt();
+                return Err(error);
+            }
+        };
+        let guard = match self.radio.hold("pairing") {
+            Ok(guard) => guard,
+            Err(error) => {
+                self.finish_pairing_attempt();
+                return Err(error);
+            }
+        };
+        let device = match client.start_device_flow().await {
+            Ok(device) => device,
+            Err(error) => {
+                drop(guard);
+                self.finish_pairing_attempt();
+                return Err(error);
+            }
+        };
+
+        let info = PairingInfo {
+            backend: "gdrive".to_string(),
+            code: device.user_code.clone(),
+            approval_url: device.verification_url.clone(),
+            expires_at: now_unix() + device.expires_in.max(0),
+        };
+        let core = Arc::clone(self);
+        let code = info.code.clone();
+        tokio::spawn(async move {
+            // Keep the radio on for the whole pairing; the guard blocks it
+            // again on every exit path.
+            let _guard = guard;
+            let outcome: Result<()> = async {
+                let tokens = client.wait_for_approval(&device, PAIRING_TIMEOUT).await?;
+                let refresh_token = tokens
+                    .refresh_token
+                    .filter(|token| !token.trim().is_empty())
+                    .context("Google did not return a refresh token")?;
+                let docx_copy = GdriveConfig::load(&core.state_dir)?
+                    .map(|config| config.docx_copy)
+                    .unwrap_or(false);
+                GdriveConfig {
+                    refresh_token,
+                    docx_copy,
+                }
+                .save(&core.state_dir)
+            }
+            .await;
+            core.finish_pairing_attempt();
+            match outcome {
+                Ok(()) => core.emit(DaemonEvent::PairStatus {
+                    state: "approved".into(),
+                    code,
+                    message: "Paired with Google Drive.".to_string(),
+                }),
+                Err(error) => core.emit(DaemonEvent::PairStatus {
+                    state: "error".into(),
+                    code,
+                    message: format!("{error:#}"),
+                }),
+            }
+        });
+        Ok(info)
+    }
+
     fn finish_pairing_attempt(&self) {
         let mut status = self.status.lock().expect("status lock poisoned");
         status.pairing_running = false;
     }
 
-    /// Forget the paired server. Idempotent.
-    pub fn unpair(&self) -> Result<()> {
+    /// Forget every paired backend. Idempotent.
+    ///
+    /// A Google refresh token is revoked while the radio is on; being offline
+    /// must never keep the user paired on the device, so a failed revoke is
+    /// only logged.
+    pub async fn unpair(&self) -> Result<()> {
+        if let Some(runner) = &self.gdrive {
+            match GdriveConfig::load(&self.state_dir) {
+                Ok(Some(_)) => match self.radio.hold("unpair") {
+                    Ok(guard) => {
+                        if let Err(error) = runner.revoke(&self.state_dir).await {
+                            tracing::warn!(%error, "could not revoke the Google Drive token");
+                        }
+                        drop(guard);
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "could not open the radio to revoke Google Drive");
+                    }
+                },
+                Ok(None) => {}
+                Err(error) => tracing::warn!(%error, "could not read the Google Drive pairing"),
+            }
+        }
         remove_if_exists(&SyncConfig::path(&self.state_dir))?;
         let database = state_database(&self.state_dir);
         for path in [
@@ -615,6 +943,38 @@ fn device_name() -> String {
     "stylos".to_string()
 }
 
+fn describe_summary(summary: &SyncSummary) -> String {
+    match (&summary.server, &summary.gdrive) {
+        (Some(server), None) => describe_report(server),
+        (None, Some(drive)) => describe_gdrive(drive),
+        (Some(server), Some(drive)) if server.is_noop() && drive.is_noop() => {
+            "Already up to date.".to_string()
+        }
+        (Some(server), Some(drive)) => format!(
+            "Synced: {} pulled, {} pushed; Google Drive: {}.",
+            server.pulled,
+            server.pushed,
+            describe_gdrive_counts(drive)
+        ),
+        (None, None) => "Already up to date.".to_string(),
+    }
+}
+
+fn describe_gdrive(report: &GdriveReport) -> String {
+    if report.is_noop() {
+        "Already up to date on Google Drive.".to_string()
+    } else {
+        format!("Google Drive: {}.", describe_gdrive_counts(report))
+    }
+}
+
+fn describe_gdrive_counts(report: &GdriveReport) -> String {
+    format!(
+        "{} uploaded, {} moved to .deleted",
+        report.uploaded, report.deleted
+    )
+}
+
 fn describe_report(report: &SyncReport) -> String {
     if report.is_noop() {
         "Already up to date.".to_string()
@@ -642,6 +1002,7 @@ mod tests {
 
     use crate::power::SleepGuard;
     use crate::radio::{Rfkill, WIFI_WINDOW};
+    use stylos_export::{DriveCall, DriveInfo, FakeDrives};
 
     struct FakeRfkill {
         blocked: AtomicBool,
@@ -840,6 +1201,35 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct FakeGdrive {
+        fail: bool,
+        calls: AtomicUsize,
+    }
+
+    impl FakeGdrive {
+        fn new(fail: bool) -> Arc<Self> {
+            Arc::new(Self {
+                fail,
+                ..Self::default()
+            })
+        }
+    }
+
+    #[async_trait]
+    impl GdriveRunner for FakeGdrive {
+        async fn sync(&self, _writing_dir: &Path, _state_dir: &Path) -> Result<GdriveReport> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail {
+                bail!("Google Drive is unreachable");
+            }
+            Ok(GdriveReport {
+                uploaded: 1,
+                ..GdriveReport::default()
+            })
+        }
+    }
+
     struct Harness {
         core: Arc<DaemonCore>,
         dir: tempfile::TempDir,
@@ -848,10 +1238,27 @@ mod tests {
         power: Arc<FakePower>,
         session: Arc<FakeSession>,
         events: Arc<RecordingSink>,
+        drives: Arc<FakeDrives>,
     }
 
     impl Harness {
         fn new(runner: Arc<FakeRunner>, battery: BatteryStatus) -> Self {
+            Self::build(runner, battery, None)
+        }
+
+        fn with_gdrive(
+            runner: Arc<FakeRunner>,
+            gdrive: Arc<FakeGdrive>,
+            battery: BatteryStatus,
+        ) -> Self {
+            Self::build(runner, battery, Some(gdrive))
+        }
+
+        fn build(
+            runner: Arc<FakeRunner>,
+            battery: BatteryStatus,
+            gdrive: Option<Arc<dyn GdriveRunner>>,
+        ) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let writing = dir.path().join("writing");
             let state = dir.path().join("state");
@@ -861,6 +1268,15 @@ mod tests {
             let power = FakePower::new(battery);
             let session = Arc::new(FakeSession::default());
             let events = Arc::new(RecordingSink::default());
+            let drives = Arc::new(FakeDrives::new(
+                dir.path().join("drives"),
+                vec![DriveInfo {
+                    id: "usb-1".into(),
+                    name: "USB stick".into(),
+                    size: 16 * 1024 * 1024,
+                    mount_points: Vec::new(),
+                }],
+            ));
             let core = Arc::new(
                 DaemonCore::new(DaemonDeps {
                     writing_dir: writing.clone(),
@@ -870,6 +1286,8 @@ mod tests {
                     power: power.clone(),
                     session: session.clone(),
                     runner: runner.clone(),
+                    drives: drives.clone(),
+                    gdrive,
                     events: events.clone(),
                 })
                 .unwrap(),
@@ -882,6 +1300,7 @@ mod tests {
                 power,
                 session,
                 events,
+                drives,
             }
         }
 
@@ -889,6 +1308,11 @@ mod tests {
             let target = self.dir.path().join("writing").join(path);
             fs::create_dir_all(target.parent().unwrap()).unwrap();
             fs::write(target, text).unwrap();
+        }
+
+        /// Where [`FakeDrives`] mounts its first drive.
+        fn drive_mount(&self) -> PathBuf {
+            self.dir.path().join("drives/drive-0")
         }
     }
 
@@ -906,6 +1330,183 @@ mod tests {
             percent,
             charging: false,
         }
+    }
+
+    #[test]
+    fn list_drives_never_mounts() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        let drives = harness.core.list_drives().unwrap();
+        assert_eq!(drives.len(), 1);
+        assert_eq!(drives[0].name, "USB stick");
+        assert_eq!(drives[0].size, 16 * 1024 * 1024);
+        assert!(!drives[0].mounted);
+        assert_eq!(harness.drives.calls(), [DriveCall::List]);
+    }
+
+    #[tokio::test]
+    async fn export_writes_to_the_drive_then_unmounts_and_powers_off() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        harness.write("draft.md", "# One\n");
+        harness.write("Notes/second.md", "two");
+
+        let destination = harness
+            .core
+            .export(vec![], "markdown".into(), "usb-1".into())
+            .await
+            .unwrap();
+        let destination = PathBuf::from(destination);
+        assert!(
+            destination.starts_with(harness.drive_mount()),
+            "{destination:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("draft.md")).unwrap(),
+            "# One\n"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("Notes/second.md")).unwrap(),
+            "two"
+        );
+        assert_eq!(
+            harness.drives.calls(),
+            [
+                DriveCall::Mount("usb-1".into()),
+                DriveCall::Unmount("usb-1".into()),
+                DriveCall::PowerOff("usb-1".into()),
+            ],
+            "the drive is mounted only for the export and powered off after"
+        );
+        assert!(!harness.drives.is_mounted("usb-1"));
+
+        let progress: Vec<(String, u32, u32)> = harness
+            .events
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                DaemonEvent::ExportProgress(progress) => {
+                    Some((progress.state, progress.index, progress.total))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(progress.first(), Some(&("exporting".into(), 0, 0)));
+        assert_eq!(
+            progress.last(),
+            Some(&("done".into(), 2, 2)),
+            "{progress:?}"
+        );
+        assert!(harness.events.events().iter().any(|event| matches!(
+            event,
+            DaemonEvent::ExportProgress(progress)
+                if progress.message.contains("Safe to remove")
+                    && progress.destination == destination.display().to_string()
+        )));
+    }
+
+    #[tokio::test]
+    async fn export_errors_release_the_lock_and_an_error_after_mount_powers_off() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+
+        // A bad format and a missing selection are rejected before mounting.
+        let error = harness
+            .core
+            .export(vec![], "rtf".into(), "usb-1".into())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("unknown export format"));
+        let error = harness
+            .core
+            .export(vec!["missing.md".into()], "markdown".into(), "usb-1".into())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("missing.md"));
+        assert!(harness.drives.calls().is_empty());
+
+        // An empty writing root fails after the drive was mounted: the guard
+        // still unmounts and powers it off, and the lock is released.
+        let error = harness
+            .core
+            .export(vec![], "markdown".into(), "usb-1".into())
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("nothing to export"),
+            "{error:#}"
+        );
+        assert_eq!(
+            harness.drives.calls(),
+            [
+                DriveCall::Mount("usb-1".into()),
+                DriveCall::Unmount("usb-1".into()),
+                DriveCall::PowerOff("usb-1".into()),
+            ]
+        );
+        assert!(harness.events.events().iter().any(|event| matches!(
+            event,
+            DaemonEvent::ExportProgress(progress) if progress.state == "error"
+        )));
+
+        harness.write("after.md", "still works");
+        harness
+            .core
+            .export(vec![], "markdown".into(), "usb-1".into())
+            .await
+            .expect("the failed export released the lock");
+    }
+
+    #[tokio::test]
+    async fn import_copies_text_files_into_imported_and_powers_off() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        let inbox = harness.drive_mount().join("Inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        fs::write(inbox.join("letter.txt"), "from the stick").unwrap();
+        fs::write(inbox.join("cover.png"), b"png").unwrap();
+
+        let imported = harness
+            .core
+            .import("usb-1".into(), vec!["Inbox".into()])
+            .await
+            .unwrap();
+        assert_eq!(imported.len(), 1, "{imported:?}");
+        let path = PathBuf::from(&imported[0]);
+        assert_eq!(path.file_name().unwrap(), "letter.md");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "from the stick");
+        assert!(harness
+            .dir
+            .path()
+            .join("writing/Imported/letter.md")
+            .is_file());
+        assert_eq!(
+            harness.drives.calls(),
+            [
+                DriveCall::Mount("usb-1".into()),
+                DriveCall::Unmount("usb-1".into()),
+                DriveCall::PowerOff("usb-1".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn import_rejects_a_path_outside_the_drive() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        fs::write(harness.dir.path().join("outside.md"), "no").unwrap();
+        let outside = harness.dir.path().join("outside.md").display().to_string();
+        let error = harness
+            .core
+            .import("usb-1".into(), vec![outside])
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("outside the drive"));
+        assert!(!harness.dir.path().join("writing/Imported").exists());
+        // The drive was mounted for the attempt but still powered off.
+        assert_eq!(
+            harness.drives.calls(),
+            [
+                DriveCall::Mount("usb-1".into()),
+                DriveCall::Unmount("usb-1".into()),
+                DriveCall::PowerOff("usb-1".into()),
+            ]
+        );
     }
 
     #[test]
@@ -1092,12 +1693,12 @@ mod tests {
         let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
         assert!(harness
             .core
-            .pair("google-drive", "https://example.com")
+            .pair("dropbox", "https://example.com")
             .await
             .is_err());
         assert!(harness
             .core
-            .pair("dropbox", "https://example.com")
+            .pair("caldav", "https://example.com")
             .await
             .is_err());
         assert!(harness.core.pair("self-hosted", "not a url").await.is_err());
@@ -1117,8 +1718,8 @@ mod tests {
         assert!(resolve_server_url("self-hosted", "https://example.com").is_ok());
     }
 
-    #[test]
-    fn unpair_removes_the_configuration_and_state() {
+    #[tokio::test]
+    async fn unpair_removes_the_configuration_and_state() {
         let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
         let config = SyncConfig {
             server_url: "https://127.0.0.1:8443".into(),
@@ -1129,10 +1730,93 @@ mod tests {
         };
         config.save(&harness.core.state_dir).unwrap();
         fs::write(state_database(&harness.core.state_dir), "db").unwrap();
-        harness.core.unpair().unwrap();
+        harness.core.unpair().await.unwrap();
         assert!(!SyncConfig::path(&harness.core.state_dir).exists());
         assert!(!state_database(&harness.core.state_dir).exists());
         // Idempotent.
-        harness.core.unpair().unwrap();
+        harness.core.unpair().await.unwrap();
+    }
+
+    fn pair_google_drive(harness: &Harness) {
+        GdriveConfig {
+            refresh_token: "refresh-1".into(),
+            docx_copy: false,
+        }
+        .save(&harness.core.state_dir)
+        .unwrap();
+    }
+
+    fn pair_server(harness: &Harness) {
+        SyncConfig {
+            server_url: "https://127.0.0.1:8443".into(),
+            token: "server-token".into(),
+            cert_sha256: None,
+            server_name: Some("Test".into()),
+            device_pubkey: "ab".repeat(32),
+        }
+        .save(&harness.core.state_dir)
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn sync_runs_all_configured_backends_in_one_radio_window() {
+        let runner = FakeRunner::new(false);
+        let gdrive = FakeGdrive::new(false);
+        let harness = Harness::with_gdrive(runner.clone(), gdrive.clone(), plugged_in(80));
+        pair_server(&harness);
+        pair_google_drive(&harness);
+        harness.write("draft.md", "text");
+
+        let summary = harness.core.run_sync_now().await.unwrap();
+        assert!(summary.server.is_some());
+        assert!(summary.gdrive.is_some());
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(gdrive.calls.load(Ordering::SeqCst), 1);
+        let calls = harness.rfkill.calls.lock().unwrap().clone();
+        assert_eq!(calls, ["unblock", "block"], "one radio window for both");
+    }
+
+    #[tokio::test]
+    async fn a_google_only_device_skips_the_server_backend() {
+        let runner = FakeRunner::new(false);
+        let gdrive = FakeGdrive::new(false);
+        let harness = Harness::with_gdrive(runner.clone(), gdrive.clone(), plugged_in(80));
+        pair_google_drive(&harness);
+        harness.write("draft.md", "text");
+
+        let summary = harness.core.run_sync_now().await.unwrap();
+        assert!(summary.server.is_none());
+        assert!(summary.gdrive.is_some());
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(gdrive.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_google_drive_error_ends_the_sync_and_blocks_the_radio() {
+        let gdrive = FakeGdrive::new(true);
+        let harness = Harness::with_gdrive(FakeRunner::new(false), gdrive.clone(), plugged_in(80));
+        pair_google_drive(&harness);
+        harness.write("draft.md", "text");
+
+        let error = harness.core.run_sync_now().await.unwrap_err();
+        assert!(format!("{error:#}").contains("unreachable"), "{error:#}");
+        assert_eq!(gdrive.calls.load(Ordering::SeqCst), 1);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+        let calls = harness.rfkill.calls.lock().unwrap().clone();
+        assert_eq!(calls, ["unblock", "block"]);
+    }
+
+    #[tokio::test]
+    async fn a_sync_without_any_backend_says_not_paired() {
+        let harness = Harness::with_gdrive(
+            FakeRunner::new(false),
+            FakeGdrive::new(false),
+            plugged_in(80),
+        );
+        harness.write("draft.md", "text");
+        let error = harness.core.run_sync_now().await.unwrap_err();
+        assert!(error.to_string().contains("not paired"), "{error:#}");
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
     }
 }
