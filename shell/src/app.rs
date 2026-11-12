@@ -19,6 +19,7 @@ use crate::files::FilesPage;
 use crate::first_run::FirstRunPage;
 use crate::history::HistoryPage;
 use crate::nav::Navigator;
+use crate::quotes::QuotesPage;
 use crate::settings::{Settings, Theme};
 use crate::settings_page::SettingsPage;
 use crate::store::{self, Store};
@@ -86,6 +87,7 @@ pub fn run(application: &gtk::Application) {
 
     let files = FilesPage::new(store.clone(), Rc::clone(&editor), stack.clone());
     let history = HistoryPage::new(client.clone(), Rc::clone(&nav), Rc::clone(&editor));
+    let quotes = QuotesPage::new(client.clone(), Rc::clone(&nav), Rc::clone(&editor));
     let sync = SyncPage::new(client.clone(), Rc::clone(&nav));
     let wifi = WifiPage::new(client.clone(), Rc::clone(&nav));
 
@@ -129,6 +131,7 @@ pub fn run(application: &gtk::Application) {
     stack.add_named(&editor.widget, Some("editor"));
     stack.add_named(&files.widget, Some("files"));
     stack.add_named(&history.widget, Some("history"));
+    stack.add_named(&quotes.widget, Some("quotes"));
     stack.add_named(&sync.widget, Some("sync"));
     stack.add_named(&settings_page.widget, Some("settings"));
     stack.add_named(&wifi.widget, Some("wifi"));
@@ -182,6 +185,7 @@ pub fn run(application: &gtk::Application) {
         let editor = Rc::clone(&editor);
         let files = Rc::clone(&files);
         let history = Rc::clone(&history);
+        let quotes = Rc::clone(&quotes);
         let sync = Rc::clone(&sync);
         let settings_page = Rc::clone(&settings_page);
         let wifi = Rc::clone(&wifi);
@@ -217,8 +221,11 @@ pub fn run(application: &gtk::Application) {
                     return glib::Propagation::Stop;
                 }
                 if key == gdk::Key::bracketright {
-                    if visible == "editor" {
-                        editor.quotes_note();
+                    // One key opens and closes the palette from any screen.
+                    if visible == "quotes" {
+                        nav.show_editor();
+                    } else {
+                        quotes.open();
                     }
                     return glib::Propagation::Stop;
                 }
@@ -227,6 +234,7 @@ pub fn run(application: &gtk::Application) {
             match visible.as_str() {
                 "files" => files.handle_key(keyval, state),
                 "history" => history.handle_key(keyval, state),
+                "quotes" => quotes.handle_key(keyval, state),
                 "sync" => sync.handle_key(keyval, state),
                 "settings" => settings_page.handle_key(keyval, state),
                 "wifi" => wifi.handle_key(keyval, state),
@@ -255,6 +263,7 @@ pub fn run(application: &gtk::Application) {
         match start.as_str() {
             "files" => nav.show("files"),
             "history" => nav.show("history"),
+            "quotes" => nav.show("quotes"),
             "sync" => nav.show("sync"),
             "settings" => nav.show("settings"),
             "wifi" => nav.show("wifi"),

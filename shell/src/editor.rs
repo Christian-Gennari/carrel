@@ -375,11 +375,6 @@ impl EditorPage {
         });
     }
 
-    /// Ctrl+]: the quotes palette is WP9.
-    pub fn quotes_note(self: &Rc<Self>) {
-        self.flash_note("Quotes need a Nostos account.", 4);
-    }
-
     /// A new battery reading. The bottom line always updates; when the writer
     /// hid it, the 10 % and 5 % notes still appear for five seconds.
     pub fn on_battery(self: &Rc<Self>) {
@@ -426,6 +421,45 @@ impl EditorPage {
         }
         let end = self.buffer.end_iter();
         self.buffer.place_cursor(&end);
+        self.restyle_now();
+        self.update_status(false);
+        self.scroll_to_cursor();
+        Ok(())
+    }
+
+    /// Insert a block at the cursor as a normal journaled edit: the Quotes
+    /// palette uses it for a block quote plus its citation.
+    ///
+    /// When the cursor is mid-line the block starts a new paragraph; when text
+    /// follows the cursor it starts a new paragraph too, so the citation never
+    /// becomes a lazy continuation of the quote.
+    pub fn insert_block(self: &Rc<Self>, block: &str) -> Result<(), String> {
+        if self.doc.borrow().is_none() {
+            return Err("No file is open.".to_owned());
+        }
+        if block.is_empty() {
+            return Ok(());
+        }
+        let mark = self.buffer.get_insert();
+        let cursor = self.buffer.iter_at_mark(&mark);
+        let at_line_start = cursor.line_offset() == 0;
+        let at_end = cursor.offset() == self.buffer.end_iter().offset();
+        let next_is_newline = {
+            let mut next = cursor;
+            next.forward_char();
+            next.char() == '\n'
+        };
+        let prefix = if at_line_start { "" } else { "\n\n" };
+        let suffix = if at_end || next_is_newline { "" } else { "\n" };
+        let text = format!("{prefix}{block}{suffix}");
+        self.loading.set(false);
+        self.buffer.insert_at_cursor(&text);
+        let words = stats::count_words(&self.buffer_text());
+        self.last_words.set(words);
+        self.update_status(false);
+        if let Some(doc) = self.doc.borrow().as_ref() {
+            doc.flush().map_err(|error| error.to_string())?;
+        }
         self.restyle_now();
         self.update_status(false);
         self.scroll_to_cursor();

@@ -2325,6 +2325,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sourceview5",
+ "stylos-protocol",
  "stylosd",
  "tempfile",
  "tokio",
