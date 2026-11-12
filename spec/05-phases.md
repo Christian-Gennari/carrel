@@ -76,6 +76,35 @@ is committed on its branch. The orchestrator reviews and merges to `main`.
 
 ## Phase 4 — Release
 
+- **WP7c · Secure Boot on by default** — a user never changes firmware
+  settings. Boot through Debian's Microsoft-signed `shim-signed`, Debian's
+  signed systemd-boot and Debian's signed kernel (Type #1 boot entries instead
+  of self-signed UKIs; dm-verity root hash stays on the command line). After
+  install, Stylos makes itself the default EFI boot entry. Gate: QEMU with OVMF
+  and Microsoft keys enrolled (`OVMF_VARS.ms.fd`, Secure Boot enforcing) boots
+  the USB image, installs, boots the installed disk, updates and rolls back.
+- **WP7d · Release file and docs** — shrink the image to its content and ship
+  `stylos-<version>.img.xz` (+ `.sha256`, signature); add `intel-microcode`,
+  `amd64-microcode`, `firmware-amd-graphics`; README states that Docker is only
+  the build environment and that users flash the image (Fedora Media Writer,
+  Etcher, Rufus in DD mode, `dd`). Gate: the compressed image flashes to a
+  virtual USB disk and passes the boot tests.
 - **WP10 · Hardware** — tier 1 quirks, real-laptop checklist
-  (`spec/04-hardware.md`), signed release pipeline, docs site. Gate: all tier 1
-  models pass; 1.0.
+  (`spec/04-hardware.md`), signed release pipeline, docs site. First real
+  laptop: ThinkPad T14 Gen 1 (Intel i5-10210U, UHD graphics, AX201 Wi-Fi,
+  Secure Boot on) via "Try Stylos" from USB, internal disk untouched. Gate: all
+  tier 1 models pass; 1.0.
+
+## Phase 5 — The writer's screen
+
+- **WP11 · Research** — a literature review on what helps a writer at the
+  screen and around it: HCI studies of writing tools, typography and reading
+  research, attention, flow and distraction, the writing session as a ritual
+  (start, stop, resume), and what writers report about dedicated devices and
+  minimal editors. Output: `spec/06-writer-research.md` with findings, sources
+  and concrete design rules, each marked by strength of evidence.
+- **WP12 · UI review and iteration** — review every screen against
+  `spec/00-rules.md` and the research: effortless, non-intrusive, helpful, and
+  not a modern tech-company app. Change what does not fit; screenshot before
+  and after. Gate: a written review with every rule checked and the changes
+  merged.

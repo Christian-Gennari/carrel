@@ -5,7 +5,7 @@ graphics.
 
 | Tier | Models | Promise |
 |---|---|---|
-| 1 | ThinkPad X230, T430, X250, T450, T480; Dell Latitude E7450 | Every release is tested on real hardware. |
+| 1 | ThinkPad X230, T430, X250, T450, T480, T14 Gen 1 (Intel); Dell Latitude E7450 | Every release is tested on real hardware. |
 | 2 | Other laptops with Intel graphics + Intel Wi-Fi | Community reports in `docs/hardware.md`. |
 | 3 | NVIDIA (Optimus), Broadcom Wi-Fi, Chromebooks | Not supported. May work. |
 
