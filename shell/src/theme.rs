@@ -251,6 +251,50 @@ entry:focus, entry:focus-within {{
     color: {text};
     font-size: 13pt;
 }}
+.quote-search {{
+    font-size: 14pt;
+}}
+.filter-chip {{
+    background-color: transparent;
+    color: {muted};
+    border: 1px solid {border};
+    border-radius: 14px;
+    padding: 3px 12px;
+    font-size: 10pt;
+}}
+.filter-chip:hover {{
+    background-color: {selection};
+}}
+.filter-chip-active {{
+    color: {accent};
+    border-color: {accent};
+}}
+.quote-list {{
+    background-color: transparent;
+}}
+.quote-row {{
+    padding: 10px 14px;
+    border-radius: 7px;
+}}
+.quote-row:hover {{
+    background-color: {selection};
+}}
+.quote-row:selected {{
+    background-color: {selection};
+}}
+.quote-text {{
+    color: {text};
+    font-size: 13pt;
+}}
+.quote-meta {{
+    color: {dim};
+    font-size: 10pt;
+}}
+.quote-message {{
+    color: {muted};
+    font-size: 12pt;
+    padding: 10px 2px 2px 2px;
+}}
 .qr {{
     background-color: #fbf7ef;
     padding: 10px;

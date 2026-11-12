@@ -125,6 +125,12 @@ shoot editor-night night true true editor ""
 # History with a preview.
 shoot history-paper paper true true history ""
 
+# Quotes palette: search results in both themes, then the two empty states.
+shoot quotes-paper paper true true quotes "" STYLOS_QUOTE_QUERY=attention
+shoot quotes-night night true true quotes "" STYLOS_QUOTE_QUERY=attention
+shoot quotes-empty-paper paper true true quotes "" STYLOS_FAKE_LIBRARY=empty
+shoot quotes-unavailable-paper paper true true quotes "" STYLOS_FAKE_LIBRARY=unavailable
+
 # Sync: the overview, then each pairing flow.
 shoot sync-paper paper true true sync ""
 shoot sync-pair-nostos-paper paper true true pair-nostos ""

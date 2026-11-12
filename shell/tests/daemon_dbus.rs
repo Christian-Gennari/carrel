@@ -8,12 +8,15 @@
 //! binary. `dbus-daemon --session` acts as the system bus, exactly as in
 //! `stylosd/tests/daemon_dbus.rs`.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use stylos_protocol::{LibraryBook, LibraryItem, LibraryItemKind, LibraryPage};
 use stylos_shell::daemon::{DaemonClient, ZbusDaemon};
+use stylosd::library::LibraryCache;
 
 struct KillOnDrop(Child);
 
@@ -93,6 +96,46 @@ fn the_shell_client_commits_and_reads_history_through_the_real_daemon() {
     std::fs::write(rfkill.join("rfkill0/type"), "wlan\n").unwrap();
     std::fs::write(rfkill.join("rfkill0/soft"), "1").unwrap();
 
+    // A paired account with one synced quote, so the shell's client can read
+    // the library through the real D-Bus interface.
+    stylosd::SyncConfig {
+        server_url: "https://nostos.example/v1".into(),
+        token: "token".into(),
+        cert_sha256: None,
+        server_name: Some("Nostos".into()),
+        device_pubkey: String::new(),
+    }
+    .save(&state)
+    .unwrap();
+    {
+        let mut cache = LibraryCache::from_state_dir(&state).unwrap();
+        cache
+            .apply_page(
+                &LibraryPage {
+                    books: vec![LibraryBook {
+                        id: "b1".into(),
+                        title: "The Quiet Hours".into(),
+                        author: "Mara Ellison".into(),
+                        topics: vec!["writing".into()],
+                    }],
+                    items: vec![LibraryItem {
+                        id: "q1".into(),
+                        kind: LibraryItemKind::Highlight,
+                        book_id: "b1".into(),
+                        text: "A sentence is a small room.".into(),
+                        note: String::new(),
+                        location: "p. 41".into(),
+                        topics: vec!["writing".into()],
+                        citation: None,
+                    }],
+                    deleted: Vec::new(),
+                    cursor: "5".into(),
+                },
+                "5",
+            )
+            .unwrap();
+    }
+
     let (_bus, address) = start_bus(dir.path());
     let _daemon = start_daemon(&writing, &state, &rfkill, &address);
 
@@ -142,6 +185,31 @@ fn the_shell_client_commits_and_reads_history_through_the_real_daemon() {
         daemon.update_status().expect("UpdateStatus over D-Bus"),
         "none"
     );
+
+    // The Quotes palette's two calls round-trip through the shell client.
+    let hits = daemon
+        .search_library("sentence", HashMap::new())
+        .expect("SearchLibrary over D-Bus");
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].id, "q1");
+    assert_eq!(hits[0].book_title, "The Quiet Hours");
+    assert_eq!(hits[0].author, "Mara Ellison");
+    assert_eq!(hits[0].location, "p. 41");
+    assert!(hits[0].text.contains("small room"));
+    assert!(hits[0].citation_markdown.is_empty(), "no citation was sent");
+
+    let mut filters = HashMap::new();
+    filters.insert("author".to_string(), "Mara Ellison".to_string());
+    let hits = daemon
+        .search_library("", filters)
+        .expect("filtered SearchLibrary over D-Bus");
+    assert_eq!(hits.len(), 1, "{hits:?}");
+
+    let options = daemon.library_filters().expect("LibraryFilters over D-Bus");
+    assert_eq!(options.books.len(), 1);
+    assert_eq!(options.books[0].title, "The Quiet Hours");
+    assert_eq!(options.authors, vec!["Mara Ellison"]);
+    assert_eq!(options.topics, vec!["writing"]);
 }
 
 /// Runs only in the child process started by the test above.

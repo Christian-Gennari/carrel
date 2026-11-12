@@ -34,6 +34,13 @@ pub mod endpoints {
     pub fn file_delete(file_id: Uuid, base_rev: u64) -> String {
         format!("/files/{file_id}?base_rev={base_rev}")
     }
+
+    /// `GET /library?since=<cursor>`. The cursor is opaque, exactly like the
+    /// file cursor; servers must URL-encode it if it contains reserved
+    /// characters, and clients pass it back unchanged.
+    pub fn library_since(cursor: &str) -> String {
+        format!("/library?since={cursor}")
+    }
 }
 
 /// `POST /pair/start` request body.
@@ -173,6 +180,95 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
+// ---------------------------------------------------------------------------
+// Library (Nostos only)
+// ---------------------------------------------------------------------------
+
+/// What a library item is: a highlighted passage, a note the writer made, or a
+/// passage the writer collected.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum LibraryItemKind {
+    Highlight,
+    Note,
+    Passage,
+}
+
+impl LibraryItemKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LibraryItemKind::Highlight => "highlight",
+            LibraryItemKind::Note => "note",
+            LibraryItemKind::Passage => "passage",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "highlight" => Some(LibraryItemKind::Highlight),
+            "note" => Some(LibraryItemKind::Note),
+            "passage" => Some(LibraryItemKind::Passage),
+            _ => None,
+        }
+    }
+}
+
+/// How to cite an item: ready-to-insert Markdown plus the canonical URL.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LibraryCitation {
+    #[serde(default)]
+    pub markdown: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+/// One book in the writer's library. `author` and `topics` may be absent.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LibraryBook {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub topics: Vec<String>,
+}
+
+/// One highlight, note or passage.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LibraryItem {
+    pub id: String,
+    pub kind: LibraryItemKind,
+    pub book_id: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub location: String,
+    #[serde(default)]
+    pub topics: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub citation: Option<LibraryCitation>,
+}
+
+/// `GET /library?since=<cursor>` response body.
+///
+/// A page may add or update books and items and remove item ids. The server
+/// returns pages until one is empty; the last page's cursor is the new
+/// incremental position.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LibraryPage {
+    #[serde(default)]
+    pub books: Vec<LibraryBook>,
+    #[serde(default)]
+    pub items: Vec<LibraryItem>,
+    /// Ids of items deleted since the requested cursor.
+    #[serde(default)]
+    pub deleted: Vec<String>,
+    #[serde(default)]
+    pub cursor: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -303,5 +399,90 @@ mod tests {
             format!("/files/{id}?base_rev=3")
         );
         assert_eq!(endpoints::pair_status(id), format!("/pair/{id}"));
+        assert_eq!(endpoints::library_since("40"), "/library?since=40");
+    }
+
+    #[test]
+    fn library_page_shape_matches_the_spec() {
+        let page = LibraryPage {
+            books: vec![LibraryBook {
+                id: "book-1".into(),
+                title: "The Quiet Hours".into(),
+                author: "Mara Ellison".into(),
+                topics: vec!["writing".into()],
+            }],
+            items: vec![LibraryItem {
+                id: "quote-1".into(),
+                kind: LibraryItemKind::Highlight,
+                book_id: "book-1".into(),
+                text: "A sentence is a small room.".into(),
+                note: String::new(),
+                location: "p. 41".into(),
+                topics: vec!["writing".into()],
+                citation: Some(LibraryCitation {
+                    markdown: "[The Quiet Hours, p. 41](nostos:cite/quote-1)".into(),
+                    url: "https://nostos.app/library/quote-1".into(),
+                }),
+            }],
+            deleted: vec!["quote-0".into()],
+            cursor: "7".into(),
+        };
+        let value: Value = serde_json::to_value(&page).unwrap();
+        assert_eq!(
+            value,
+            json!({
+                "books": [{
+                    "id": "book-1",
+                    "title": "The Quiet Hours",
+                    "author": "Mara Ellison",
+                    "topics": ["writing"]
+                }],
+                "items": [{
+                    "id": "quote-1",
+                    "kind": "highlight",
+                    "book_id": "book-1",
+                    "text": "A sentence is a small room.",
+                    "note": "",
+                    "location": "p. 41",
+                    "topics": ["writing"],
+                    "citation": {
+                        "markdown": "[The Quiet Hours, p. 41](nostos:cite/quote-1)",
+                        "url": "https://nostos.app/library/quote-1"
+                    }
+                }],
+                "deleted": ["quote-0"],
+                "cursor": "7"
+            })
+        );
+    }
+
+    #[test]
+    fn library_items_tolerate_optional_fields() {
+        let page: LibraryPage = serde_json::from_value(json!({
+            "items": [{
+                "id": "n1",
+                "kind": "note",
+                "book_id": "b1"
+            }],
+            "cursor": "1"
+        }))
+        .unwrap();
+        assert!(page.books.is_empty());
+        assert!(page.deleted.is_empty());
+        let item = &page.items[0];
+        assert_eq!(item.kind, LibraryItemKind::Note);
+        assert!(item.text.is_empty());
+        assert!(item.citation.is_none());
+        assert!(item.topics.is_empty());
+
+        for (kind, text) in [
+            (LibraryItemKind::Highlight, "highlight"),
+            (LibraryItemKind::Note, "note"),
+            (LibraryItemKind::Passage, "passage"),
+        ] {
+            assert_eq!(kind.as_str(), text);
+            assert_eq!(LibraryItemKind::parse(text), Some(kind));
+        }
+        assert_eq!(LibraryItemKind::parse("unknown"), None);
     }
 }

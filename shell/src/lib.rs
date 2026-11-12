@@ -15,6 +15,7 @@ pub mod history;
 pub mod locale;
 pub mod markdown;
 pub mod nav;
+pub mod quotes;
 pub mod settings;
 pub mod settings_page;
 pub mod store;

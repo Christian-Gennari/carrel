@@ -150,6 +150,11 @@ pub fn state_database(state_dir: &Path) -> PathBuf {
     state_dir.join("sync-state.sqlite")
 }
 
+/// Path of the Nostos library cache (`spec/01-architecture.md`).
+pub fn library_database(state_dir: &Path) -> PathBuf {
+    state_dir.join("library.sqlite")
+}
+
 /// Read a TOML file as a document. A missing file is an empty document; a
 /// broken one is an error, so a save never silently discards settings.
 pub(crate) fn read_document(path: &Path) -> Result<toml::Table> {
