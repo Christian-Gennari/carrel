@@ -23,8 +23,8 @@ done
 # crate so there is exactly one copy of each file.
 install -D -m 0644 "$SRCDIR/stylosd/systemd/stylosd.service" \
     "$DESTDIR/usr/lib/systemd/system/stylosd.service"
-install -D -m 0644 "$SRCDIR/stylosd/dbus/org.stylos.Daemon1.conf" \
-    "$DESTDIR/usr/share/dbus-1/system.d/org.stylos.Daemon1.conf"
+install -D -m 0644 "$SRCDIR/stylosd/dbus/page.nostos.Carrel.Daemon1.conf" \
+    "$DESTDIR/usr/share/dbus-1/system.d/page.nostos.Carrel.Daemon1.conf"
 
 # Public release keys.  The private half never enters the image; systemd-
 # sysupdate verifies SHA256SUMS.gpg with the keyring installed here and the

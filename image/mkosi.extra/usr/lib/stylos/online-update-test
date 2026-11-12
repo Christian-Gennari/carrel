@@ -44,8 +44,8 @@ case "$output" in
         ;;
 esac
 
-if ! busctl call org.stylos.Daemon1 /org/stylos/Daemon1 \
-        org.stylos.Daemon1 ApplyUpdate >/dev/null 2>&1; then
+if ! busctl call page.nostos.Carrel.Daemon1 /page/nostos/Carrel/Daemon1 \
+        page.nostos.Carrel.Daemon1 ApplyUpdate >/dev/null 2>&1; then
     log "apply failed"
     exit 0
 fi

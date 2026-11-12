@@ -115,13 +115,13 @@ async fn wait_for_name(connection: &zbus::Connection) {
         .expect("DBus proxy");
     for _ in 0..200 {
         let name: zbus::names::BusName<'_> =
-            "org.stylos.Daemon1".try_into().expect("valid bus name");
+            "page.nostos.Carrel.Daemon1".try_into().expect("valid bus name");
         if dbus.name_has_owner(name).await.unwrap_or(false) {
             return;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    panic!("stylosd did not take org.stylos.Daemon1 on the private bus");
+    panic!("stylosd did not take page.nostos.Carrel.Daemon1 on the private bus");
 }
 
 async fn call<B>(proxy: &zbus::Proxy<'_>, method: &str, body: &B) -> zbus::Message
@@ -154,9 +154,9 @@ async fn daemon_serves_commit_history_and_restore() {
     wait_for_name(&connection).await;
     let proxy = zbus::Proxy::new(
         &connection,
-        "org.stylos.Daemon1",
-        "/org/stylos/Daemon1",
-        "org.stylos.Daemon1",
+        "page.nostos.Carrel.Daemon1",
+        "/page/nostos/Carrel/Daemon1",
+        "page.nostos.Carrel.Daemon1",
     )
     .await
     .expect("daemon proxy");
@@ -243,14 +243,14 @@ async fn daemon_serves_commit_history_and_restore() {
     // The SyncInfo property tells the Sync screen the same thing.
     let properties = zbus::Proxy::new(
         &connection,
-        "org.stylos.Daemon1",
-        "/org/stylos/Daemon1",
+        "page.nostos.Carrel.Daemon1",
+        "/page/nostos/Carrel/Daemon1",
         "org.freedesktop.DBus.Properties",
     )
     .await
     .unwrap();
     let reply = properties
-        .call_method("Get", &("org.stylos.Daemon1", "SyncInfo"))
+        .call_method("Get", &("page.nostos.Carrel.Daemon1", "SyncInfo"))
         .await
         .expect("read the SyncInfo property");
     let value: zbus::zvariant::OwnedValue = reply.body().deserialize().unwrap();
@@ -299,9 +299,9 @@ async fn daemon_pairs_with_google_drive_and_syncs() {
     wait_for_name(&connection).await;
     let proxy = zbus::Proxy::new(
         &connection,
-        "org.stylos.Daemon1",
-        "/org/stylos/Daemon1",
-        "org.stylos.Daemon1",
+        "page.nostos.Carrel.Daemon1",
+        "/page/nostos/Carrel/Daemon1",
+        "page.nostos.Carrel.Daemon1",
     )
     .await
     .expect("daemon proxy");
@@ -455,9 +455,9 @@ async fn daemon_serves_cached_library_quotes_and_filters() {
     wait_for_name(&connection).await;
     let proxy = zbus::Proxy::new(
         &connection,
-        "org.stylos.Daemon1",
-        "/org/stylos/Daemon1",
-        "org.stylos.Daemon1",
+        "page.nostos.Carrel.Daemon1",
+        "/page/nostos/Carrel/Daemon1",
+        "page.nostos.Carrel.Daemon1",
     )
     .await
     .expect("daemon proxy");

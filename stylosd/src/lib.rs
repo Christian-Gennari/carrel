@@ -1,7 +1,7 @@
 //! `stylosd`: the Stylos system daemon.
 //!
 //! The crate contains the sync client and pairing (WP3), local Git history,
-//! radio control, Wi-Fi, battery handling and the `org.stylos.Daemon1` D-Bus
+//! radio control, Wi-Fi, battery handling and the `page.nostos.Carrel.Daemon1` D-Bus
 //! service (WP4). Policy lives in [`daemon`], D-Bus glue in [`dbus`]; everything
 //! outside the platform adapters is pure Rust and testable with fakes.
 

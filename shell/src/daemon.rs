@@ -1,7 +1,7 @@
 //! The daemon boundary: every screen talks to `stylosd` through this module.
 //!
 //! Rule 2: the shell never touches the network. Commits, sync, pairing, Wi-Fi,
-//! battery, updates and export all go through `org.stylos.Daemon1` on the
+//! battery, updates and export all go through `page.nostos.Carrel.Daemon1` on the
 //! system bus. [`DaemonClient`] mirrors that interface method for method; the
 //! types are copied field for field from `stylosd/src/{history,network,power,
 //! daemon}.rs` so the D-Bus struct signatures match (the shell does not depend
@@ -29,9 +29,9 @@ use futures_util::StreamExt;
 use gtk::glib;
 use serde::{Deserialize, Serialize};
 
-pub const BUS_NAME: &str = "org.stylos.Daemon1";
-pub const OBJECT_PATH: &str = "/org/stylos/Daemon1";
-pub const INTERFACE: &str = "org.stylos.Daemon1";
+pub const BUS_NAME: &str = "page.nostos.Carrel.Daemon1";
+pub const OBJECT_PATH: &str = "/page/nostos/Carrel/Daemon1";
+pub const INTERFACE: &str = "page.nostos.Carrel.Daemon1";
 
 /// A signal listener shared between the daemon task and `subscribe`.
 type SharedListener = Arc<dyn Fn(DaemonEvent) + Send + Sync>;
@@ -277,7 +277,7 @@ pub enum DaemonEvent {
     },
 }
 
-/// Everything the shell needs from `org.stylos.Daemon1`.
+/// Everything the shell needs from `page.nostos.Carrel.Daemon1`.
 ///
 /// The methods are synchronous on purpose: they mirror the D-Bus calls, and
 /// implementations may block. The GTK screens never call them directly; they
@@ -424,7 +424,7 @@ impl Client {
 // ZbusDaemon: the real service.
 // ---------------------------------------------------------------------------
 
-/// A client for `org.stylos.Daemon1` at `/org/stylos/Daemon1` on the system
+/// A client for `page.nostos.Carrel.Daemon1` at `/page/nostos/Carrel/Daemon1` on the system
 /// bus. All zbus work runs on a small tokio runtime; the trait methods block
 /// the calling worker thread only.
 pub struct ZbusDaemon {

@@ -56,7 +56,7 @@
   Settings, Sync, First run.
 - Markdown editing with GtkSourceView: inline styling (bold looks bold, heading
   markers are dimmed), no split preview.
-- Talks to `stylosd` over D-Bus (`org.stylos.Daemon1`) using `zbus`.
+- Talks to `stylosd` over D-Bus (`page.nostos.Carrel.Daemon1`) using `zbus`.
 - Never touches the network.
 
 ## Durability (inside stylos-shell)

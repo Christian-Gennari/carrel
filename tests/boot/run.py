@@ -717,7 +717,7 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
 
     for path in (
         "/usr/lib/systemd/system/stylosd.service",
-        "/usr/share/dbus-1/system.d/org.stylos.Daemon1.conf",
+        "/usr/share/dbus-1/system.d/page.nostos.Carrel.Daemon1.conf",
         "/usr/lib/stylos/installer",
         "/usr/lib/stylos/recovery",
         "/usr/lib/stylos/apply-update",

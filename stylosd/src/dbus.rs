@@ -1,8 +1,8 @@
-//! The `org.stylos.Daemon1` D-Bus service.
+//! The `page.nostos.Carrel.Daemon1` D-Bus service.
 //!
-//! The object lives on the system bus at `/org/stylos/Daemon1`. Only the
+//! The object lives on the system bus at `/page/nostos/Carrel/Daemon1`. Only the
 //! `writer` user and root may talk to it (see
-//! `stylosd/dbus/org.stylos.Daemon1.conf`). The service translates D-Bus calls
+//! `stylosd/dbus/page.nostos.Carrel.Daemon1.conf`). The service translates D-Bus calls
 //! into [`DaemonCore`] operations and [`DaemonEvent`]s into signals; the policy
 //! itself lives in [`crate::daemon`] so it is testable without a bus.
 //!
@@ -36,11 +36,11 @@ use crate::power::{BatteryStatus, LogindSession, UPowerPower};
 use crate::radio::{RadioManager, SysfsRfkill};
 
 /// Well-known bus name promised by `stylosd.service` (`Type=dbus`).
-pub const BUS_NAME: &str = "org.stylos.Daemon1";
+pub const BUS_NAME: &str = "page.nostos.Carrel.Daemon1";
 /// Object path of the daemon interface.
-pub const OBJECT_PATH: &str = "/org/stylos/Daemon1";
+pub const OBJECT_PATH: &str = "/page/nostos/Carrel/Daemon1";
 /// Interface name.
-pub const INTERFACE: &str = "org.stylos.Daemon1";
+pub const INTERFACE: &str = "page.nostos.Carrel.Daemon1";
 
 /// Environment variable that points the daemon at a private test bus.
 pub const BUS_ADDRESS_ENV: &str = "STYLOS_DBUS_ADDRESS";
@@ -96,7 +96,7 @@ pub async fn run(config: RunConfig) -> Result<()> {
     connection
         .request_name(BUS_NAME)
         .await
-        .context("own the org.stylos.Daemon1 bus name")?;
+        .context("own the page.nostos.Carrel.Daemon1 bus name")?;
 
     let emitter: SignalEmitter<'static> = SignalEmitter::new(&connection, OBJECT_PATH)?;
     tokio::spawn(async move {
@@ -191,7 +191,7 @@ struct Daemon1 {
     core: Arc<DaemonCore>,
 }
 
-#[zbus::interface(name = "org.stylos.Daemon1")]
+#[zbus::interface(name = "page.nostos.Carrel.Daemon1")]
 impl Daemon1 {
     // ----- history ---------------------------------------------------------
 
@@ -397,27 +397,27 @@ mod tests {
 
     #[test]
     fn api_constants_match_the_spec() {
-        assert_eq!(BUS_NAME, "org.stylos.Daemon1");
-        assert_eq!(OBJECT_PATH, "/org/stylos/Daemon1");
+        assert_eq!(BUS_NAME, "page.nostos.Carrel.Daemon1");
+        assert_eq!(OBJECT_PATH, "/page/nostos/Carrel/Daemon1");
     }
 
     #[test]
     fn the_service_files_match_the_interface() {
-        let policy = include_str!("../dbus/org.stylos.Daemon1.conf");
+        let policy = include_str!("../dbus/page.nostos.Carrel.Daemon1.conf");
         // The blanket deny comes first (D-Bus applies the last matching rule)
         // and only root and writer are allowed after it.
         let deny = policy
-            .find("<deny send_destination=\"org.stylos.Daemon1\"/>")
+            .find("<deny send_destination=\"page.nostos.Carrel.Daemon1\"/>")
             .expect("the policy denies the service by default");
         let writer = policy
             .find("<policy user=\"writer\">")
             .expect("the writer user is allowed");
         assert!(deny < writer, "the blanket deny must come first");
         assert!(policy.contains("<policy user=\"root\">"));
-        assert!(policy.contains("<allow send_destination=\"org.stylos.Daemon1\"/>"));
+        assert!(policy.contains("<allow send_destination=\"page.nostos.Carrel.Daemon1\"/>"));
 
         let unit = include_str!("../systemd/stylosd.service");
-        assert!(unit.contains("BusName=org.stylos.Daemon1"));
+        assert!(unit.contains("BusName=page.nostos.Carrel.Daemon1"));
         assert!(unit.contains("ExecStart=/usr/bin/stylosd run"));
     }
 }
