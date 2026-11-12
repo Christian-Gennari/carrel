@@ -1,0 +1,7 @@
+target/
+.git/
+out/
+mkosi.output/
+mkosi.cache/
+*.img
+*.qcow2
