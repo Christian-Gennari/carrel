@@ -350,29 +350,11 @@ entry:focus, entry:focus-within {{
     color: {text};
     font-size: 13pt;
 }}
-.quote-search {{
-    font-size: 14pt;
-}}
-.filter-chip {{
-    background-color: transparent;
-    color: {muted};
-    border: 1px solid {border};
-    border-radius: 14px;
-    padding: 3px 12px;
-    font-size: 10pt;
-}}
-.filter-chip:hover {{
-    background-color: {hover};
-}}
-.filter-chip-active {{
-    color: {text};
-    border-color: {muted};
-}}
 .quote-list {{
     background-color: transparent;
 }}
 .quote-row {{
-    padding: 10px 14px;
+    padding: 8px 14px;
     border-radius: 7px;
 }}
 .quote-row:hover {{
@@ -383,7 +365,7 @@ entry:focus, entry:focus-within {{
 }}
 .quote-text {{
     color: {text};
-    font-size: 13pt;
+    font-size: 12pt;
 }}
 .quote-meta {{
     color: {dim};
@@ -392,7 +374,28 @@ entry:focus, entry:focus-within {{
 .quote-message {{
     color: {muted};
     font-size: 12pt;
-    padding: 10px 2px 2px 2px;
+    padding: 12px 16px;
+}}
+.quote-heading {{
+    color: {dim};
+    font-size: 10pt;
+    padding: 10px 16px 2px 16px;
+}}
+.quote-hint {{
+    color: {muted};
+    font-size: 10pt;
+    padding: 8px 16px 10px 16px;
+    border-top: 1px solid {border};
+}}
+/* The palette at the caret: a quiet raised sheet. The accent stays on the
+   selected row only. */
+popover.quote-popover > contents {{
+    background-color: {background};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 0;
+    padding: 0;
+    box-shadow: none;
 }}
 /* A QR code needs a light quiet zone on both themes to scan. */
 .qr {{

@@ -48,6 +48,10 @@ cat > "$root/.carrel/state.json" <<'EOF'
 {"last_file": "The quiet morning.md"}
 EOF
 
+# Every shot starts from this essay: a shot that types into the editor leaves
+# an unsaved journal behind, and the next shot would recover it.
+cp "$root/The quiet morning.md" "$out/essay.orig"
+
 # Today's words for the bottom line and the hairline: 312 / 500.
 printf '{"date": "%s", "words": 312}\n' "$(date +%F)" > "$root/.carrel/stats.json"
 
@@ -110,6 +114,8 @@ shoot() {
     battery=${6:-}
     shift 6 || true
     write_settings "$theme" "$first_run" "$bottom_line"
+    cp "$out/essay.orig" "$root/The quiet morning.md"
+    rm -rf "$root/.carrel/journal"
     env CARREL_WRITING_DIR="$root" DISPLAY=:99 \
         CARREL_FAKE_DAEMON=1 CARREL_START_SCREEN="$start" CARREL_BATTERY="$battery" \
         "$@" ./target/release/carrel-shell >"$out/app-$name.log" 2>&1 &
@@ -135,12 +141,16 @@ CARREL_SHOT_GOAL=hairline shoot editor-night-hairline night true true editor ""
 # History with a preview.
 shoot history-paper paper true true history ""
 
-# Quotes palette: search results in both themes, then the two empty states.
-shoot quotes-paper paper true true quotes "" CARREL_QUOTE_QUERY=attention
-shoot quotes-paper-select paper true true quotes "" CARREL_QUOTE_QUERY=attention CARREL_QUOTE_SELECT=1
-shoot quotes-night night true true quotes "" CARREL_QUOTE_QUERY=attention
-shoot quotes-empty-paper paper true true quotes "" CARREL_FAKE_LIBRARY=empty
-shoot quotes-unavailable-paper paper true true quotes "" CARREL_FAKE_LIBRARY=unavailable
+# Quotes palette: typing `@` in the editor opens it at the caret. The shell
+# types the text itself (CARREL_SHOT_QUOTE_TEXT), in both themes, then the two
+# empty states.
+q=$'\n\nNothing in the library says it better: @attention'
+shoot quotes-paper paper true true editor "" CARREL_SHOT_QUOTE_TEXT="$q"
+shoot quotes-night night true true editor "" CARREL_SHOT_QUOTE_TEXT="$q"
+shoot quotes-bare-paper paper true true editor "" CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
+shoot quotes-empty-paper paper true true editor "" CARREL_FAKE_LIBRARY=empty CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
+shoot quotes-unavailable-paper paper true true editor "" CARREL_FAKE_LIBRARY=unavailable CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
+shoot quotes-nomatch-paper paper true true editor "" CARREL_SHOT_QUOTE_TEXT=$'\n\n@zzzqx'
 
 # Sync: the overview, then each pairing flow.
 shoot sync-paper paper true true sync ""

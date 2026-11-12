@@ -15,7 +15,7 @@ A free operating system that turns an old laptop into a quiet, distraction-free 
 <table>
   <tr>
     <td><img src="docs/images/editor-night.png" alt="The editor on the Night theme"></td>
-    <td><img src="docs/images/quotes.png" alt="The quotes palette, searching a library"></td>
+    <td><img src="docs/images/quotes.png" alt="Typing @ in the editor opens the quotes palette at the caret"></td>
     <td><img src="docs/images/sync.png" alt="The sync screen"></td>
   </tr>
 </table>

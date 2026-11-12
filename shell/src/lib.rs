@@ -13,10 +13,13 @@ pub mod files;
 pub mod first_run;
 pub mod focus;
 pub mod goal;
+#[cfg(test)]
+mod gtk_tests;
 pub mod history;
 pub mod locale;
 pub mod markdown;
 pub mod nav;
+pub mod quote_trigger;
 pub mod quotes;
 pub mod settings;
 pub mod settings_page;
