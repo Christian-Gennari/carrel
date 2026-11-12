@@ -108,7 +108,10 @@ fn the_shell_client_commits_and_reads_history_through_the_real_daemon() {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(committed, "stylosd never accepted Commit on the private bus");
+    assert!(
+        committed,
+        "stylosd never accepted Commit on the private bus"
+    );
 
     let versions = daemon.history("note.md").expect("History over D-Bus");
     assert_eq!(versions.len(), 1, "{versions:?}");
@@ -135,6 +138,10 @@ fn the_shell_client_commits_and_reads_history_through_the_real_daemon() {
     let info = daemon.sync_info().expect("SyncInfo property");
     assert_eq!(info.state, "idle");
     assert_eq!(info.last_sync, 0);
+    assert_eq!(
+        daemon.update_status().expect("UpdateStatus over D-Bus"),
+        "none"
+    );
 }
 
 /// Runs only in the child process started by the test above.

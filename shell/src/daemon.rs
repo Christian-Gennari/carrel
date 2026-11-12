@@ -33,6 +33,11 @@ pub const BUS_NAME: &str = "org.stylos.Daemon1";
 pub const OBJECT_PATH: &str = "/org/stylos/Daemon1";
 pub const INTERFACE: &str = "org.stylos.Daemon1";
 
+/// A signal listener shared between the daemon task and `subscribe`.
+type SharedListener = Arc<dyn Fn(DaemonEvent) + Send + Sync>;
+type OwnedListener = Box<dyn Fn(DaemonEvent) + Send + Sync + 'static>;
+type ListenerList = Mutex<Vec<SharedListener>>;
+
 /// Test hook shared with `stylosd`: connect to a private bus address.
 pub const BUS_ADDRESS_ENV: &str = "STYLOS_DBUS_ADDRESS";
 /// Test hook shared with `stylosd`: authenticate anonymously on a private bus.
@@ -380,7 +385,7 @@ impl Client {
 pub struct ZbusDaemon {
     _runtime: tokio::runtime::Runtime,
     connector: Connector,
-    listeners: Arc<Mutex<Vec<Arc<dyn Fn(DaemonEvent) + Send + Sync>>>>,
+    listeners: Arc<ListenerList>,
     subscribed: AtomicBool,
 }
 
@@ -412,10 +417,7 @@ impl Connector {
             .cloned()
     }
 
-    async fn proxy<'a>(
-        &self,
-        connection: &'a zbus::Connection,
-    ) -> zbus::Result<zbus::Proxy<'a>> {
+    async fn proxy<'a>(&self, connection: &'a zbus::Connection) -> zbus::Result<zbus::Proxy<'a>> {
         zbus::Proxy::new(connection, BUS_NAME, OBJECT_PATH, INTERFACE).await
     }
 }
@@ -518,10 +520,8 @@ impl DaemonClient for ZbusDaemon {
         self.block_on(async {
             let connection = self.connector.connection().await.map_err(map_zbus)?;
             let proxy = self.connector.proxy(&connection).await.map_err(map_zbus)?;
-            let (state, message, last_sync): (String, String, i64) = proxy
-                .get_property("SyncInfo")
-                .await
-                .map_err(map_zbus)?;
+            let (state, message, last_sync): (String, String, i64) =
+                proxy.get_property("SyncInfo").await.map_err(map_zbus)?;
             Ok(SyncInfo {
                 state,
                 message,
@@ -550,10 +550,7 @@ impl DaemonClient for ZbusDaemon {
         self.block_on(async {
             let connection = self.connector.connection().await.map_err(map_zbus)?;
             let proxy = self.connector.proxy(&connection).await.map_err(map_zbus)?;
-            let reply = proxy
-                .call_method("WifiScan", &())
-                .await
-                .map_err(map_zbus)?;
+            let reply = proxy.call_method("WifiScan", &()).await.map_err(map_zbus)?;
             reply.body().deserialize().map_err(map_zbus)
         })
     }
@@ -654,11 +651,19 @@ impl DaemonClient for ZbusDaemon {
         let connector = self.connector.clone();
         let listeners = Arc::clone(&self.listeners);
         connector.handle.clone().spawn(async move {
+            let mut reported = false;
             loop {
-                match run_signal_loop(&connector, &listeners).await {
-                    Ok(()) => tracing_warn("the daemon signal stream ended"),
-                    Err(error) => tracing_warn(&format!("daemon signals unavailable: {error}")),
+                let problem = match run_signal_loop(&connector, &listeners).await {
+                    Ok(()) => "the daemon signal stream ended".to_owned(),
+                    Err(error) => format!("daemon signals unavailable: {error}"),
+                };
+                if !reported {
+                    tracing_warn(&problem);
+                    reported = true;
                 }
+                // The daemon may start after the shell (or be restarted by
+                // systemd). Retrying quietly is cheap; the screens keep
+                // working with the last state they have.
                 tokio::time::sleep(std::time::Duration::from_secs(5)).await;
             }
         });
@@ -672,7 +677,7 @@ fn tracing_warn(message: &str) {
 /// Forward signals until the connection or the stream ends.
 async fn run_signal_loop(
     connector: &Connector,
-    listeners: &Mutex<Vec<Arc<dyn Fn(DaemonEvent) + Send + Sync>>>,
+    listeners: &ListenerList,
 ) -> Result<(), zbus::Error> {
     let connection = connector.connection().await?;
     let proxy = connector.proxy(&connection).await?;
@@ -683,8 +688,16 @@ async fn run_signal_loop(
             None => continue,
         };
         let event = match member.as_str() {
-            "BatteryChanged" => message.body().deserialize::<BatteryStatus>().ok().map(DaemonEvent::Battery),
-            "SyncStatus" => message.body().deserialize::<SyncInfo>().ok().map(DaemonEvent::Sync),
+            "BatteryChanged" => message
+                .body()
+                .deserialize::<BatteryStatus>()
+                .ok()
+                .map(DaemonEvent::Battery),
+            "SyncStatus" => message
+                .body()
+                .deserialize::<SyncInfo>()
+                .ok()
+                .map(DaemonEvent::Sync),
             "PairStatus" => message
                 .body()
                 .deserialize::<(String, String, String)>()
@@ -751,7 +764,7 @@ struct FakeState {
 /// variables so every state can be photographed.
 pub struct FakeDaemon {
     state: Mutex<FakeState>,
-    listeners: Mutex<Vec<Box<dyn Fn(DaemonEvent) + Send + Sync + 'static>>>,
+    listeners: Mutex<Vec<OwnedListener>>,
 }
 
 impl FakeDaemon {
@@ -993,7 +1006,10 @@ impl DaemonClient for FakeDaemon {
     }
 
     fn restore(&self, _path: &str, rev: &str) -> Result<String, DaemonError> {
-        let state = self.state.lock().map_err(|_| DaemonError::failed("fake lock"))?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| DaemonError::failed("fake lock"))?;
         if state.versions.iter().any(|version| version.rev == rev) {
             Ok(state.preview.clone())
         } else {
@@ -1135,12 +1151,9 @@ impl DaemonClient for FakeDaemon {
                 .exported
                 .push((selection.clone(), format.clone(), drive_id.clone()));
         }
-        let name = match format.as_str() {
-            "markdown" => "markdown",
-            "text" => "text",
-            other => other,
-        };
-        Ok(format!("/media/stylos/{drive_id}/Stylos export {folder}/ ({name})"))
+        Ok(format!(
+            "/media/stylos/{drive_id}/Stylos export {folder}/ ({format})"
+        ))
     }
 
     fn import(&self, drive_id: String, paths: Vec<String>) -> Result<Vec<String>, DaemonError> {
@@ -1207,7 +1220,10 @@ mod tests {
         let versions = fake.history("draft.md").unwrap();
         assert!(versions.len() >= 3);
         assert!(versions.windows(2).all(|pair| pair[0].time > pair[1].time));
-        assert!(fake.restore("draft.md", &versions[1].rev).unwrap().contains("sentence"));
+        assert!(fake
+            .restore("draft.md", &versions[1].rev)
+            .unwrap()
+            .contains("sentence"));
         assert!(fake.restore("draft.md", "nope").is_err());
     }
 
@@ -1257,6 +1273,31 @@ mod tests {
         assert_eq!(folder.len(), 10);
         assert_eq!(&folder[4..5], "-");
         assert_eq!(dated_folder(0), "1970-01-01");
+    }
+
+    #[test]
+    fn mirrored_types_have_the_daemons_dbus_signatures() {
+        use zbus::zvariant::Type;
+        assert_eq!(
+            <HistoryEntry as Type>::SIGNATURE,
+            <stylosd::history::HistoryEntry as Type>::SIGNATURE
+        );
+        assert_eq!(
+            <WifiNetwork as Type>::SIGNATURE,
+            <stylosd::network::WifiNetwork as Type>::SIGNATURE
+        );
+        assert_eq!(
+            <BatteryStatus as Type>::SIGNATURE,
+            <stylosd::power::BatteryStatus as Type>::SIGNATURE
+        );
+        assert_eq!(
+            <SyncInfo as Type>::SIGNATURE,
+            <stylosd::daemon::SyncInfo as Type>::SIGNATURE
+        );
+        assert_eq!(
+            <PairingInfo as Type>::SIGNATURE,
+            <stylosd::daemon::PairingInfo as Type>::SIGNATURE
+        );
     }
 
     #[test]
