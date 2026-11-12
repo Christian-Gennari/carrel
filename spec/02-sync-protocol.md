@@ -95,3 +95,17 @@ release URL during a sync session only.
 - Any network error ends the sync, blocks the radio again and shows one line
   on the Sync screen. No retries in the background.
 - Partial syncs are safe: every step is idempotent.
+
+### Google Cloud registration (done once, by the Stylos project)
+
+- GCP project `stylos-514500`, Drive API enabled, consent screen "Stylos"
+  (External), scope `drive.file`, OAuth client type "TVs and Limited Input
+  devices" named "Stylos device".
+- The client ID/secret are kept outside git, in
+  `~/.config/stylos/oauth.toml` on the build server. The image build copies
+  that file to `/usr/share/stylos/oauth.toml`.
+- Status: **Testing**. Only listed test users can connect, and Google expires
+  their refresh tokens after 7 days. Before a public release, publish the app
+  ("In production"): this needs a public home page and privacy policy URL on a
+  verified domain. `drive.file` is non-sensitive, so no Google review is
+  needed.
