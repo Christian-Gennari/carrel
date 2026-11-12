@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["protocol", "server", "stylosd"]
+members = ["protocol", "server", "stylosd", "shell"]
 
 [workspace.package]
 version = "0.1.0"

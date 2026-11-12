@@ -10,7 +10,7 @@ is committed on its branch. The orchestrator reviews and merges to `main`.
 - Verify and finish `dev/Dockerfile` + `dev/run.sh`.
 - `image/`: mkosi config for Debian 13 amd64 with non-free-firmware, systemd-boot
   UEFI + GRUB BIOS, Cage, a `writer` user, `stylos-session.service` running
-  `cage -s -- <client>`, masked getty, `HandleLidSwitch=suspend`, rfkill block
+  `cage -- <client>` (no `-s`), masked getty, `HandleLidSwitch=suspend`, rfkill block
   wifi at boot, NetworkManager installed, pandoc + typst installed.
 - Until `stylos-shell` exists, the session client is a placeholder
   (`/usr/local/bin/stylos-shell` shell script that runs `foot` is NOT allowed —
