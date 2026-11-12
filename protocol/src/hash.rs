@@ -102,9 +102,9 @@ mod tests {
 
     #[test]
     fn verify_is_case_insensitive() {
-        let hash = content_hash(b"stylos");
-        assert!(verify_content_hash(b"stylos", &hash));
-        assert!(verify_content_hash(b"stylos", &hash.to_uppercase()));
+        let hash = content_hash(b"carrel");
+        assert!(verify_content_hash(b"carrel", &hash));
+        assert!(verify_content_hash(b"carrel", &hash.to_uppercase()));
         assert!(!verify_content_hash(b"other", &hash));
     }
 

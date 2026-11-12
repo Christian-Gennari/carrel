@@ -1,10 +1,10 @@
 [package]
-name = "stylos-protocol"
+name = "carrel-protocol"
 version.workspace = true
 edition.workspace = true
 license = "MIT"
-description = "Types and helpers for the Stylos sync protocol v1"
-repository = "https://github.com/Christian-Gennari/stylos"
+description = "Types and helpers for the Carrel sync protocol v1"
+repository = "https://github.com/Christian-Gennari/carrel"
 
 [dependencies]
 serde.workspace = true

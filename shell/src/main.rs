@@ -1,4 +1,4 @@
-//! `stylos-shell`: the only application on a Stylos device.
+//! `carrel-shell`: the only application on a Carrel device.
 
 use gtk::prelude::*;
 
@@ -8,6 +8,6 @@ fn main() -> gtk::glib::ExitCode {
         // Kiosk session: exactly one instance, even without a session bus.
         .flags(gtk::gio::ApplicationFlags::NON_UNIQUE)
         .build();
-    application.connect_activate(stylos_shell::app::run);
+    application.connect_activate(carrel_shell::app::run);
     application.run()
 }

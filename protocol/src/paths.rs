@@ -6,7 +6,7 @@
 
 use crate::MAX_PATH_BYTES;
 
-/// Why a path is not acceptable to a Stylos server or client.
+/// Why a path is not acceptable to a Carrel server or client.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathError {
     Empty,
@@ -184,7 +184,7 @@ mod tests {
             ("dir/./note.md", PathError::CurrentDirectory),
             ("dir//note.md", PathError::EmptyComponent),
             ("dir/.hidden/note.md", PathError::HiddenComponent),
-            (".stylos/note.md", PathError::HiddenComponent),
+            (".carrel/note.md", PathError::HiddenComponent),
             ("dir\\note.md", PathError::ContainsBackslash),
             ("note.txt", PathError::NotMarkdown),
             ("note.md/", PathError::NotMarkdown),

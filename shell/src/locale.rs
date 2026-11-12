@@ -1,6 +1,6 @@
 //! The short lists the Settings and First run screens cycle through.
 //!
-//! Stylos supports a deliberately small set of languages, layouts and time
+//! Carrel supports a deliberately small set of languages, layouts and time
 //! zones: enough for the people the device is for, few enough that everything
 //! fits on one calm screen.
 

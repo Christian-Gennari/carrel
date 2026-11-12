@@ -2267,7 +2267,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f"
 
 [[package]]
-name = "stylos-export"
+name = "carrel-export"
 version = "0.1.0"
 dependencies = [
  "chrono",
@@ -2280,7 +2280,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "stylos-protocol"
+name = "carrel-protocol"
 version = "0.1.0"
 dependencies = [
  "serde",
@@ -2290,7 +2290,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "stylos-server"
+name = "carrel-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2305,7 +2305,7 @@ dependencies = [
  "rustls-pemfile",
  "serde",
  "serde_json",
- "stylos-protocol",
+ "carrel-protocol",
  "tempfile",
  "tokio",
  "tokio-rustls",
@@ -2315,7 +2315,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "stylos-shell"
+name = "carrel-shell"
 version = "0.1.0"
 dependencies = [
  "async-channel",
@@ -2325,15 +2325,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sourceview5",
- "stylos-protocol",
- "stylosd",
+ "carrel-protocol",
+ "carreld",
  "tempfile",
  "tokio",
  "zbus",
 ]
 
 [[package]]
-name = "stylosd"
+name = "carreld"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -2350,9 +2350,9 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "stylos-export",
- "stylos-protocol",
- "stylos-server",
+ "carrel-export",
+ "carrel-protocol",
+ "carrel-server",
  "tempfile",
  "thiserror",
  "tokio",

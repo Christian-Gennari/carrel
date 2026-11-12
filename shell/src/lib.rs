@@ -1,4 +1,4 @@
-//! Stylos shell library.
+//! Carrel shell library.
 //!
 //! `store` is pure Rust and has no GTK dependency; everything else is the
 //! GTK4 interface. The crash-writer test helper uses the store through this

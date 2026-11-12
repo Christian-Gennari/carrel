@@ -93,7 +93,7 @@ impl FilesPage {
         column.append(&hint);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        widget.add_css_class("stylos-page");
+        widget.add_css_class("carrel-page");
         widget.set_focusable(true);
         widget.append(&column);
 
@@ -459,7 +459,7 @@ impl FilesPage {
                         if let Some(old) = reopen {
                             let moved = moved_path(&old, &source, &target);
                             if let Err(error) = self.editor.open_rel(&moved) {
-                                eprintln!("stylos: cannot reopen {}: {error}", moved.display());
+                                eprintln!("carrel: cannot reopen {}: {error}", moved.display());
                             }
                         }
                     }
@@ -496,7 +496,7 @@ impl FilesPage {
         let dialog = gtk::AlertDialog::builder()
             .modal(true)
             .message(format!("Delete “{}”?", entry.name))
-            .detail("The file moves to Stylos trash inside .stylos. Nothing is erased.")
+            .detail("The file moves to Carrel trash inside .carrel. Nothing is erased.")
             .buttons(["Cancel", "Delete"])
             .cancel_button(0)
             .default_button(0)
@@ -517,7 +517,7 @@ impl FilesPage {
                     page.refresh();
                     if affected {
                         if let Err(error) = page.editor.open_last_or_new() {
-                            eprintln!("stylos: cannot open another file: {error}");
+                            eprintln!("carrel: cannot open another file: {error}");
                         }
                     }
                 }

@@ -2,7 +2,7 @@
 //!
 //! The data directory is the user's writing folder. A file with protocol path
 //! `notes/one.md` lives at `<data-dir>/notes/one.md`, so any computer can read
-//! it without Stylos. The index (`<data-dir>/.stylos/index.sqlite`) only holds
+//! it without Carrel. The index (`<data-dir>/.carrel/index.sqlite`) only holds
 //! sync metadata: file ids, revisions, hashes, tombstones and the change
 //! cursor. Everything else lives in the Markdown files.
 
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use stylos_protocol::{
+use carrel_protocol::{
     content_hash, new_pair_id, normalize_pairing_code, pairing_code_from_bytes, validate_path,
     ConflictInfo, FileContent, FileEntry, PairStatus, MAX_FILE_BYTES, PAIRING_TTL_SECONDS,
 };
@@ -130,7 +130,7 @@ impl Store {
     /// Open (or create) the index below `root`.
     pub fn open(root: impl AsRef<Path>) -> Result<Self> {
         let root = root.as_ref().to_path_buf();
-        let meta_dir = root.join(".stylos");
+        let meta_dir = root.join(".carrel");
         fs::create_dir_all(&meta_dir).with_context(|| format!("create {}", meta_dir.display()))?;
         let conn = Connection::open(meta_dir.join("index.sqlite"))
             .with_context(|| format!("open index in {}", meta_dir.display()))?;
@@ -579,10 +579,10 @@ fn remove_content(root: &Path, path: &str) -> Result<()> {
         Err(error) => return Err(error).context("remove file"),
     }
     // Remove directories that became empty, but never the root itself and
-    // never `.stylos`.
+    // never `.carrel`.
     let mut current = target.parent().map(Path::to_path_buf);
     while let Some(dir) = current {
-        if dir == root || dir == root.join(".stylos") {
+        if dir == root || dir == root.join(".carrel") {
             break;
         }
         match fs::remove_dir(&dir) {
@@ -598,7 +598,7 @@ pub fn random_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 24];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    stylos_protocol::hex_encode(&bytes)
+    carrel_protocol::hex_encode(&bytes)
 }
 
 /// Random 32-character hex CSRF token for the approval page.
@@ -606,13 +606,13 @@ pub fn random_csrf_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut bytes);
-    stylos_protocol::hex_encode(&bytes)
+    carrel_protocol::hex_encode(&bytes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stylos_protocol::new_file_id;
+    use carrel_protocol::new_file_id;
 
     fn temp_store() -> (tempfile::TempDir, Store) {
         let dir = tempfile::tempdir().unwrap();

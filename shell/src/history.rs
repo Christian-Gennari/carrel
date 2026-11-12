@@ -273,7 +273,7 @@ impl HistoryPage {
     fn set_versions(self: &Rc<Self>, versions: Vec<HistoryEntry>) {
         if versions.is_empty() {
             self.show_message(
-                "No versions yet. Stylos saves history after five quiet minutes.",
+                "No versions yet. Carrel saves history after five quiet minutes.",
                 false,
             );
             return;

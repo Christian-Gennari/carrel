@@ -1,4 +1,4 @@
-//! User settings stored at `<writing root>/.stylos/settings.json`.
+//! User settings stored at `<writing root>/.carrel/settings.json`.
 
 use std::fs;
 use std::io;
@@ -223,7 +223,7 @@ impl Settings {
 }
 
 pub fn settings_path(root: &Path) -> PathBuf {
-    root.join(".stylos").join("settings.json")
+    root.join(".carrel").join("settings.json")
 }
 
 #[cfg(test)]
@@ -250,7 +250,7 @@ mod tests {
     fn load_missing_or_broken_returns_defaults() {
         let dir = tempdir().unwrap();
         assert_eq!(Settings::load(dir.path()), Settings::default());
-        fs::create_dir_all(dir.path().join(".stylos")).unwrap();
+        fs::create_dir_all(dir.path().join(".carrel")).unwrap();
         fs::write(settings_path(dir.path()), b"{not json").unwrap();
         assert_eq!(Settings::load(dir.path()), Settings::default());
     }
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn roundtrips_and_clamps_font_size() {
         let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join(".stylos")).unwrap();
+        fs::create_dir_all(dir.path().join(".carrel")).unwrap();
         fs::write(
             settings_path(dir.path()),
             br#"{"theme":"night","font":"mono","font_size":99,"daily_goal":0}"#,
@@ -294,7 +294,7 @@ mod tests {
     #[test]
     fn focus_mode_and_goal_display_persist() {
         let dir = tempdir().unwrap();
-        fs::create_dir_all(dir.path().join(".stylos")).unwrap();
+        fs::create_dir_all(dir.path().join(".carrel")).unwrap();
         let mut settings = Settings {
             focus_mode: true,
             goal_display: GoalDisplay::Hairline,

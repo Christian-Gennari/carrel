@@ -1,5 +1,5 @@
 #![forbid(unsafe_code)]
-//! Export and import of Stylos writing.
+//! Export and import of Carrel writing.
 //!
 //! This crate is GTK-free and network-free: it only touches the writing root,
 //! a destination directory (a mounted USB drive in the daemon) and the local

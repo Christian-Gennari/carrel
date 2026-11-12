@@ -13,7 +13,7 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use base64::Engine;
 use serde::Deserialize;
-use stylos_protocol::{
+use carrel_protocol::{
     endpoints, now_unix, validate_path, ConflictResponse, DeleteResponse, ErrorResponse, FileList,
     PairStartRequest, PairStartResponse, PairStatus, PairStatusResponse, PutFileRequest,
     PutFileResponse,
@@ -170,7 +170,7 @@ impl IntoResponse for ApiError {
 async fn health(State(state): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
         "status": "ok",
-        "protocol": stylos_protocol::PROTOCOL_VERSION,
+        "protocol": carrel_protocol::PROTOCOL_VERSION,
         "name": state.label(),
     }))
 }
@@ -269,7 +269,7 @@ async fn get_file(
     State(state): State<AppState>,
     headers: HeaderMap,
     Path(file_id): Path<Uuid>,
-) -> Result<Json<stylos_protocol::FileContent>, ApiError> {
+) -> Result<Json<carrel_protocol::FileContent>, ApiError> {
     require_bearer(&state, &headers)?;
     let content = state
         .store()
@@ -504,7 +504,7 @@ fn basic_unauthorized() -> Response {
         ApiError::new(StatusCode::UNAUTHORIZED, "admin password required").into_response();
     response.headers_mut().insert(
         header::WWW_AUTHENTICATE,
-        HeaderValue::from_static("Basic realm=\"Stylos server\", charset=\"UTF-8\""),
+        HeaderValue::from_static("Basic realm=\"Carrel server\", charset=\"UTF-8\""),
     );
     response
 }

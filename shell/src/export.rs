@@ -344,7 +344,7 @@ impl ExportState {
                 } else if self.what == Some(What::Import) {
                     "Copies .md and .txt into Writing/Imported/.".to_owned()
                 } else if self.what == Some(What::Everything) {
-                    format!("Everything goes into “Stylos export {dated_folder}/”.")
+                    format!("Everything goes into “Carrel export {dated_folder}/”.")
                 } else {
                     "The drive is unmounted and powered off when the export finishes.".to_owned()
                 }
@@ -729,7 +729,7 @@ mod tests {
     fn drive() -> Drive {
         Drive {
             id: "usb-1".into(),
-            label: "STYLOS USB".into(),
+            label: "CARREL USB".into(),
             free_bytes: 12_400_000_000,
         }
     }
@@ -796,7 +796,7 @@ mod tests {
         assert_eq!(request.selection, vec!["all"]);
         assert!(state
             .note("2026-11-12")
-            .contains("Stylos export 2026-11-12/"));
+            .contains("Carrel export 2026-11-12/"));
     }
 
     #[test]
@@ -847,13 +847,13 @@ mod tests {
     #[test]
     fn a_finished_export_shows_the_path_and_safe_to_remove() {
         let mut state = state_with_file();
-        state.on_exported("/media/usb/Stylos export 2026-11-12/".into());
+        state.on_exported("/media/usb/Carrel export 2026-11-12/".into());
         assert_eq!(state.step, ExportStep::Done);
         assert_eq!(state.done_heading(), Some("Safe to remove"));
         assert!(state
             .outcome_detail()
             .unwrap()
-            .contains("Stylos export 2026-11-12"));
+            .contains("Carrel export 2026-11-12"));
     }
 
     #[test]
@@ -872,7 +872,7 @@ mod tests {
         let path = fake
             .export(vec!["all".into()], "epub".into(), "usb-1".into())
             .unwrap();
-        assert!(path.contains("Stylos export"));
+        assert!(path.contains("Carrel export"));
         assert_eq!(
             fake.exported(),
             vec![(vec!["all".into()], "epub".into(), "usb-1".into())]

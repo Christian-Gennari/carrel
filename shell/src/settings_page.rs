@@ -271,14 +271,14 @@ impl SettingsState {
             SettingRow::Language => settings.language.clone(),
             SettingRow::TimeZone => settings.time_zone.clone(),
             SettingRow::Update => self.update.label(),
-            SettingRow::About => format!("Stylos {}", env!("CARGO_PKG_VERSION")),
+            SettingRow::About => format!("Carrel {}", env!("CARGO_PKG_VERSION")),
         }
     }
 
     /// The line under the list; it explains the selected row in one sentence.
     pub fn hint_for(&self, settings: &Settings) -> String {
         if self.about {
-            return "Stylos is free software, GPL-3.0-or-later. No account is needed to write."
+            return "Carrel is free software, GPL-3.0-or-later. No account is needed to write."
                 .to_owned();
         }
         match self.row() {
@@ -310,7 +310,7 @@ impl SettingsState {
                 "Press Enter to install the update.".to_owned()
             }
             SettingRow::Update => "Updates arrive only during a sync session.".to_owned(),
-            SettingRow::About => "Stylos 0.1.0, a writing device.".to_owned(),
+            SettingRow::About => "Carrel 0.1.0, a writing device.".to_owned(),
         }
     }
 }
@@ -369,7 +369,7 @@ impl SettingsPage {
         // Screenshot hook (dev/screenshot.sh): start with a later row selected,
         // as if the writer had pressed Down that many times.
         let mut initial = SettingsState::default();
-        if let Some(index) = std::env::var("STYLOS_SETTINGS_SELECT")
+        if let Some(index) = std::env::var("CARREL_SETTINGS_SELECT")
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
         {
@@ -479,7 +479,7 @@ impl SettingsPage {
         };
         if changed {
             if let Err(error) = self.settings.borrow().save(&self.root) {
-                eprintln!("stylos: could not save settings: {error}");
+                eprintln!("carrel: could not save settings: {error}");
             }
             (self.on_change)();
         }
@@ -498,7 +498,7 @@ impl SettingsPage {
                     };
                     if changed {
                         if let Err(error) = self.settings.borrow().save(&self.root) {
-                            eprintln!("stylos: could not save settings: {error}");
+                            eprintln!("carrel: could not save settings: {error}");
                         }
                         (self.on_change)();
                     }

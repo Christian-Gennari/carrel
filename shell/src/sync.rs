@@ -96,7 +96,7 @@ impl SyncState {
     pub fn submit_server_url(&mut self, url: &str) -> Result<SyncEffect, String> {
         let url = url.trim();
         if url.is_empty() {
-            return Err("Type the address of your Stylos server.".to_owned());
+            return Err("Type the address of your Carrel server.".to_owned());
         }
         if !(url.starts_with("https://") || url.starts_with("http://")) {
             return Err("The address must start with https:// or http://.".to_owned());
@@ -218,7 +218,7 @@ impl SyncPage {
         }
         let overview = ui::scroller(&list);
 
-        let url_title = gtk::Label::new(Some("Address of your Stylos server"));
+        let url_title = gtk::Label::new(Some("Address of your Carrel server"));
         url_title.set_xalign(0.0);
         url_title.add_css_class("section-title");
         let url_entry = gtk::Entry::new();

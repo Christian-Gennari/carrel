@@ -1,4 +1,4 @@
-//! `stylos-server`: a self-hosted Stylos sync server.
+//! `carrel-server`: a self-hosted Carrel sync server.
 //!
 //! - Files are plain Markdown below the data directory; the SQLite index only
 //!   stores revisions, hashes, tombstones and the cursor.
@@ -6,7 +6,7 @@
 //!   admin password.
 //! - TLS is self-signed, generated on first run; the certificate fingerprint is
 //!   returned during pairing so devices can pin it.
-//! - The service is announced on the LAN with mDNS (`_stylos._tcp`).
+//! - The service is announced on the LAN with mDNS (`_carrel._tcp`).
 
 pub mod api;
 pub mod approve;
@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use mdns_sd::{ServiceDaemon, ServiceInfo};
-use stylos_protocol::{MAX_FILE_BYTES, MDNS_SERVICE_TYPE};
+use carrel_protocol::{MAX_FILE_BYTES, MDNS_SERVICE_TYPE};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -39,7 +39,7 @@ pub struct Config {
     pub data_dir: PathBuf,
     pub listen: SocketAddr,
     /// Password for the `/approve` page. When `None`, the password is read
-    /// from `<data_dir>/.stylos/admin-password`, or generated and stored there.
+    /// from `<data_dir>/.carrel/admin-password`, or generated and stored there.
     pub admin_password: Option<String>,
     /// Human name announced over mDNS and used in conflict-copy names.
     pub label: Option<String>,
@@ -121,7 +121,7 @@ impl Drop for RunningServer {
 pub async fn start(config: Config) -> Result<RunningServer> {
     fs::create_dir_all(&config.data_dir)
         .with_context(|| format!("create data directory {}", config.data_dir.display()))?;
-    let meta_dir = config.data_dir.join(".stylos");
+    let meta_dir = config.data_dir.join(".carrel");
     fs::create_dir_all(&meta_dir)?;
     fs::set_permissions(&meta_dir, fs::Permissions::from_mode(0o700)).ok();
 
@@ -175,7 +175,7 @@ pub async fn start(config: Config) -> Result<RunningServer> {
         }
     });
 
-    tracing::info!(%addr, cert = %cert_sha256, "stylos-server listening");
+    tracing::info!(%addr, cert = %cert_sha256, "carrel-server listening");
     Ok(RunningServer {
         addr,
         cert_sha256,
@@ -193,7 +193,7 @@ fn register_mdns(label: &str, port: u16) -> Result<ServiceDaemon> {
     let properties = HashMap::from([
         (
             "v".to_string(),
-            stylos_protocol::PROTOCOL_VERSION.to_string(),
+            carrel_protocol::PROTOCOL_VERSION.to_string(),
         ),
         ("name".to_string(), label.to_string()),
     ]);
@@ -205,7 +205,7 @@ fn register_mdns(label: &str, port: u16) -> Result<ServiceDaemon> {
 }
 
 fn default_label() -> String {
-    if let Ok(label) = std::env::var("STYLOS_LABEL") {
+    if let Ok(label) = std::env::var("CARREL_LABEL") {
         let label = label.trim();
         if !label.is_empty() {
             return label.to_string();
@@ -226,7 +226,7 @@ fn default_label() -> String {
             return name.trim_end_matches(".local").to_string();
         }
     }
-    "stylos-server".to_string()
+    "carrel-server".to_string()
 }
 
 fn resolve_admin_password(data_dir: &Path, provided: Option<&str>) -> Result<String> {
@@ -236,7 +236,7 @@ fn resolve_admin_password(data_dir: &Path, provided: Option<&str>) -> Result<Str
             return Ok(password.to_string());
         }
     }
-    let path = data_dir.join(".stylos").join("admin-password");
+    let path = data_dir.join(".carrel").join("admin-password");
     if let Ok(existing) = fs::read_to_string(&path) {
         let existing = existing.trim();
         if !existing.is_empty() {
@@ -273,7 +273,7 @@ mod tests {
     #[test]
     fn admin_password_is_generated_once() {
         let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join(".stylos")).unwrap();
+        fs::create_dir_all(dir.path().join(".carrel")).unwrap();
         let first = resolve_admin_password(dir.path(), None).unwrap();
         let second = resolve_admin_password(dir.path(), None).unwrap();
         assert_eq!(first, second);

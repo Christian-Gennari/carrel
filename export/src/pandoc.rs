@@ -43,7 +43,7 @@ struct CitationMeta<'a> {
 impl Pandoc {
     pub(crate) fn new() -> Result<Self> {
         let directory = tempfile::Builder::new()
-            .prefix("stylos-export-")
+            .prefix("carrel-export-")
             .tempdir()
             .map_err(|error| Error::io(std::env::temp_dir(), error))?;
         let filter = directory.path().join("citations.lua");

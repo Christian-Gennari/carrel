@@ -1,35 +1,35 @@
-# stylos-server
+# carrel-server
 
-A self-hosted sync server for Stylos. One static binary (plus a small Docker
-image) that implements [Stylos Sync Protocol v1](../spec/02-sync-protocol.md).
+A self-hosted sync server for Carrel. One static binary (plus a small Docker
+image) that implements [Carrel Sync Protocol v1](../spec/02-sync-protocol.md).
 
 - Files are plain Markdown in a normal folder. The path in the protocol is the
-  path on disk, so any computer can read them without Stylos.
-- A SQLite index at `<data-dir>/.stylos/index.sqlite` stores file ids,
+  path on disk, so any computer can read them without Carrel.
+- A SQLite index at `<data-dir>/.carrel/index.sqlite` stores file ids,
   revisions, hashes, tombstones and the change cursor.
 - TLS uses a self-signed certificate generated on first run. Its SHA-256
   fingerprint is returned during pairing, and devices pin it.
 - Pairing is approved on a minimal HTML page at `/approve`, protected by an
   admin password. No JavaScript, no accounts, no cookies.
-- The server announces `_stylos._tcp` over mDNS with `v=1` and
+- The server announces `_carrel._tcp` over mDNS with `v=1` and
   `name=<label>`.
 
 ## Run
 
 ```sh
-cargo run -p stylos-server -- --data-dir /srv/stylos --listen 0.0.0.0:8443
+cargo run -p carrel-server -- --data-dir /srv/carrel --listen 0.0.0.0:8443
 ```
 
 On first run it prints the admin password and certificate fingerprint, and
-stores them under `<data-dir>/.stylos/`. Alternatively set them explicitly:
+stores them under `<data-dir>/.carrel/`. Alternatively set them explicitly:
 
 | Flag | Environment | Default |
 |---|---|---|
-| `--data-dir` | `STYLOS_DATA_DIR` | `/data` |
-| `--listen` | `STYLOS_LISTEN` | `0.0.0.0:8443` |
-| `--admin-password` | `STYLOS_ADMIN_PASSWORD` | generated, stored |
-| `--label` | `STYLOS_LABEL` | host name |
-| `--no-mdns` | `STYLOS_NO_MDNS` | announce |
+| `--data-dir` | `CARREL_DATA_DIR` | `/data` |
+| `--listen` | `CARREL_LISTEN` | `0.0.0.0:8443` |
+| `--admin-password` | `CARREL_ADMIN_PASSWORD` | generated, stored |
+| `--label` | `CARREL_LABEL` | host name |
+| `--no-mdns` | `CARREL_NO_MDNS` | announce |
 
 Then open `https://<server>:8443/approve` from a phone or computer on the same
 network. The device shows a code such as `K7Q-4MZ`; approve it there.
@@ -37,15 +37,15 @@ network. The device shows a code such as `K7Q-4MZ`; approve it there.
 ## Docker
 
 Build from the repository root (the workspace needs `protocol/` and
-`stylosd/` too):
+`carreld/` too):
 
 ```sh
-docker build -f server/Dockerfile -t stylos-server .
-docker run -d --name stylos-server \
+docker build -f server/Dockerfile -t carrel-server .
+docker run -d --name carrel-server \
   -p 8443:8443 \
-  -v stylos-data:/data \
-  stylos-server
-docker logs stylos-server   # first-run password and fingerprint
+  -v carrel-data:/data \
+  carrel-server
+docker logs carrel-server   # first-run password and fingerprint
 ```
 
 The container runs as uid 1000. If you bind-mount a host directory instead of a
@@ -59,5 +59,5 @@ named volume, make sure uid 1000 can write to it.
   Use a long password if the server is reachable beyond your LAN.
 - Pairing codes expire after ten minutes. Bearer tokens do not expire; unpair
   support arrives with the daemon's D-Bus API in a later work package.
-- Hidden path components (`.stylos`, dotfiles) are rejected so the sync
+- Hidden path components (`.carrel`, dotfiles) are rejected so the sync
   protocol can never write into the server's own metadata directory.

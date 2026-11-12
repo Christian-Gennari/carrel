@@ -7,7 +7,7 @@ use gtk::{glib, pango};
 /// The page itself: fills the window, carries the theme background.
 pub fn page() -> gtk::Box {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    page.add_css_class("stylos-page");
+    page.add_css_class("carrel-page");
     page.set_focusable(true);
     page
 }

@@ -1,10 +1,10 @@
 [package]
-name = "stylos-export"
+name = "carrel-export"
 version.workspace = true
 edition.workspace = true
 license = "GPL-3.0-or-later"
-description = "Export and import Stylos writing: Markdown, text, pandoc formats and USB drives"
-repository = "https://github.com/Christian-Gennari/stylos"
+description = "Export and import Carrel writing: Markdown, text, pandoc formats and USB drives"
+repository = "https://github.com/Christian-Gennari/carrel"
 
 [dependencies]
 chrono.workspace = true

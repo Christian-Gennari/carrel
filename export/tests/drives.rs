@@ -1,6 +1,6 @@
 use std::fs;
 
-use stylos_export::{export, DriveCall, DriveInfo, Drives, FakeDrives, Format, Selection};
+use carrel_export::{export, DriveCall, DriveInfo, Drives, FakeDrives, Format, Selection};
 
 #[test]
 fn fake_drive_mounts_only_on_request_and_exports_to_it() {
@@ -14,7 +14,7 @@ fn fake_drive_mounts_only_on_request_and_exports_to_it() {
         directory.path().join("media"),
         vec![DriveInfo {
             id: id.clone(),
-            name: "STYLOS USB".into(),
+            name: "CARREL USB".into(),
             size: 16_000_000_000,
             mount_points: Vec::new(),
         }],
@@ -23,7 +23,7 @@ fn fake_drive_mounts_only_on_request_and_exports_to_it() {
     // Listing shows the drive but must not mount it.
     let drives = fake.list().unwrap();
     assert_eq!(drives.len(), 1);
-    assert_eq!(drives[0].name, "STYLOS USB");
+    assert_eq!(drives[0].name, "CARREL USB");
     assert!(!drives[0].is_mounted());
     assert_eq!(fake.calls(), vec![DriveCall::List]);
     assert!(!directory.path().join("media").exists());

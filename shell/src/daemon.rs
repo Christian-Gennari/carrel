@@ -1,9 +1,9 @@
-//! The daemon boundary: every screen talks to `stylosd` through this module.
+//! The daemon boundary: every screen talks to `carreld` through this module.
 //!
 //! Rule 2: the shell never touches the network. Commits, sync, pairing, Wi-Fi,
 //! battery, updates and export all go through `page.nostos.Carrel.Daemon1` on the
 //! system bus. [`DaemonClient`] mirrors that interface method for method; the
-//! types are copied field for field from `stylosd/src/{history,network,power,
+//! types are copied field for field from `carreld/src/{history,network,power,
 //! daemon}.rs` so the D-Bus struct signatures match (the shell does not depend
 //! on the daemon crate in production).
 //!
@@ -12,7 +12,7 @@
 //! * [`ZbusDaemon`] calls the real service. Its methods block, so [`Client`]
 //!   runs them on a worker thread; the GTK main loop only ever sees a callback.
 //! * [`FakeDaemon`] is an in-memory daemon for tests and for the screenshots
-//!   (`STYLOS_FAKE_DAEMON=1`). It has the same data shapes, so a state machine
+//!   (`CARREL_FAKE_DAEMON=1`). It has the same data shapes, so a state machine
 //!   tested against it behaves the same against the real service.
 //!
 //! Signals arrive through [`DaemonClient::subscribe`]. A listener runs on the
@@ -38,16 +38,16 @@ type SharedListener = Arc<dyn Fn(DaemonEvent) + Send + Sync>;
 type OwnedListener = Box<dyn Fn(DaemonEvent) + Send + Sync + 'static>;
 type ListenerList = Mutex<Vec<SharedListener>>;
 
-/// Test hook shared with `stylosd`: connect to a private bus address.
-pub const BUS_ADDRESS_ENV: &str = "STYLOS_DBUS_ADDRESS";
-/// Test hook shared with `stylosd`: authenticate anonymously on a private bus.
-pub const BUS_ANONYMOUS_ENV: &str = "STYLOS_DBUS_ANONYMOUS";
+/// Test hook shared with `carreld`: connect to a private bus address.
+pub const BUS_ADDRESS_ENV: &str = "CARREL_DBUS_ADDRESS";
+/// Test hook shared with `carreld`: authenticate anonymously on a private bus.
+pub const BUS_ANONYMOUS_ENV: &str = "CARREL_DBUS_ANONYMOUS";
 
 // ---------------------------------------------------------------------------
-// Types mirrored from stylosd. Field order is the D-Bus struct signature.
+// Types mirrored from carreld. Field order is the D-Bus struct signature.
 // ---------------------------------------------------------------------------
 
-/// One restorable version of a file (`stylosd::history::HistoryEntry`).
+/// One restorable version of a file (`carreld::history::HistoryEntry`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
 pub struct HistoryEntry {
     /// Git commit id (hex).
@@ -60,7 +60,7 @@ pub struct HistoryEntry {
     pub delta: i64,
 }
 
-/// One access point as the Wi-Fi screen shows it (`stylosd::network::WifiNetwork`).
+/// One access point as the Wi-Fi screen shows it (`carreld::network::WifiNetwork`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
 pub struct WifiNetwork {
     pub ssid: String,
@@ -71,7 +71,7 @@ pub struct WifiNetwork {
     pub connected: bool,
 }
 
-/// The battery as the bottom line shows it (`stylosd::power::BatteryStatus`).
+/// The battery as the bottom line shows it (`carreld::power::BatteryStatus`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
 pub struct BatteryStatus {
     /// False on a desktop without a battery.
@@ -90,7 +90,7 @@ impl BatteryStatus {
     };
 }
 
-/// What the Sync screen shows (`stylosd::daemon::SyncInfo`).
+/// What the Sync screen shows (`carreld::daemon::SyncInfo`).
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
 pub struct SyncInfo {
     /// `"idle"`, `"syncing"` or `"error"`.
@@ -111,7 +111,7 @@ pub struct PairingInfo {
     pub expires_at: i64,
 }
 
-/// One ranked hit from the Quotes library (`stylosd::library::LibraryHit`).
+/// One ranked hit from the Quotes library (`carreld::library::LibraryHit`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
 pub struct LibraryHit {
     pub id: String,
@@ -136,7 +136,7 @@ impl LibraryHit {
     }
 }
 
-/// One book in the filter list (`stylosd::library::LibraryBookOption`).
+/// One book in the filter list (`carreld::library::LibraryBookOption`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
 pub struct LibraryBookOption {
     pub id: String,
@@ -208,9 +208,9 @@ pub enum DaemonErrorKind {
     Failed,
     /// The daemon does not implement this yet (stubs name their work package).
     Unsupported,
-    /// The network needs a login page; Stylos cannot show one.
+    /// The network needs a login page; Carrel cannot show one.
     CaptivePortal,
-    /// `stylosd` is not running or the bus is unreachable.
+    /// `carreld` is not running or the bus is unreachable.
     Unavailable,
 }
 
@@ -388,7 +388,7 @@ impl Client {
         let (sender, receiver) = async_channel::bounded(1);
         let inner = Arc::clone(&self.inner);
         let spawned = std::thread::Builder::new()
-            .name("stylos-daemon-call".to_owned())
+            .name("carrel-daemon-call".to_owned())
             .spawn(move || {
                 let result = work(inner);
                 let _ = sender.send_blocking(result);
@@ -483,7 +483,7 @@ impl ZbusDaemon {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
-            .thread_name("stylos-zbus")
+            .thread_name("carrel-zbus")
             .build()
             .expect("build the zbus runtime");
         let connector = Connector {
@@ -728,7 +728,7 @@ impl DaemonClient for ZbusDaemon {
 }
 
 fn tracing_warn(message: &str) {
-    eprintln!("stylos: {message}");
+    eprintln!("carrel: {message}");
 }
 
 /// Forward signals until the connection or the stream ends.
@@ -788,7 +788,7 @@ fn map_zbus(error: impl fmt::Display) -> DaemonError {
         || message.contains("Connection refused")
         || message.contains("does not exist")
     {
-        DaemonError::unavailable(format!("stylosd is not running. {message}"))
+        DaemonError::unavailable(format!("carreld is not running. {message}"))
     } else {
         DaemonError::failed(message)
     }
@@ -912,7 +912,7 @@ impl FakeDaemon {
                 ],
                 drives: vec![Drive {
                     id: "usb-1".into(),
-                    label: "STYLOS USB".into(),
+                    label: "CARREL USB".into(),
                     free_bytes: 12_400_000_000,
                 }],
                 update: "ready:0.2.0".into(),
@@ -930,11 +930,11 @@ impl FakeDaemon {
     }
 
     /// The screenshot daemon: same data, adjusted by environment variables.
-    /// `STYLOS_BATTERY=10` or `STYLOS_BATTERY=18,charging` changes the battery;
-    /// `STYLOS_FAKE_NO_DRIVE=1` removes the USB stick.
+    /// `CARREL_BATTERY=10` or `CARREL_BATTERY=18,charging` changes the battery;
+    /// `CARREL_FAKE_NO_DRIVE=1` removes the USB stick.
     pub fn demo() -> Self {
         let fake = Self::new();
-        if let Ok(value) = std::env::var("STYLOS_BATTERY") {
+        if let Ok(value) = std::env::var("CARREL_BATTERY") {
             let (percent, charging) = value.split_once(',').unwrap_or((&value, ""));
             if let Ok(percent) = percent.trim().parse::<u8>() {
                 fake.set_battery(BatteryStatus {
@@ -944,12 +944,12 @@ impl FakeDaemon {
                 });
             }
         }
-        if std::env::var_os("STYLOS_FAKE_NO_DRIVE").is_some() {
+        if std::env::var_os("CARREL_FAKE_NO_DRIVE").is_some() {
             if let Ok(mut state) = fake.state.lock() {
                 state.drives.clear();
             }
         }
-        if std::env::var_os("STYLOS_FAKE_UNPAIRED").is_some() {
+        if std::env::var_os("CARREL_FAKE_UNPAIRED").is_some() {
             if let Ok(mut state) = fake.state.lock() {
                 state.sync = SyncInfo {
                     state: "idle".into(),
@@ -958,7 +958,7 @@ impl FakeDaemon {
                 };
             }
         }
-        match std::env::var("STYLOS_FAKE_LIBRARY").as_deref() {
+        match std::env::var("CARREL_FAKE_LIBRARY").as_deref() {
             Ok("unavailable") => fake.set_library_unavailable(true),
             Ok("empty") => fake.set_quotes(Vec::new()),
             _ => {}
@@ -1052,7 +1052,7 @@ impl FakeDaemon {
             .unwrap_or_default()
     }
 
-    /// Deliver a signal to every listener, as `stylosd` would.
+    /// Deliver a signal to every listener, as `carreld` would.
     pub fn emit(&self, event: DaemonEvent) {
         if let Ok(listeners) = self.listeners.lock() {
             for listener in listeners.iter() {
@@ -1245,7 +1245,7 @@ impl DaemonClient for FakeDaemon {
                 .push((selection.clone(), format.clone(), drive_id.clone()));
         }
         Ok(format!(
-            "/media/stylos/{drive_id}/Stylos export {folder}/ ({format})"
+            "/media/carrel/{drive_id}/Carrel export {folder}/ ({format})"
         ))
     }
 
@@ -1505,7 +1505,7 @@ pub fn dated_folder(unix: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
-/// Howard Hinnant's civil calendar conversion, valid for every date Stylos
+/// Howard Hinnant's civil calendar conversion, valid for every date Carrel
 /// will ever see.
 fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
@@ -1590,31 +1590,31 @@ mod tests {
         use zbus::zvariant::Type;
         assert_eq!(
             <HistoryEntry as Type>::SIGNATURE,
-            <stylosd::history::HistoryEntry as Type>::SIGNATURE
+            <carreld::history::HistoryEntry as Type>::SIGNATURE
         );
         assert_eq!(
             <WifiNetwork as Type>::SIGNATURE,
-            <stylosd::network::WifiNetwork as Type>::SIGNATURE
+            <carreld::network::WifiNetwork as Type>::SIGNATURE
         );
         assert_eq!(
             <BatteryStatus as Type>::SIGNATURE,
-            <stylosd::power::BatteryStatus as Type>::SIGNATURE
+            <carreld::power::BatteryStatus as Type>::SIGNATURE
         );
         assert_eq!(
             <SyncInfo as Type>::SIGNATURE,
-            <stylosd::daemon::SyncInfo as Type>::SIGNATURE
+            <carreld::daemon::SyncInfo as Type>::SIGNATURE
         );
         assert_eq!(
             <PairingInfo as Type>::SIGNATURE,
-            <stylosd::daemon::PairingInfo as Type>::SIGNATURE
+            <carreld::daemon::PairingInfo as Type>::SIGNATURE
         );
         assert_eq!(
             <LibraryHit as Type>::SIGNATURE,
-            <stylosd::library::LibraryHit as Type>::SIGNATURE
+            <carreld::library::LibraryHit as Type>::SIGNATURE
         );
         assert_eq!(
             <LibraryFilterOptions as Type>::SIGNATURE,
-            <stylosd::library::LibraryFilterOptions as Type>::SIGNATURE
+            <carreld::library::LibraryFilterOptions as Type>::SIGNATURE
         );
     }
 
@@ -1648,10 +1648,10 @@ mod tests {
 
     #[test]
     fn the_demo_battery_can_be_forced_for_screenshots() {
-        std::env::set_var("STYLOS_BATTERY", "10");
+        std::env::set_var("CARREL_BATTERY", "10");
         let fake = FakeDaemon::demo();
         assert_eq!(fake.battery().unwrap().percent, 10);
         assert!(!fake.battery().unwrap().charging);
-        std::env::remove_var("STYLOS_BATTERY");
+        std::env::remove_var("CARREL_BATTERY");
     }
 }

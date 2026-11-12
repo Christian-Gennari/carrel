@@ -1,8 +1,8 @@
--- stylos-export citation filter.
+-- carrel-export citation filter.
 --
 -- Replaces links whose target starts with `nostos:cite/` with a footnote.
 -- The footnote text comes from `doc.meta.citations`, a map written by
--- stylos-export and passed with --metadata-file:
+-- carrel-export and passed with --metadata-file:
 --
 --   {"citations": {"<id>": {"markdown": "Author, Book, p. 12", "url": "..."}}}
 --

@@ -1,7 +1,7 @@
 //! Test helper: type at the end of a document through the real store until it
 //! is killed. `tests/crash.rs` spawns this process and sends SIGKILL.
 //!
-//! Usage: stylos-crash-writer <writing-root> <ack-file> <seed>
+//! Usage: carrel-crash-writer <writing-root> <ack-file> <seed>
 //!
 //! Each acknowledgement line is `<character length>\t<unix millis>`. The
 //! character stream is deterministic from the absolute index, so the parent
@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use stylos_shell::store::Store;
+use carrel_shell::store::Store;
 
 const ALPHABET: &[char] = &[
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
@@ -38,7 +38,7 @@ fn now_ms() -> u64 {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() != 4 {
-        eprintln!("usage: stylos-crash-writer <writing-root> <ack-file> <seed>");
+        eprintln!("usage: carrel-crash-writer <writing-root> <ack-file> <seed>");
         std::process::exit(2);
     }
     let root = PathBuf::from(&args[1]);
