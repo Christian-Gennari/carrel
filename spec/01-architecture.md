@@ -43,9 +43,9 @@
 ## Session
 
 - `getty@tty1` is masked. A systemd service `stylos-session.service` runs
-  `cage -s -- stylos-shell` as user `writer` on seat0 (via `systemd --user`
+  `cage -- stylos-shell` as user `writer` on seat0 (via `systemd --user`
   lingering or a PAM-less `User=` service with `PAMName=login`).
-- VT switching disabled (`cage -s` disables it; also `kernel.sysrq=0`).
+- VT switching disabled (run `cage` WITHOUT `-s`, which would allow it; also `kernel.sysrq=0`).
 - If `stylos-shell` exits, systemd restarts it at once.
 - `HandleLidSwitch=suspend`. `stylos-shell` holds a logind delay inhibitor and
   flushes the journal and file on `PrepareForSleep(true)`.
