@@ -387,6 +387,15 @@ impl SyncPage {
         }
     }
 
+    /// Pair with an explicit URL. The self-hosted flow normally asks for the
+    /// address first; the screenshot script uses this to show the code step.
+    pub fn open_pairing_url(self: &Rc<Self>, backend: Backend, url: &str) {
+        self.nav.show("sync");
+        self.state.borrow_mut().begin_pairing(backend);
+        self.refresh();
+        self.start_pair(backend, url.to_owned());
+    }
+
     /// `Ctrl+Shift+S`: show the screen and start a sync now.
     pub fn sync_now(self: &Rc<Self>) {
         self.nav.show("sync");
@@ -660,62 +669,48 @@ fn action_label(action: SyncAction) -> &'static str {
 }
 
 /// A QR as a GDK texture: dark modules on warm white, with the four-module
-/// quiet zone scanners need. Rendering at eight pixels per module keeps it
-/// crisp in GTK's 196-pixel box.
+/// quiet zone scanners need. The texture always has the same 216-pixel canvas,
+/// so every pairing card is the same size; modules are drawn at an integer
+/// scale, centred, and never resampled.
 fn qr_texture(data: &str) -> gtk::gdk::Texture {
-    use gtk::gdk;
-
+    const CANVAS: i32 = 216;
     let dark = [0x26u8, 0x22, 0x1c, 0xff];
     let light = [0xfb, 0xf7, 0xef, 0xff];
     let quiet = 4i32;
-    let scale = 8i32;
+
     let Ok(code) = qrcode::QrCode::new(data.as_bytes()) else {
-        return gdk::MemoryTexture::new(
-            1,
-            1,
-            gdk::MemoryFormat::R8g8b8a8,
-            &glib::Bytes::from(&0u32.to_le_bytes()[..]),
-            4,
-        )
-        .upcast();
+        let pixels = vec![light; (CANVAS * CANVAS) as usize];
+        return texture_from(pixels, CANVAS);
     };
     let modules = code.width() as i32;
-    let side = (modules + quiet * 2) * scale;
-    let mut pixels = vec![0u8; (side * side * 4) as usize];
-    let colors = code.to_colors();
-    for (index, color) in colors.iter().enumerate() {
-        let x = (index as i32 % modules) + quiet;
-        let y = (index as i32 / modules) + quiet;
-        let color = if *color == qrcode::Color::Dark {
-            dark
-        } else {
-            light
-        };
+    let total = modules + quiet * 2;
+    let scale = (CANVAS / total).max(1);
+    let offset = (CANVAS - total * scale) / 2;
+
+    let mut pixels = vec![light; (CANVAS * CANVAS) as usize];
+    for (index, color) in code.to_colors().iter().enumerate() {
+        if *color != qrcode::Color::Dark {
+            continue;
+        }
+        let x = offset + (index as i32 % modules + quiet) * scale;
+        let y = offset + (index as i32 / modules + quiet) * scale;
         for dy in 0..scale {
             for dx in 0..scale {
-                let offset = (((y * scale + dy) * side + (x * scale + dx)) * 4) as usize;
-                pixels[offset..offset + 4].copy_from_slice(&color);
+                let pixel = ((y + dy) * CANVAS + (x + dx)) as usize;
+                pixels[pixel] = dark;
             }
         }
     }
-    // Fill the quiet zone with the paper colour.
-    for y in 0..side {
-        for x in 0..side {
-            if x < quiet * scale
-                || y < quiet * scale
-                || x >= side - quiet * scale
-                || y >= side - quiet * scale
-            {
-                let offset = ((y * side + x) * 4) as usize;
-                pixels[offset..offset + 4].copy_from_slice(&light);
-            }
-        }
-    }
-    gdk::MemoryTexture::new(
+    texture_from(pixels, CANVAS)
+}
+
+fn texture_from(pixels: Vec<[u8; 4]>, side: i32) -> gtk::gdk::Texture {
+    let bytes: Vec<u8> = pixels.into_iter().flatten().collect();
+    gtk::gdk::MemoryTexture::new(
         side,
         side,
-        gdk::MemoryFormat::R8g8b8a8,
-        &glib::Bytes::from(&pixels),
+        gtk::gdk::MemoryFormat::R8g8b8a8,
+        &glib::Bytes::from(&bytes),
         side as usize * 4,
     )
     .upcast()

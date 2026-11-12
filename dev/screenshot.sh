@@ -129,6 +129,7 @@ shoot history-paper paper true true history ""
 shoot sync-paper paper true true sync ""
 shoot sync-pair-nostos-paper paper true true pair-nostos ""
 shoot sync-pair-selfhosted-paper paper true true pair-selfhosted ""
+shoot sync-pair-selfhosted-code-paper paper true true pair-selfhosted-code ""
 shoot sync-pair-gdrive-paper paper true true pair-gdrive ""
 
 # Settings, Paper and Night.

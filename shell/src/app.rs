@@ -262,6 +262,9 @@ pub fn run(application: &gtk::Application) {
             "export-drive" => export.start_at_drive(),
             "pair-nostos" => sync.open_pairing(Backend::Nostos),
             "pair-selfhosted" => sync.open_pairing(Backend::SelfHosted),
+            "pair-selfhosted-code" => {
+                sync.open_pairing_url(Backend::SelfHosted, "https://studio.local:8443")
+            }
             "pair-gdrive" => sync.open_pairing(Backend::GoogleDrive),
             _ => {}
         }
