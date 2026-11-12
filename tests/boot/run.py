@@ -1315,7 +1315,7 @@ def main() -> int:
     if args.update_dir is None:
         args.update_dir = args.image.parent / "update"
     if args.release_dir is None:
-        args.release_dir = args.image.parent.parent / "release"
+        args.release_dir = args.image.parent.parent / "release-test"
     args.update_dir = args.update_dir.resolve()
     args.release_dir = args.release_dir.resolve()
 
