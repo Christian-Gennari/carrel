@@ -71,6 +71,24 @@ partition to the disk size with systemd-repart; `x-systemd.growfs` in fstab
 then grows the ext4 file system when `/data` is mounted. The installer grows
 the partition before its first reboot.
 
+## Build outputs and cleanup
+
+The image build and the QEMU tests run as root in the dev container, so they
+create root-owned files (`out/`, `target/`, `mkosi.cache/`, mkosi output and
+workspace directories). The host user cannot delete those, which blocks pruning
+of finished worktrees and fills the disk. Two things prevent that:
+
+- `dev/run.sh --root` passes the host UID/GID (`CARREL_UID`, `CARREL_GID`).
+  `make image`, `make binaries`, `make release`, `make release-test` and
+  `make test-boot` run their work and then call `dev/chown-outputs`, which
+  gives every root-owned file in the repository back to that user, also when
+  the work failed. The container entrypoint does the same when the container
+  is stopped or killed with SIGTERM/SIGINT.
+- `make distclean` deletes all build outputs (`out/`, `mkosi.cache/`,
+  `mkosi.output/`, `mkosi.workspace/`, the same directories under `image/`,
+  `target/`). Run it on the host: it calls `dev/run.sh --root make distclean`
+  itself, so files that are still root-owned are removed too.
+
 ## Binaries
 
 `make image` first runs `cargo build --release -p carrel-shell -p carreld` in
@@ -198,12 +216,21 @@ Private keys never enter git:
   it to systemd-repart, which signs the verity root hashes. It installs the public keyring at
   `/usr/lib/systemd/import-pubring.gpg` and the certificate at
   `/usr/share/carrel/keys/verity.crt`.
-- `CARREL_UPDATE_URL` (default `https://updates.carrel.example/carrel/`) is
-  written to `/usr/lib/carrel/update-url`.
+- `CARREL_UPDATE_URL` (default
+  `https://github.com/Christian-Gennari/carrel/releases/latest/download/`) is
+  written to `/usr/lib/carrel/update-url`. sysupdate fetches `SHA256SUMS`,
+  `SHA256SUMS.gpg` and the payload files by name relative to it; GitHub
+  answers each with a 302 to `objects.githubusercontent.com`, which
+  systemd-pull (libcurl) follows. Release assets are flat and `latest` skips
+  pre-releases, so a release is published as a normal release (marked
+  "preview" in its title), never with the pre-release flag.
 - `make release` takes the running root from the image, bumps its version,
   builds `out/release/` with root + verity + signature + boot entry for both
   slots, writes `SHA256SUMS` and signs it as `SHA256SUMS.gpg` with the update
-  key. It also builds the file users flash (next section).
+  key. It also builds the file users flash (next section). `make
+  release-test` builds a fixture one version higher (`out/release-test/`,
+  `TEST_RELEASE_VERSION`, default 0.2.0) that only the online-update boot test
+  serves; it is never published.
 
 The daemon checks and downloads updates only inside a sync session's radio
 window. `UpdateStatus()` returns `none`, `available <version>`,
@@ -222,8 +249,11 @@ update --url …` is the manual equivalent used by the QEMU online test.
 | `carrel-<version>.img.xz.asc` | Detached, armoured GPG signature of the `.img.xz` by the release (update) key. |
 
 `<version>` is the `ImageVersion` the image was built with
-(`image/mkosi.conf`); `RELEASE_VERSION` is only the version of the online
-update payloads in `out/release/`. To ship 1.0, set both to 1.0 and build.
+(`image/mkosi.conf`); the online update payloads in `out/release/` use the same
+version (`RELEASE_VERSION` defaults to it). To ship 1.0, set `ImageVersion` to
+1.0 and build. Every file name contains the version and every directory is
+flat, so the files of `out/dist/` and `out/release/` (without `README`) are
+uploaded unchanged as the assets of one GitHub Release.
 
 The image is **shrunk to its content**: the data partition, which is empty in
 a fresh image, is recreated at 256 MiB and the image file ends right after it.
@@ -309,7 +339,7 @@ Boot, BIOS) with QMP:
   again and assert the text reached `/data/writing`;
 - stage the offline update, apply it with sysupdate, make the new slot fail
   three times and assert the previous slot boots, on UEFI **and** BIOS;
-- serve `out/release/` over HTTP inside QEMU, reject a bad manifest
+- serve `out/release-test/` (payloads at 0.2.0) over HTTP inside QEMU, reject a bad manifest
   signature, then stage the good release through the daemon, call
   `ApplyUpdate` over D-Bus, reboot into 0.2.0 and assert the new slot label;
 - `secureboot`: boot the image, install it to a blank disk and boot the
@@ -329,8 +359,6 @@ Screenshots are written to `out/screenshot-*.png`.
 - Both boot paths use the shared ESP kernel/initrd. A release that changes
   the kernel must also update those files; the current release pipeline
   changes the root filesystem and boot entries, not the shared kernel.
-- The flashable image is named after `ImageVersion`, not `RELEASE_VERSION`
-  (see Release file).
 - The `/etc` overlay is mounted by an early systemd service, after the
   manager has read the unit files from the read-only lower layer. Runtime
   writes to `/etc` persist on data, but early systemd configuration changes

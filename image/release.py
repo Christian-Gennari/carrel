@@ -140,7 +140,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path)
-    parser.add_argument("--version", default="0.2.0")
+    parser.add_argument("--version", default=assemble.VERSION)
     parser.add_argument("--verity-key", required=True, type=Path)
     parser.add_argument("--verity-cert", required=True, type=Path)
     parser.add_argument("--update-secret", required=True, type=Path)
@@ -218,10 +218,11 @@ def main() -> int:
     (out / "README").write_text(
         f"""Carrel {args.version} online update
 
-Serve this directory at the URL configured as CARREL_UPDATE_URL when the
-image was built.  systemd-sysupdate reads SHA256SUMS, verifies
-SHA256SUMS.gpg against /usr/lib/systemd/import-pubring.gpg in the image, then
-downloads only the files for the inactive slot.
+Attach these files (flat, no directories) to the GitHub Release, or serve the
+directory at the URL configured as CARREL_UPDATE_URL when the image was built.
+systemd-sysupdate reads SHA256SUMS, verifies SHA256SUMS.gpg against
+/usr/lib/systemd/import-pubring.gpg in the image, then downloads only the
+files for the inactive slot.
 
 Files:
   carrel-root-{args.version}.raw          root filesystem
