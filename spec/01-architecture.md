@@ -7,7 +7,7 @@
 │ Cage (kiosk Wayland compositor)        │
 │   └─ carrel-shell (Rust, GTK4)         │
 │        editor · files · settings ·     │
-│        history · quotes · sync screen  │
+│        history · sync screens         │
 │              │ D-Bus (system bus)      │
 │ carreld (Rust, root, systemd service)  │
 │   history (libgit2) · sync client ·    │
@@ -52,8 +52,8 @@
 
 ## carrel-shell (Rust + GTK4 + GtkSourceView 5)
 
-- Single process. Screens: Editor (default), Files, History, Quotes palette,
-  Settings, Sync, First run.
+- Single process. Screens: Editor (default, with the Quotes palette at the
+  caret), Files, History, Settings, Sync, First run.
 - Markdown editing with GtkSourceView: inline styling (bold looks bold, heading
   markers are dimmed), no split preview.
 - Talks to `carreld` over D-Bus (`page.nostos.Carrel.Daemon1`) using `zbus`.
