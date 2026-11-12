@@ -10,6 +10,9 @@
 //! * `# headings` (levels 1–6)
 //! * `> quotes` (indented, marker dimmed)
 //! * `nostos:cite/…` links (small, raised, dimmed)
+//! * `[^1](nostos:cite/…)` and `[text](nostos:cite/…)` links: the label is a
+//!   small raised marker and the rest of the link syntax is hidden, unless the
+//!   cursor is inside the link
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -18,6 +21,17 @@ pub enum Kind {
     Heading(u8),
     Quote,
     Cite,
+    /// The label of a `[label](nostos:cite/…)` link when it is short, like
+    /// `1` in `[^1](…)`: a small raised marker.
+    CiteMarker,
+    /// The label of a longer citation link (quoted words): normal size.
+    CiteText,
+    /// The link syntax around a label: `[`, `[^` and `](nostos:cite/…)`.
+    /// Hidden while the cursor is outside the link.
+    CiteHidden,
+    /// The whole `[label](nostos:cite/…)` range. It is never drawn; the editor
+    /// uses it to show the raw text while the cursor is inside.
+    CiteLink,
     /// Markdown syntax itself; drawn dimmed.
     Marker,
 }
@@ -102,6 +116,13 @@ fn scan_line(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) {
             continue;
         }
 
+        if ch == '[' {
+            if let Some(link_end) = scan_cite_link(chars, index, end, spans) {
+                index = link_end;
+                continue;
+            }
+        }
+
         if ch == '*' || ch == '_' {
             if let Some(next) = scan_emphasis(chars, index, end) {
                 spans.extend(next.spans);
@@ -126,6 +147,74 @@ fn scan_line(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) {
 
         index += 1;
     }
+}
+
+/// A label of at most this many characters, without spaces, is drawn as a
+/// raised marker. Anything longer is quoted text and keeps its size.
+const MARKER_LABEL_MAX: usize = 8;
+
+/// `[label](nostos:cite/id)` or `[^n](nostos:cite/id)` starting at `start`.
+/// Pushes the spans and returns the index after the closing `)`.
+fn scan_cite_link(
+    chars: &[char],
+    start: usize,
+    end: usize,
+    spans: &mut Vec<Span>,
+) -> Option<usize> {
+    const TARGET: &str = "](nostos:cite/";
+    let mut close = start + 1;
+    while close < end && chars[close] != ']' {
+        if chars[close] == '[' {
+            return None;
+        }
+        close += 1;
+    }
+    if close >= end || !starts_with(chars, close, end, TARGET) {
+        return None;
+    }
+    let id_start = close + TARGET.chars().count();
+    let mut link_end = id_start;
+    while link_end < end && chars[link_end] != ')' && !chars[link_end].is_whitespace() {
+        link_end += 1;
+    }
+    if link_end >= end || chars[link_end] != ')' || link_end == id_start {
+        return None;
+    }
+    link_end += 1;
+
+    let caret = chars.get(start + 1) == Some(&'^');
+    let label_start = start + 1 + usize::from(caret);
+    if label_start >= close {
+        return None;
+    }
+    let label = &chars[label_start..close];
+    let short = label.len() <= MARKER_LABEL_MAX && !label.iter().any(|ch| ch.is_whitespace());
+
+    spans.push(Span {
+        start,
+        end: link_end,
+        kind: Kind::CiteLink,
+    });
+    spans.push(Span {
+        start,
+        end: label_start,
+        kind: Kind::CiteHidden,
+    });
+    spans.push(Span {
+        start: label_start,
+        end: close,
+        kind: if short {
+            Kind::CiteMarker
+        } else {
+            Kind::CiteText
+        },
+    });
+    spans.push(Span {
+        start: close,
+        end: link_end,
+        kind: Kind::CiteHidden,
+    });
+    Some(link_end)
 }
 
 struct Emphasis {
@@ -311,9 +400,65 @@ mod tests {
     }
 
     #[test]
-    fn citations_are_superscript_markers() {
-        let text = "As seen.[^1](nostos:cite/abc123)";
-        assert!(has(text, Kind::Cite, "nostos:cite/abc123)"));
+    fn bare_citation_targets_are_superscript_markers() {
+        let text = "As seen. nostos:cite/abc123";
+        assert!(has(text, Kind::Cite, "nostos:cite/abc123"));
+    }
+
+    #[test]
+    fn footnote_citation_links_become_a_marker_with_hidden_syntax() {
+        let text = "As seen.[^1](nostos:cite/abc123) Next.";
+        assert!(has(text, Kind::CiteMarker, "1"));
+        assert!(has(text, Kind::CiteHidden, "[^"));
+        assert!(has(text, Kind::CiteHidden, "](nostos:cite/abc123)"));
+        assert!(has(text, Kind::CiteLink, "[^1](nostos:cite/abc123)"));
+        // The target is not also a bare citation span.
+        assert!(!kinds(text).iter().any(|(kind, _)| *kind == Kind::Cite));
+    }
+
+    #[test]
+    fn short_labels_are_markers_and_quoted_words_keep_their_size() {
+        assert!(has("x[3](nostos:cite/a)", Kind::CiteMarker, "3"));
+        let quote = "[a quiet morning](nostos:cite/a)";
+        assert!(has(quote, Kind::CiteText, "a quiet morning"));
+        assert!(has(quote, Kind::CiteHidden, "["));
+        assert!(!kinds(quote).iter().any(|(kind, _)| *kind == Kind::CiteMarker));
+    }
+
+    #[test]
+    fn broken_citation_links_stay_plain() {
+        for text in [
+            "[^1](https://example.com)",
+            "[^1](nostos:cite/)",
+            "[^1](nostos:cite/abc",
+            "[](nostos:cite/abc)",
+            "[^](nostos:cite/abc)",
+        ] {
+            assert!(
+                !kinds(text).iter().any(|(kind, _)| matches!(
+                    kind,
+                    Kind::CiteLink | Kind::CiteHidden | Kind::CiteMarker | Kind::CiteText
+                )),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn citation_after_emphasis_and_with_a_long_id() {
+        let text = "Some mornings the words come *slowly*.[^1](nostos:cite/quiet-mornings-42)";
+        assert!(has(text, Kind::CiteMarker, "1"));
+        assert!(has(text, Kind::CiteHidden, "](nostos:cite/quiet-mornings-42)"));
+    }
+
+    #[test]
+    fn citation_offsets_are_characters() {
+        let text = "é.[^2](nostos:cite/x)";
+        let link = spans(text)
+            .into_iter()
+            .find(|span| span.kind == Kind::CiteLink)
+            .unwrap();
+        assert_eq!((link.start, link.end), (2, text.chars().count()));
     }
 
     #[test]
