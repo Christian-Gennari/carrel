@@ -71,6 +71,24 @@ partition to the disk size with systemd-repart; `x-systemd.growfs` in fstab
 then grows the ext4 file system when `/data` is mounted. The installer grows
 the partition before its first reboot.
 
+## Build outputs and cleanup
+
+The image build and the QEMU tests run as root in the dev container, so they
+create root-owned files (`out/`, `target/`, `mkosi.cache/`, mkosi output and
+workspace directories). The host user cannot delete those, which blocks pruning
+of finished worktrees and fills the disk. Two things prevent that:
+
+- `dev/run.sh --root` passes the host UID/GID (`CARREL_UID`, `CARREL_GID`).
+  `make image`, `make binaries`, `make release`, `make release-test` and
+  `make test-boot` run their work and then call `dev/chown-outputs`, which
+  gives every root-owned file in the repository back to that user, also when
+  the work failed. The container entrypoint does the same when the container
+  is stopped or killed with SIGTERM/SIGINT.
+- `make distclean` deletes all build outputs (`out/`, `mkosi.cache/`,
+  `mkosi.output/`, `mkosi.workspace/`, the same directories under `image/`,
+  `target/`). Run it on the host: it calls `dev/run.sh --root make distclean`
+  itself, so files that are still root-owned are removed too.
+
 ## Binaries
 
 `make image` first runs `cargo build --release -p carrel-shell -p carreld` in

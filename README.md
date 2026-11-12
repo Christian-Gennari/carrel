@@ -94,6 +94,7 @@ dev/run.sh make keys              # development release keys, in ~/.config/carre
 dev/run.sh --root make image      # build out/image/carrel.img.raw
 dev/run.sh --root make release    # signed update payloads + out/dist/carrel-<version>.img.xz
 dev/run.sh --root make test-boot  # boot UEFI, Secure Boot and BIOS in QEMU
+make distclean                    # delete all build outputs (out/, target/, mkosi cache)
 ```
 
 The image layout, Secure Boot chain and release files are described in

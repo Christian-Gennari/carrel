@@ -1,0 +1,19 @@
+#!/bin/sh
+# Give root-owned files in the repository back to the host user.
+#
+# The privileged build steps (mkosi, QEMU, cargo as root) leave root-owned
+# files in out/, target/ and the mkosi cache.  Such files cannot be deleted by
+# the host user, so a merged worktree could not be pruned.  dev/run.sh --root
+# passes the host UID/GID as CARREL_UID/CARREL_GID.  Outside a root container,
+# or without those variables, this does nothing.
+#
+# Usage: dev/chown-outputs [directory]   (default: the repository root)
+set -u
+[ "$(id -u)" = "0" ] || exit 0
+uid="${CARREL_UID:-0}"
+gid="${CARREL_GID:-0}"
+[ "$uid" != "0" ] || exit 0
+dir="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
+find "$dir" -xdev -path "$dir/.git" -prune -o -user root \
+    -exec chown -h "$uid:$gid" {} + 2>/dev/null || true
+exit 0

@@ -40,7 +40,19 @@ DIST_DIR       := $(OUT)/dist
 # Override for a private mirror (the directory needs the same flat file set).
 CARREL_UPDATE_URL ?= https://github.com/Christian-Gennari/carrel/releases/latest/download/
 
-.PHONY: image binaries test-boot keys release release-test clean
+# The privileged build steps run in the dev container as root.  The public
+# targets below run the real work (the _-prefixed targets) and then hand all
+# root-owned files back to the host user (dev/chown-outputs), also when the
+# work fails, so merged worktrees can be pruned.  `make distclean` removes
+# every build output.
+GUARD = st=0; $(MAKE) --no-print-directory $(1) || st=$$?; \
+	"$(ROOT)/dev/chown-outputs" "$(ROOT)"; exit $$st
+
+.PHONY: image binaries test-boot keys release release-test clean distclean \
+	_image _binaries _test-boot _release _release-test
+
+image binaries test-boot release release-test:
+	@$(call GUARD,_$@)
 
 # Generate the development release key pair outside the repository and copy
 # the public certificate/keyring into image/keys/.  Set CARREL_FORCE_KEYS=1 to
@@ -52,10 +64,10 @@ keys:
 # and let the mkosi build step install them.  Never committed: target/ is
 # ignored.  mkosi mounts the repo at $SRCDIR, so the binaries are visible to
 # mkosi.build at $SRCDIR/target/release.
-binaries:
+_binaries:
 	CARGO_TARGET_DIR="$(ROOT)/target" cargo build --release -p carrel-shell -p carreld
 
-image: binaries
+_image: _binaries
 	@test -f "$(VERITY_KEY)" || { \
 		echo "missing $(VERITY_KEY); run 'make keys' first"; exit 1; }
 	@test -f "$(VERITY_CERT)" || { \
@@ -80,14 +92,14 @@ image: binaries
 	      $(if $(CARREL_OAUTH_TOML),--environment CARREL_OAUTH_TOML=$(CARREL_OAUTH_TOML)) \
 	      --force build
 
-test-boot:
+_test-boot:
 	@if [ ! -f "$(IMAGE)" ]; then \
 		echo "image missing, building it first"; \
-		$(MAKE) image; \
+		$(MAKE) _image; \
 	fi
 	@if [ ! -f "$(OUT)/release-test/SHA256SUMS.gpg" ]; then \
 		echo "online-update test release missing, building it first"; \
-		$(MAKE) release-test; \
+		$(MAKE) _release-test; \
 	fi
 	python3 "$(ROOT)/tests/boot/run.py" --image "$(IMAGE)" \
 		--update-dir "$(IMAGE_DIR)/update" --release-dir "$(OUT)/release-test" \
@@ -100,7 +112,7 @@ test-boot:
 #                 a detached GPG signature (.asc) by the release key
 # Every file name contains the version and both directories are flat: upload
 # the files of both to one GitHub Release as they are.
-release:
+_release:
 	python3 "$(ROOT)/image/release.py" --image "$(IMAGE)" \
 		--out "$(OUT)/release" --version "$(RELEASE_VERSION)" \
 		--verity-key "$(VERITY_KEY)" --verity-cert "$(VERITY_CERT)" \
@@ -109,7 +121,7 @@ release:
 
 # Signed payloads one version above the image, used only by the online-update
 # boot test.  Not shipped.
-release-test:
+_release-test:
 	python3 "$(ROOT)/image/release.py" --image "$(IMAGE)" \
 		--out "$(OUT)/release-test" --version "$(TEST_RELEASE_VERSION)" \
 		--verity-key "$(VERITY_KEY)" --verity-cert "$(VERITY_CERT)" \
@@ -117,3 +129,17 @@ release-test:
 
 clean:
 	rm -rf "$(OUT)" "$(PKG_CACHE)" "$(ROOT)/mkosi.workspace"
+
+# Remove every build output: out/, mkosi cache/output/workspace and target/.
+# They are root-owned when a build was interrupted, so the host runs this
+# through the dev container.
+distclean:
+	@if [ -f /.dockerenv ]; then \
+		rm -rf "$(OUT)" "$(PKG_CACHE)" "$(ROOT)/mkosi.output" \
+			"$(ROOT)/mkosi.workspace" "$(ROOT)/image/mkosi.cache" \
+			"$(ROOT)/image/mkosi.output" "$(ROOT)/image/mkosi.workspace" \
+			"$(ROOT)/target" "$(ROOT)/.carrel-keys"; \
+		"$(ROOT)/dev/chown-outputs" "$(ROOT)"; \
+	else \
+		"$(ROOT)/dev/run.sh" --root make distclean; \
+	fi
