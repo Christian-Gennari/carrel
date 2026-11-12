@@ -8,9 +8,10 @@
 //!
 //! `SearchLibrary` reads the SQLite FTS5 library cache and `LibraryFilters`
 //! lists the books, authors and topics the Quotes palette can filter by.
-//! `ApplyUpdate` is still a stub for WP7 and returns a D-Bus `NotSupported`
-//! error that says so. Export and import use the `stylos-export` crate and
-//! udisks2; the drive is mounted only for the call and powered off afterwards.
+//! `ApplyUpdate` stages an update that was downloaded and verified during a
+//! sync session and starts `stylos-update.service`. Export and import use the
+//! `stylos-export` crate and udisks2; the drive is mounted only for the call
+//! and powered off afterwards.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -276,10 +277,12 @@ impl Daemon1 {
         self.core.battery().await.map_err(failed)
     }
 
-    /// Update state. WP7 brings sysupdate; until then there is never an update.
+    /// Update state: `none`, `available <version>`, `downloading <pct>`,
+    /// `ready <version>` or `error <text>`.  A sync session checks and
+    /// downloads; this method only reports the stored state.
     #[zbus(name = "UpdateStatus")]
     async fn update_status(&self) -> fdo::Result<String> {
-        Ok("none".to_string())
+        Ok(self.core.update_status())
     }
 
     // ----- export and import ----------------------------------------------
@@ -317,6 +320,13 @@ impl Daemon1 {
         self.core.import(drive_id, paths).await.map_err(failed)
     }
 
+    /// Stage an already downloaded and verified update and start
+    /// `stylos-update.service`.  Never opens the network.
+    #[zbus(name = "ApplyUpdate")]
+    async fn apply_update(&self) -> fdo::Result<()> {
+        self.core.apply_update().map_err(failed)
+    }
+
     // ----- library (Quotes palette) ---------------------------------------
 
     /// Ranked quotes, notes and passages from the cached Nostos library.
@@ -345,14 +355,6 @@ impl Daemon1 {
             .await
             .map_err(|error| fdo::Error::Failed(format!("the library task stopped: {error}")))?
             .map_err(failed)
-    }
-
-    // ----- stubs owned by later work packages ------------------------------
-
-    /// TODO(WP7): signed sysupdate payloads. Stub on purpose.
-    #[zbus(name = "ApplyUpdate")]
-    async fn apply_update(&self) -> fdo::Result<()> {
-        Err(not_implemented("ApplyUpdate", "WP7 (image integration)"))
     }
 
     // ----- signals ---------------------------------------------------------
@@ -389,23 +391,9 @@ fn failed(error: anyhow::Error) -> fdo::Error {
     fdo::Error::Failed(format!("{error:#}"))
 }
 
-fn not_implemented(method: &str, package: &str) -> fdo::Error {
-    fdo::Error::NotSupported(format!(
-        "{method} is not implemented yet (arrives in {package})"
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_remaining_stub_says_not_implemented_and_names_its_package() {
-        let text = not_implemented("ApplyUpdate", "WP7").to_string();
-        assert!(text.contains("not implemented"), "{text}");
-        assert!(text.contains("ApplyUpdate"), "{text}");
-        assert!(text.contains("WP7"), "{text}");
-    }
 
     #[test]
     fn api_constants_match_the_spec() {

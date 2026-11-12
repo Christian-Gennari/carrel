@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+"""Generate the development release keys used by the image and releases.
+
+The private keys live outside the repository, in
+``$STYLOS_KEY_DIR`` (default ``~/.config/stylos/keys``), mode 0600.  The
+matching public certificate and GPG keyring are copied into ``image/keys/``
+so a build can install them and a release can be verified by the image.
+
+Run ``make keys``.  Existing keys are reused; set ``STYLOS_FORCE_KEYS=1`` to
+replace them (then rebuild the image and commit the new public files).
+"""
+
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+IMAGE_KEYS = Path(__file__).resolve().parent / "keys"
+SUBJECT = "/CN=Stylos development release verity"
+
+
+def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
+    return subprocess.run([str(a) for a in args], check=True, **kwargs)
+
+
+def main() -> int:
+    key_dir = Path(
+        os.environ.get("STYLOS_KEY_DIR", Path.home() / ".config" / "stylos" / "keys")
+    ).expanduser()
+    force = os.environ.get("STYLOS_FORCE_KEYS") == "1"
+    key_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(key_dir, 0o700)
+    IMAGE_KEYS.mkdir(parents=True, exist_ok=True)
+
+    verity_key = key_dir / "verity.key"
+    verity_cert = key_dir / "verity.crt"
+    if force or not (verity_key.exists() and verity_cert.exists()):
+        print(f"keys: generating verity/UKI key in {key_dir}", flush=True)
+        run(
+            "openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256",
+            "-days", "3650", "-nodes",
+            "-keyout", verity_key, "-out", verity_cert,
+            "-subj", SUBJECT,
+            "-addext", "keyUsage=critical,digitalSignature",
+            "-addext", "extendedKeyUsage=codeSigning",
+        )
+    os.chmod(verity_key, 0o600)
+    os.chmod(verity_cert, 0o644)
+
+    secret = key_dir / "update-secret.gpg"
+    fingerprint_file = key_dir / "update-fingerprint"
+    with tempfile.TemporaryDirectory(prefix="stylos-gpg-") as home:
+        os.chmod(home, 0o700)
+        env = dict(os.environ, GNUPGHOME=home)
+        if not force and secret.exists():
+            run("gpg", "--batch", "--import", secret, env=env)
+        else:
+            print(f"keys: generating update signing key in {key_dir}", flush=True)
+            run(
+                "gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+                "--quick-generate-key",
+                "Stylos development update signing <stylos-dev@localhost>",
+                "rsa3072", "sign", "0",
+                env=env,
+            )
+        secret.write_bytes(
+            subprocess.check_output(
+                ["gpg", "--batch", "--export-secret-keys"], env=env
+            )
+        )
+        os.chmod(secret, 0o600)
+        public = subprocess.check_output(
+            ["gpg", "--batch", "--export"], env=env
+        )
+        (IMAGE_KEYS / "update-pubring.gpg").write_bytes(public)
+        os.chmod(IMAGE_KEYS / "update-pubring.gpg", 0o644)
+        listing = subprocess.check_output(
+            ["gpg", "--batch", "--with-colons", "--list-keys"], env=env, text=True
+        )
+        fingerprint = next(
+            line.split(":")[9]
+            for line in listing.splitlines()
+            if line.startswith("fpr:")
+        )
+        fingerprint_file.write_text(fingerprint + "\n")
+        os.chmod(fingerprint_file, 0o644)
+
+    shutil.copyfile(verity_cert, IMAGE_KEYS / "verity.crt")
+    os.chmod(IMAGE_KEYS / "verity.crt", 0o644)
+
+    print(f"keys: private keys: {key_dir}", flush=True)
+    print(f"keys: public files: {IMAGE_KEYS}", flush=True)
+    print(
+        "keys: keep the private files outside git; commit only image/keys/",
+        flush=True,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

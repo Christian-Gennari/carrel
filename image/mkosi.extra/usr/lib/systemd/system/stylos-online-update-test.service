@@ -1,0 +1,16 @@
+[Unit]
+Description=Stylos online update test hook
+Documentation=file:///usr/share/doc/stylos
+# Only the QEMU test harness creates this file.  It lets the harness exercise
+# the same signed-download path as a sync session without a shell in the image.
+ConditionPathExists=/data/.stylos/update/test-url
+After=stylosd.service NetworkManager.service network.target
+Before=stylos-session.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/stylos/online-update-test
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

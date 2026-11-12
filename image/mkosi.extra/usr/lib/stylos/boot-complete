@@ -9,8 +9,9 @@
 #   * if boot never completes, after three attempts systemd-boot removes the
 #     counted entry and the previous slot (stylos-<other>.efi) boots
 #
-# The BIOS path uses grubenv instead of the EFI boot counter; see
-# image/mkosi.extra/efi/grub/grub.cfg.
+# GRUB (BIOS) has no EFI boot counter.  apply-update sets stylos_tries=3 and
+# grub.cfg decrements it with a string ladder before every boot, so a kernel or
+# initrd panic still consumes a try.  A healthy boot marks it "good".
 set -eu
 
 log() {
@@ -35,7 +36,8 @@ if systemctl list-units --state=failed --no-legend --plain 2>/dev/null | grep -q
         printf 'default stylos-%s.efi\ntimeout 2\n' "$other" >/boot/loader/loader.conf
         if [ -f /boot/grub/grubenv ]; then
             grub-editenv /boot/grub/grubenv set \
-                "stylos_default=$other" stylos_a_tries=0 stylos_b_tries=0 2>/dev/null || true
+                "stylos_default=$other" stylos_tries=good
+            log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
         fi
         log "slot $slot exhausted its boot counter; falling back to $other"
         sync
@@ -58,10 +60,11 @@ if [ -d /sys/firmware/efi ] && [ -d /boot/EFI/Linux ]; then
     fi
 fi
 
-# GRUB (BIOS) has no EFI variables; keep its boot counter in grubenv.
+# GRUB (BIOS) has no EFI variables; mark this slot's boot good.
 if [ -f /boot/grub/grubenv ]; then
     grub-editenv /boot/grub/grubenv set \
-        "stylos_default=$slot" stylos_a_tries=0 stylos_b_tries=0 2>/dev/null || true
+        "stylos_default=$slot" stylos_tries=good
+    log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
 fi
 
 log "slot $slot marked good"

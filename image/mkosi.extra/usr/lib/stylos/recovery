@@ -30,7 +30,8 @@ boot_previous() {
         printf 'default stylos-%s.efi\ntimeout 2\n' "$other" >/boot/loader/loader.conf
         if [ -f /boot/grub/grubenv ]; then
             grub-editenv /boot/grub/grubenv set \
-                "stylos_default=$other" stylos_a_tries=0 stylos_b_tries=0 2>/dev/null || true
+                "stylos_default=$other" stylos_tries=good
+            log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
         fi
         log "booting previous slot $other"
         sync
@@ -68,30 +69,40 @@ copy_writing() {
 
     local part
     part="$(lsblk -ln -o NAME,TYPE "/dev/$disk" | awk '$2=="part"{print $1; exit}')"
+    log "copy selected /dev/$disk partition ${part:-none}"
     if [ -z "$part" ]; then
         whiptail --title "Copy writing" --msgbox \
             "/dev/$disk has no partition. Format it first." 9 60
         return
     fi
-    mkdir -p /mnt/stylos-usb
-    if ! mount -o rw "/dev/$part" /mnt/stylos-usb; then
+    mkdir -p /run/stylos-usb
+    log "mounting /dev/$part"
+    # -n: the recovery root is read-only and /etc/mtab is a /proc symlink;
+    # skipping the mtab update keeps util-linux from mounting and immediately
+    # undoing it when the update fails.
+    if ! mount_output="$(timeout 60 mount -n -t ext4 -o rw "/dev/$part" /run/stylos-usb 2>&1)"; then
+        log "could not mount /dev/$part: $mount_output"
         whiptail --title "Copy writing" --msgbox \
             "Could not mount /dev/$part. Use a FAT or ext4 partition." 9 70
-        rmdir /mnt/stylos-usb 2>/dev/null || true
+        rmdir /run/stylos-usb 2>/dev/null || true
         return
     fi
-    local dest="/mnt/stylos-usb/stylos-writing-$(date +%Y%m%d-%H%M%S)"
+    log "mounted /dev/$part"
+    local dest="/run/stylos-usb/stylos-writing-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$dest"
+    log "copying /data/writing to $dest"
     whiptail --title "Copy writing" --infobox \
         "Copying /data/writing to $dest. Do not unplug the drive." 8 70
-    if cp -a /data/writing/. "$dest"/; then
+    if timeout 300 cp -a /data/writing/. "$dest"/; then
+        log "copy finished"
         sync
-        umount /mnt/stylos-usb
-        rmdir /mnt/stylos-usb 2>/dev/null || true
+        umount -n /run/stylos-usb
+        rmdir /run/stylos-usb 2>/dev/null || true
+        log "copied to $dest on /dev/$part"
         whiptail --title "Copy writing" --msgbox \
             "Writing copied to $dest on /dev/$part." 9 70
     else
-        umount /mnt/stylos-usb 2>/dev/null || true
+        umount -n /run/stylos-usb 2>/dev/null || true
         whiptail --title "Copy writing" --msgbox \
             "The copy failed. The drive may be full." 9 60
     fi
@@ -108,7 +119,8 @@ reset_settings() {
 }
 
 src_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
-src_disk="$(lsblk -no PKNAME "$src_src" 2>/dev/null | head -1 || true)"
+# The running root is a dm-verity mapper; lsblk -s walks back to the disk.
+src_disk="$(lsblk -srno NAME "$src_src" 2>/dev/null | tail -1 | tr -d ' ' || true)"
 
 log "menu"
 while true; do

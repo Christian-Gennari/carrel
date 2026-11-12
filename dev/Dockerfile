@@ -10,7 +10,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       erofs-utils squashfs-tools e2fsprogs cpio zstd xz-utils file gdisk \
       debian-archive-keyring \
       qemu-system-x86 qemu-utils ovmf \
-      cage weston xvfb imagemagick \
+      cage weston xvfb imagemagick tesseract-ocr \
       pandoc poppler-utils cmake \
     && rm -rf /var/lib/apt/lists/*
 # Debian trixie does not package the typst CLI, but PDF export needs it
