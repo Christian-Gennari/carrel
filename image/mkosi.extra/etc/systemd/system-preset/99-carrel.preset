@@ -1,16 +1,16 @@
-# Stylos services.  This file is read after the distribution presets, so it
+# Carrel services.  This file is read after the distribution presets, so it
 # overrides the default enablement.
-enable stylos-session.service
-enable stylos-rfkill.service
+enable carrel-session.service
+enable carrel-rfkill.service
 enable NetworkManager.service
-enable stylosd.service
+enable carreld.service
 
 # A/B image plumbing.
-enable stylos-grow-data.service
-enable stylos-data-init.service
-enable stylos-boot-complete.service
-enable stylos-update.service
-enable stylos-installer.service
+enable carrel-grow-data.service
+enable carrel-data-init.service
+enable carrel-boot-complete.service
+enable carrel-update.service
+enable carrel-installer.service
 
 # NetworkManager owns networking; do not run systemd-networkd or a standalone
 # wpa_supplicant next to it.  wpa_supplicant stays D-Bus activatable for the

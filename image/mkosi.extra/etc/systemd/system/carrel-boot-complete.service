@@ -1,15 +1,15 @@
 [Unit]
-Description=Mark the booted Stylos slot good
-Documentation=file:///usr/share/doc/stylos
-# Runs in the graphical transaction after the session and stylosd started.
+Description=Mark the booted Carrel slot good
+Documentation=file:///usr/share/doc/carrel
+# Runs in the graphical transaction after the session and carreld started.
 # It must not be ordered After=graphical.target: graphical.target waits for
 # its wants, which would create an ordering cycle.  The script itself applies
 # the same test as systemd-boot-check-no-failures (no failed units).
-After=stylos-session.service stylosd.service
+After=carrel-session.service carreld.service
 
 [Service]
 Type=oneshot
-ExecStart=/usr/lib/stylos/boot-complete
+ExecStart=/usr/lib/carrel/boot-complete
 RemainAfterExit=yes
 
 [Install]

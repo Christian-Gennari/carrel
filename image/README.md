@@ -1,4 +1,4 @@
-# Stylos image
+# Carrel image
 
 One GPT disk image, bootable on both:
 
@@ -9,7 +9,7 @@ One GPT disk image, bootable on both:
   initrd from the ESP.
 
 `make image` builds it with mkosi from this directory. The output is
-`out/image/stylos.img.raw` (and a `stylos.img` symlink). It is the USB
+`out/image/carrel.img.raw` (and a `carrel.img` symlink). It is the USB
 installer *and* the installed system; the installer only starts when the
 running root is on removable/USB media.
 
@@ -29,8 +29,8 @@ systemd-repart creates the table from `mkosi.repart/`:
 | verity B signature | 16 KiB | raw | signed root hash (JSON) |
 | data | ≥ 2 GiB | ext4 | grows to fill the disk |
 
-The two root slots are labelled `stylos-root-<version>`
-(`stylos-root-0.1.0` and `stylos-root-0` in a fresh image). The version in the
+The two root slots are labelled `carrel-root-<version>`
+(`carrel-root-0.1.0` and `carrel-root-0` in a fresh image). The version in the
 label is what systemd-sysupdate compares; both slots deliberately share the
 same label prefix so sysupdate can pick the older one. The data and hash
 partition UUIDs are fixed (`1111…`/`2222…` for roots, `5555…`/`6666…` for
@@ -38,7 +38,7 @@ hashes, `7777…`/`8888…` for signatures), so the boot entries and GRUB comman
 lines can name the verity devices across updates. The root hash itself is not
 fixed: it is on the `options` line of the boot entry (and in grubenv for the
 BIOS path). The slot
-roles are still A/B; only the fixed UUIDs and `stylos.slot=` say which is
+roles are still A/B; only the fixed UUIDs and `carrel.slot=` say which is
 which.
 
 `systemd-repart` creates the hash and signature partitions (`Verity=hash` /
@@ -59,25 +59,25 @@ on the ESP.
 - `/data/etc` — overlayfs upper layer; `/etc` is an overlay of the read-only
   root and this directory.
 
-`stylos-data-init.service` runs before `sysinit.target` and sets all of this
-up. It also creates `/data/writing/.stylos` as `writer` before `stylosd`
+`carrel-data-init.service` runs before `sysinit.target` and sets all of this
+up. It also creates `/data/writing/.carrel` as `writer` before `carreld`
 (root) creates its Git history inside it.
 
-`stylos-grow-data.service` runs before `data.mount` and grows the data
+`carrel-grow-data.service` runs before `data.mount` and grows the data
 partition to the disk size with systemd-repart; `x-systemd.growfs` in fstab
 then grows the ext4 file system when `/data` is mounted. The installer grows
 the partition before its first reboot.
 
 ## Binaries
 
-`make image` first runs `cargo build --release -p stylos-shell -p stylosd` in
+`make image` first runs `cargo build --release -p carrel-shell -p carreld` in
 the dev container (with the shared cargo cache), then `mkosi.build` installs
 `out`-independent build products from `$SRCDIR/target/release`. Nothing built
-is committed. `mkosi.build` also installs `stylosd/systemd/stylosd.service`
-and the D-Bus policy from the `stylosd` crate, so those files have one source.
+is committed. `mkosi.build` also installs `carreld/systemd/carreld.service`
+and the D-Bus policy from the `carreld` crate, so those files have one source.
 
-`STYLOS_OAUTH_TOML` (default `~/.config/stylos/oauth.toml`) is copied to
-`/usr/share/stylos/oauth.toml` at build time if it exists. `dev/run.sh`
+`CARREL_OAUTH_TOML` (default `~/.config/carrel/oauth.toml`) is copied to
+`/usr/share/carrel/oauth.toml` at build time if it exists. `dev/run.sh`
 places a 0600 copy in the repo for the duration of the container run and
 removes it afterwards; the file is gitignored and never committed. Without
 it the image still builds (Google Drive pairing is unavailable).
@@ -91,14 +91,14 @@ script) exactly like the pinned Typst binary.
 
 A user never changes firmware settings: the image boots with Secure Boot on,
 using only binaries that Debian signed. Nothing in the UEFI chain is signed
-with a Stylos key.
+with a Carrel key.
 
 ```
 firmware (Microsoft keys in db)
   └─ EFI/BOOT/BOOTX64.EFI       shim, Microsoft-signed (Debian shim-signed)
        └─ grubx64.efi           Debian-signed systemd-boot
             └─ loader/entries/*.conf  Type #1 entries
-                 └─ stylos/<kver>/vmlinuz   Debian-signed kernel
+                 └─ carrel/<kver>/vmlinuz   Debian-signed kernel
                       └─ initrd (unsigned) → erofs root + dm-verity
 ```
 
@@ -106,7 +106,7 @@ firmware (Microsoft keys in db)
   certificate and, by default, loads `grubx64.efi` from its own directory.
   Debian's signed systemd-boot is installed under that name, next to
   `mmx64.efi` (MokManager). The same three files are in `EFI/BOOT/` (removable
-  media, the USB stick) and in `EFI/stylos/` (the firmware boot entry made by
+  media, the USB stick) and in `EFI/carrel/` (the firmware boot entry made by
   the installer). They come unchanged from the Debian packages `shim-signed`,
   `shim-helpers-amd64-signed` and `systemd-boot-efi-amd64-signed`;
   `mkosi.postinst` stages them and `assemble.py` places them on the ESP.
@@ -114,16 +114,16 @@ firmware (Microsoft keys in db)
   Debian-signed `vmlinuz` (from `linux-image-amd64`) passes without enrolling
   any key. Under Secure Boot systemd-boot disables its command-line editor
   (`editor no` is also in `loader.conf`) and the kernel is locked down
-  (no hibernation, no unsigned modules, no `/dev/mem`). Stylos suspends, it
+  (no hibernation, no unsigned modules, no `/dev/mem`). Carrel suspends, it
   does not hibernate.
 - **What is not authenticated.** The initrd and the entry file with the
   `roothash=` are plain files on the FAT ESP, which Debian's chain does not
   sign. With physical access, someone can replace the initrd or the root hash
   on the ESP. This is the normal limit of the Debian chain (Debian's own
   initramfs is unsigned too). Closing it needs a measured/signed UKI with the
-  Stylos key enrolled through MOK; that is out of scope for this release. The
+  Carrel key enrolled through MOK; that is out of scope for this release. The
   root file system itself is checked by dm-verity against the root hash.
-- The installer registers `\EFI\stylos\shimx64.efi` with `efibootmgr` as the
+- The installer registers `\EFI\carrel\shimx64.efi` with `efibootmgr` as the
   first boot entry. If the firmware refuses the entry, the disk still boots
   through `EFI/BOOT/BOOTX64.EFI`.
 - Firmware that does not trust the Microsoft UEFI CA (some Chromebooks) is not
@@ -132,19 +132,19 @@ firmware (Microsoft keys in db)
   package (Microsoft keys enrolled, Secure Boot enforcing, SMM-protected
   variable store). `tests/boot/run.py` checks the kernel message
   `secureboot: Secure boot enabled`, lockdown and the guest's `SecureBoot`
-  EFI variable (logged by `stylos-boot-complete` as
-  `STYLOS-BOOT: secureboot=1`).
+  EFI variable (logged by `carrel-boot-complete` as
+  `CARREL-BOOT: secureboot=1`).
 
 ## Boot menu and A/B updates
 
 `image/assemble.py` (run by `mkosi.postoutput`) replaces mkosi's single
 throw-away UKI with Boot Loader Specification Type #1 entries
-(`loader/entries/`, kernel and initrd shared in `stylos/` on the ESP):
+(`loader/entries/`, kernel and initrd shared in `carrel/` on the ESP):
 
-- `stylos-a.conf` — active slot, default. `loader.conf` has
-  `default stylos-a.conf`.
-- `stylos-recovery.conf` — `systemd.unit=stylos-recovery.target`.
-- `stylos-b.conf` is *not* installed initially. It appears only after an
+- `carrel-a.conf` — active slot, default. `loader.conf` has
+  `default carrel-a.conf`.
+- `carrel-recovery.conf` — `systemd.unit=carrel-recovery.target`.
+- `carrel-b.conf` is *not* installed initially. It appears only after an
   update, so a failed B entry can never fall back to a stale B kernel.
 
 Each entry's `options` line has the slot's `roothash=` and verity devices.
@@ -152,51 +152,51 @@ Each entry's `options` line has the slot's `roothash=` and verity devices.
 back to A. It also writes the BIOS `grub.cfg` and `grubenv`.
 
 Updates use `systemd-sysupdate` (transfer files in
-`/usr/lib/stylos/sysupdate/`). A staged payload lives in
-`/data/.stylos/update/payload/` and is applied by
-`stylos-update.service` before the session starts:
+`/usr/lib/carrel/sysupdate/`). A staged payload lives in
+`/data/.carrel/update/payload/` and is applied by
+`carrel-update.service` before the session starts:
 
 1. sysupdate writes the older root partition, its verity hash tree, the
    signed verity root hash and a counted boot entry
-   `loader/entries/stylos-b-<version>+3.conf`.
+   `loader/entries/carrel-b-<version>+3.conf`.
 2. `apply-update` sets the boot-counted entry as the default (systemd-boot
    matches the entry ID without the `+3` suffix), updates the BIOS grubenv
    root hash for the new slot and reboots.
-3. `stylos-boot-complete.service` runs after the session and checks for
+3. `carrel-boot-complete.service` runs after the session and checks for
    failed units. If the boot is healthy it renames the counted entry to
-   `stylos-b.conf` and makes it the default.
+   `carrel-b.conf` and makes it the default.
 4. If the boot is unhealthy, the service leaves the counter alone. On the
    third failed attempt the OS removes the exhausted entry and reboots into
    the previous slot. systemd-boot 257 does not remove a `+0-N` entry by
    itself, so this last step is deliberately done by the OS.
 
-The kernel and initrd in `stylos/` are shared by both slots (as for BIOS): a
+The kernel and initrd in `carrel/` are shared by both slots (as for BIOS): a
 release that changes the kernel must also update those files; the current
 release pipeline changes the root filesystem and the entries.
 
-GRUB (BIOS) has no EFI boot counter. `grub.cfg` reads `stylos_default`,
-`stylos_<slot>_tries` and `stylos_<slot>_roothash` from `grubenv`, decrements
+GRUB (BIOS) has no EFI boot counter. `grub.cfg` reads `carrel_default`,
+`carrel_<slot>_tries` and `carrel_<slot>_roothash` from `grubenv`, decrements
 the counter on each boot and switches to the other slot when it reaches zero.
 `apply-update` reads the new root hash from the signed verity signature
 partition, so the BIOS command line stays authenticated too.
-`stylos-boot-complete` resets the counter after a healthy boot. The QEMU gate
+`carrel-boot-complete` resets the counter after a healthy boot. The QEMU gate
 now exercises update + forced rollback on both UEFI and BIOS.
 
 ## Release keys and signed updates
 
 Private keys never enter git:
 
-- `make keys` creates `~/.config/stylos/keys/verity.key` and
-  `~/.config/stylos/keys/update-secret.gpg` (both 0600), plus the matching
+- `make keys` creates `~/.config/carrel/keys/verity.key` and
+  `~/.config/carrel/keys/update-secret.gpg` (both 0600), plus the matching
   public certificate and GPG keyring in `image/keys/`. Commit only
   `image/keys/`.
-- `make image` reads the private key path from `STYLOS_KEY_DIR` /
+- `make image` reads the private key path from `CARREL_KEY_DIR` /
   `VERITY_KEY` (the dev container mounts the host config directory) and passes
   it to systemd-repart, which signs the verity root hashes. It installs the public keyring at
   `/usr/lib/systemd/import-pubring.gpg` and the certificate at
-  `/usr/share/stylos/keys/verity.crt`.
-- `STYLOS_UPDATE_URL` (default `https://updates.stylos.example/stylos/`) is
-  written to `/usr/lib/stylos/update-url`.
+  `/usr/share/carrel/keys/verity.crt`.
+- `CARREL_UPDATE_URL` (default `https://updates.carrel.example/carrel/`) is
+  written to `/usr/lib/carrel/update-url`.
 - `make release` takes the running root from the image, bumps its version,
   builds `out/release/` with root + verity + signature + boot entry for both
   slots, writes `SHA256SUMS` and signs it as `SHA256SUMS.gpg` with the update
@@ -205,7 +205,7 @@ Private keys never enter git:
 The daemon checks and downloads updates only inside a sync session's radio
 window. `UpdateStatus()` returns `none`, `available <version>`,
 `downloading <pct>`, `ready <version>` or `error <text>`; `ApplyUpdate()`
-stages the verified payload and starts `stylos-update.service`. `stylosd
+stages the verified payload and starts `carrel-update.service`. `carreld
 update --url …` is the manual equivalent used by the QEMU online test.
 
 ## Release file
@@ -214,9 +214,9 @@ update --url …` is the manual equivalent used by the QEMU online test.
 
 | File | What |
 |---|---|
-| `stylos-<version>.img.xz` | The disk image for users to flash (xz-compressed raw image). |
-| `stylos-<version>.img.xz.sha256` | `sha256sum` line for the `.img.xz`. |
-| `stylos-<version>.img.xz.asc` | Detached, armoured GPG signature of the `.img.xz` by the release (update) key. |
+| `carrel-<version>.img.xz` | The disk image for users to flash (xz-compressed raw image). |
+| `carrel-<version>.img.xz.sha256` | `sha256sum` line for the `.img.xz`. |
+| `carrel-<version>.img.xz.asc` | Detached, armoured GPG signature of the `.img.xz` by the release (update) key. |
 
 `<version>` is the `ImageVersion` the image was built with
 (`image/mkosi.conf`); `RELEASE_VERSION` is only the version of the online
@@ -230,10 +230,10 @@ raw image of about 5.3 GiB that compresses to a few hundred MiB.
 
 The installed system grows the data partition by itself:
 
-- Flashed to a USB stick, the first boot runs `stylos-grow-data.service`
+- Flashed to a USB stick, the first boot runs `carrel-grow-data.service`
   (systemd-repart moves the backup GPT header to the end of the stick and
   grows the data partition), then `x-systemd.growfs` in fstab grows the ext4
-  file system when `/data` is mounted. **Try Stylos** therefore has the whole
+  file system when `/data` is mounted. **Try Carrel** therefore has the whole
   stick as writing space.
 - **Install to this computer** copies the stick to the internal disk with `dd`
   and grows the data partition there before the reboot.
@@ -241,31 +241,31 @@ The installed system grows the data partition by itself:
 ### Verify a download
 
 ```sh
-sha256sum -c stylos-<version>.img.xz.sha256
+sha256sum -c carrel-<version>.img.xz.sha256
 gpg --import update-pubring.gpg       # image/keys/update-pubring.gpg in this repository
-gpg --verify stylos-<version>.img.xz.asc stylos-<version>.img.xz
+gpg --verify carrel-<version>.img.xz.asc carrel-<version>.img.xz
 ```
 
 ### Flash
 
 Use Fedora Media Writer, balenaEtcher, Rufus (choose *DD Image mode*) or
-`xz -dc stylos-<version>.img.xz | sudo dd of=/dev/sdX bs=4M status=progress
+`xz -dc carrel-<version>.img.xz | sudo dd of=/dev/sdX bs=4M status=progress
 conv=fsync`. The root README has the steps. Docker is only the build
 environment; users never need it.
 
 ### Gate
 
-`tests/boot/run.py --scenario release --release-image out/dist/stylos-<version>.img.xz`
+`tests/boot/run.py --scenario release --release-image out/dist/carrel-<version>.img.xz`
 decompresses the file onto a fresh 16 GiB virtual USB disk with `dd`, boots it
 in QEMU on UEFI, UEFI with Secure Boot enforcing and BIOS, chooses **Try
-Stylos**, reaches the editor and asserts that the data partition grew to fill
+Carrel**, reaches the editor and asserts that the data partition grew to fill
 the stick.
 
 ## Recovery
 
-Holding a key at the systemd-boot/GRUB menu and choosing **Stylos recovery**
-boots `stylos-recovery.conf`, i.e. `systemd.unit=stylos-recovery.target`.
-`/usr/lib/stylos/recovery` is a whiptail menu with exactly four actions:
+Holding a key at the systemd-boot/GRUB menu and choosing **Carrel recovery**
+boots `carrel-recovery.conf`, i.e. `systemd.unit=carrel-recovery.target`.
+`/usr/lib/carrel/recovery` is a whiptail menu with exactly four actions:
 
 - Boot previous system (rewrites the loader default / grubenv and reboots)
 - Copy all writing to a USB drive
@@ -277,13 +277,13 @@ There is no shell or getty in the recovery target.
 ## Installer
 
 When booted from a USB disk (removable or `TRAN=usb`),
-`stylos-installer.service` shows **Try Stylos** / **Install to this
+`carrel-installer.service` shows **Try Carrel** / **Install to this
 computer** on tty1 before the session. Installing lists internal disks,
 requires the writer to type `ERASE`, copies the running USB disk to the
 target with `dd`, grows the data partition with systemd-repart and reboots.
-When the computer booted in UEFI mode, the installer then makes Stylos the
-first UEFI boot entry with `efibootmgr` (an entry `Stylos` for
-`\EFI\stylos\shimx64.efi`, put first in `BootOrder`; an older Stylos entry is
+When the computer booted in UEFI mode, the installer then makes Carrel the
+first UEFI boot entry with `efibootmgr` (an entry `Carrel` for
+`\EFI\carrel\shimx64.efi`, put first in `BootOrder`; an older Carrel entry is
 removed). Booting the installed disk is not removable, so the installer does
 not run again.
 
@@ -296,7 +296,7 @@ Boot, BIOS) with QMP:
   partitions, the signed shim/systemd-boot/kernel and the boot entries, real
   binaries, units, fonts, fstab, keys, oauth
   and the update fixture;
-- boot UEFI and BIOS to the real `stylos-shell`, complete first run, type a
+- boot UEFI and BIOS to the real `carrel-shell`, complete first run, type a
   line and screenshot the editor; OCR asserts the no-battery line has no
   percentage;
 - install the USB image to a blank 16 GiB disk and boot that disk;
@@ -311,10 +311,10 @@ Boot, BIOS) with QMP:
   `ApplyUpdate` over D-Bus, reboot into 0.2.0 and assert the new slot label;
 - `secureboot`: boot the image, install it to a blank disk and boot the
   installed disk with OVMF's Microsoft keys enrolled and Secure Boot enforcing;
-  assert the installer made Stylos the first UEFI boot entry;
+  assert the installer made Carrel the first UEFI boot entry;
 - `update-secureboot`: update and forced rollback on that installed disk;
-- `release`: flash `out/dist/stylos-<version>.img.xz` onto a fresh virtual USB
-  disk and try Stylos on UEFI, Secure Boot and BIOS.
+- `release`: flash `out/dist/carrel-<version>.img.xz` onto a fresh virtual USB
+  disk and try Carrel on UEFI, Secure Boot and BIOS.
 
 Screenshots are written to `out/screenshot-*.png`.
 
@@ -332,6 +332,6 @@ Screenshots are written to `out/screenshot-*.png`.
   manager has read the unit files from the read-only lower layer. Runtime
   writes to `/etc` persist on data, but early systemd configuration changes
   are only read from the lower layer on the next boot.
-- `stylos-online-update-test.service` is a dormant QEMU test hook: it only
-  runs when `/data/.stylos/update/test-url` exists, which production never
+- `carrel-online-update-test.service` is a dormant QEMU test hook: it only
+  runs when `/data/.carrel/update/test-url` exists, which production never
   creates.

@@ -1,6 +1,6 @@
 [Unit]
-Description=Grow the Stylos data partition to fill the disk
-Documentation=file:///usr/share/doc/stylos
+Description=Grow the Carrel data partition to fill the disk
+Documentation=file:///usr/share/doc/carrel
 DefaultDependencies=no
 After=systemd-udevd.service
 Before=data.mount local-fs.target
@@ -8,7 +8,7 @@ Before=data.mount local-fs.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStart=/usr/lib/stylos/grow-data
+ExecStart=/usr/lib/carrel/grow-data
 
 [Install]
 WantedBy=local-fs.target

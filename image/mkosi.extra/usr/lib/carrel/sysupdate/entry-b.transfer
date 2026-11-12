@@ -2,11 +2,11 @@
 
 [Source]
 Type=regular-file
-Path=/data/.stylos/update/payload
-MatchPattern=stylos-b-@v.conf
+Path=/data/.carrel/update/payload
+MatchPattern=carrel-b-@v.conf
 
 [Target]
 Type=regular-file
 Path=/loader/entries
 PathRelativeTo=esp
-MatchPattern=stylos-b-@v+3.conf
+MatchPattern=carrel-b-@v+3.conf

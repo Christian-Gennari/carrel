@@ -1,0 +1,16 @@
+[Unit]
+Description=Carrel online update test hook
+Documentation=file:///usr/share/doc/carrel
+# Only the QEMU test harness creates this file.  It lets the harness exercise
+# the same signed-download path as a sync session without a shell in the image.
+ConditionPathExists=/data/.carrel/update/test-url
+After=carreld.service NetworkManager.service network.target
+Before=carrel-session.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/carrel/online-update-test
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

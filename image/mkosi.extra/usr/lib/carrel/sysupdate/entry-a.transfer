@@ -2,8 +2,8 @@
 
 [Source]
 Type=regular-file
-Path=/data/.stylos/update/payload
-MatchPattern=stylos-a-@v.conf
+Path=/data/.carrel/update/payload
+MatchPattern=carrel-a-@v.conf
 
 [Target]
 Type=regular-file
@@ -12,5 +12,5 @@ PathRelativeTo=esp
 # +3 is the systemd-boot boot-counting suffix: three attempts before the
 # entry is discarded and the previous slot boots.  The entry is a Boot Loader
 # Specification Type #1 file; the kernel and initrd are the shared ones in
-# /stylos on the ESP.
-MatchPattern=stylos-a-@v+3.conf
+# /carrel on the ESP.
+MatchPattern=carrel-a-@v+3.conf

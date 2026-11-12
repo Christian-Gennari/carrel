@@ -4,11 +4,11 @@
 
 [Source]
 Type=regular-file
-Path=/data/.stylos/update/payload
-MatchPattern=stylos-verity-@v.raw
+Path=/data/.carrel/update/payload
+MatchPattern=carrel-verity-@v.raw
 
 [Target]
 Type=partition
 Path=auto
 MatchPartitionType=root-x86-64-verity
-MatchPattern=stylos-verity-@v
+MatchPattern=carrel-verity-@v

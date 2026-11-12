@@ -1,16 +1,16 @@
 [Unit]
-Description=Apply a staged Stylos update with systemd-sysupdate
-Documentation=file:///usr/share/doc/stylos
+Description=Apply a staged Carrel update with systemd-sysupdate
+Documentation=file:///usr/share/doc/carrel
 After=local-fs.target data.mount
-Before=graphical.target stylos-session.service
-ConditionPathExists=/data/.stylos/update/payload
+Before=graphical.target carrel-session.service
+ConditionPathExists=/data/.carrel/update/payload
 
 [Service]
 Type=oneshot
 # A broken payload must not fail the current boot: the old slot is still
 # valid and will be marked good.  The failure is logged to the journal and
 # the serial console.
-ExecStart=-/usr/lib/stylos/apply-update
+ExecStart=-/usr/lib/carrel/apply-update
 TimeoutStartSec=600
 
 [Install]

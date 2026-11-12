@@ -2,24 +2,24 @@
 # Mark the running slot good once boot-complete.target has been reached.
 #
 # Boot counting works like this:
-#   * a new boot entry is installed as loader/entries/stylos-<slot>-<version>+3.conf
+#   * a new boot entry is installed as loader/entries/carrel-<slot>-<version>+3.conf
 #   * systemd-boot decrements the +N counter on every attempt
 #   * when this service runs and boot-complete.target is active, the counted
-#     file is renamed to stylos-<slot>.conf and becomes the persistent default
+#     file is renamed to carrel-<slot>.conf and becomes the persistent default
 #   * if boot never completes, after three attempts systemd-boot removes the
-#     counted entry and the previous slot (stylos-<other>.conf) boots
+#     counted entry and the previous slot (carrel-<other>.conf) boots
 #
-# GRUB (BIOS) has no EFI boot counter.  apply-update sets stylos_tries=3 and
+# GRUB (BIOS) has no EFI boot counter.  apply-update sets carrel_tries=3 and
 # grub.cfg decrements it with a string ladder before every boot, so a kernel or
 # initrd panic still consumes a try.  A healthy boot marks it "good".
 set -eu
 
 log() {
-    echo "STYLOS-BOOT: $*" >&2
-    echo "STYLOS-BOOT: $*" >>/dev/ttyS0 2>/dev/null || true
+    echo "CARREL-BOOT: $*" >&2
+    echo "CARREL-BOOT: $*" >>/dev/ttyS0 2>/dev/null || true
 }
 
-slot="$(sed -n 's/.*stylos\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
+slot="$(sed -n 's/.*carrel\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
 [ -n "$slot" ] || exit 0
 
 # Report the firmware's Secure Boot state, for the QEMU gate and for support.
@@ -39,16 +39,16 @@ if systemctl list-units --state=failed --no-legend --plain 2>/dev/null | grep -q
     # try.  systemd-boot 257 keeps selecting an exhausted +0- entry, so when
     # the counter reaches zero the OS itself removes it and switches the
     # default to the other slot.
-    counted="$(ls -1 /boot/loader/entries/stylos-$slot-*+*.conf 2>/dev/null | head -1 || true)"
+    counted="$(ls -1 /boot/loader/entries/carrel-$slot-*+*.conf 2>/dev/null | head -1 || true)"
     tries="$(basename "${counted:-}" | sed -n 's/.*+\([0-9][0-9]*\)-.*/\1/p')"
     other=$([ "$slot" = a ] && echo b || echo a)
-    good="/boot/loader/entries/stylos-$other.conf"
+    good="/boot/loader/entries/carrel-$other.conf"
     if [ -n "$counted" ] && [ "${tries:-1}" = "0" ] && [ -f "$good" ]; then
         rm -f "$counted"
-        printf 'default stylos-%s.conf\ntimeout 2\neditor no\n' "$other" >/boot/loader/loader.conf
+        printf 'default carrel-%s.conf\ntimeout 2\neditor no\n' "$other" >/boot/loader/loader.conf
         if [ -f /boot/grub/grubenv ]; then
             grub-editenv /boot/grub/grubenv set \
-                "stylos_default=$other" stylos_tries=good
+                "carrel_default=$other" carrel_tries=good
             log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
         fi
         log "slot $slot exhausted its boot counter; falling back to $other"
@@ -61,21 +61,21 @@ if systemctl list-units --state=failed --no-legend --plain 2>/dev/null | grep -q
 fi
 
 if [ -d /sys/firmware/efi ] && [ -d /boot/loader/entries ]; then
-    good="/boot/loader/entries/stylos-$slot.conf"
-    counted="$(ls -1 /boot/loader/entries/stylos-$slot-*+*.conf 2>/dev/null | tail -1 || true)"
+    good="/boot/loader/entries/carrel-$slot.conf"
+    counted="$(ls -1 /boot/loader/entries/carrel-$slot-*+*.conf 2>/dev/null | tail -1 || true)"
     if [ -n "$counted" ]; then
         mv -f "$counted" "$good"
         log "renamed $(basename "$counted") to $(basename "$good")"
     fi
     if [ -f "$good" ]; then
-        printf 'default stylos-%s.conf\ntimeout 2\neditor no\n' "$slot" >/boot/loader/loader.conf
+        printf 'default carrel-%s.conf\ntimeout 2\neditor no\n' "$slot" >/boot/loader/loader.conf
     fi
 fi
 
 # GRUB (BIOS) has no EFI variables; mark this slot's boot good.
 if [ -f /boot/grub/grubenv ]; then
     grub-editenv /boot/grub/grubenv set \
-        "stylos_default=$slot" stylos_tries=good
+        "carrel_default=$slot" carrel_tries=good
     log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
 fi
 

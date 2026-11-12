@@ -1,10 +1,10 @@
 #!/bin/bash
-# Stylos installer.
+# Carrel installer.
 #
 # Runs only when the running root is on a USB disk (removable or TRAN=usb).
-# Offers "Try Stylos" or "Install to this computer".  Installing copies the
+# Offers "Try Carrel" or "Install to this computer".  Installing copies the
 # running USB image to the internal disk with dd, grows the data partition to
-# fill the disk, makes Stylos the first UEFI boot entry (when the computer
+# fill the disk, makes Carrel the first UEFI boot entry (when the computer
 # booted in UEFI mode) and reboots.  The writer must type ERASE; there is no
 # other confirmation path.
 set -u
@@ -14,7 +14,7 @@ export NCURSES_NO_UTF8_ACS=1
 
 TTY=/dev/tty1
 log() {
-    echo "STYLOS-INSTALLER: $*" >>/dev/ttyS0 2>/dev/null || true
+    echo "CARREL-INSTALLER: $*" >>/dev/ttyS0 2>/dev/null || true
 }
 
 # The installer is only for USB boots.  Booting the installed disk skips it.
@@ -33,14 +33,14 @@ fi
 
 log "USB boot on /dev/$src_disk"
 
-# Make Stylos the default UEFI boot entry.  The entry points at Microsoft-
+# Make Carrel the default UEFI boot entry.  The entry points at Microsoft-
 # signed shim on the new ESP, so Secure Boot stays on and the writer never opens
 # the firmware settings.  Best effort: a firmware that refuses the entry still
 # boots the disk through the removable-media path (EFI/BOOT/BOOTX64.EFI).
-# Numbers of the firmware boot entries labelled "Stylos".
-stylos_entries() {
+# Numbers of the firmware boot entries labelled "Carrel".
+carrel_entries() {
     efibootmgr 2>/dev/null \
-        | awk '$1 ~ /^Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\*?$/ && $2 == "Stylos" {print substr($1, 5, 4)}'
+        | awk '$1 ~ /^Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\*?$/ && $2 == "Carrel" {print substr($1, 5, 4)}'
 }
 
 register_boot_entry() {
@@ -63,15 +63,15 @@ register_boot_entry() {
     [ -n "$number" ] || { log "no partition number for $esp"; return 0; }
 
     # Remove entries from an earlier install, then create ours.
-    for old in $(stylos_entries); do
+    for old in $(carrel_entries); do
         efibootmgr -q -b "$old" -B >/dev/null 2>&1 || true
     done
-    if ! efibootmgr -q -c -d "$disk" -p "$number" -L Stylos \
-            -l '\EFI\stylos\shimx64.efi' >/dev/null 2>&1; then
-        log "efibootmgr could not create the Stylos entry"
+    if ! efibootmgr -q -c -d "$disk" -p "$number" -L Carrel \
+            -l '\EFI\carrel\shimx64.efi' >/dev/null 2>&1; then
+        log "efibootmgr could not create the Carrel entry"
         return 0
     fi
-    new="$(stylos_entries | head -1)"
+    new="$(carrel_entries | head -1)"
     # efibootmgr -c already puts the new entry first; make it explicit so a
     # firmware that appends does not leave another system in front.
     if [ -n "$new" ]; then
@@ -84,15 +84,15 @@ register_boot_entry() {
         fi
     fi
     efibootmgr -v 2>&1 | while read -r line; do log "efibootmgr: $line"; done
-    log "UEFI boot entry Stylos is first (Boot${new:-????})"
+    log "UEFI boot entry Carrel is first (Boot${new:-????})"
 }
 
 menu() {
     log "main menu"
-    whiptail --title "Stylos" --menu \
-        "This USB stick runs Stylos. You can try it, or install it on this computer." \
+    whiptail --title "Carrel" --menu \
+        "This USB stick runs Carrel. You can try it, or install it on this computer." \
         15 70 2 \
-        "try" "Try Stylos (nothing is changed)" \
+        "try" "Try Carrel (nothing is changed)" \
         "install" "Install to this computer" \
         3>&1 1>&2 2>&3
 }
@@ -115,8 +115,8 @@ choose_disk() {
 
     [ "${#args[@]}" -gt 0 ] || return 1
     log "disk menu"
-    whiptail --title "Install Stylos" --menu \
-        "Choose the internal disk to erase and install Stylos on." \
+    whiptail --title "Install Carrel" --menu \
+        "Choose the internal disk to erase and install Carrel on." \
         20 70 10 "${args[@]}" 3>&1 1>&2 2>&3
 }
 
@@ -128,49 +128,49 @@ while true; do
     fi
 
     target="$(choose_disk)" || {
-        whiptail --title "Install Stylos" --msgbox \
-            "No internal disk was found. Stylos can only be installed on an internal disk." \
+        whiptail --title "Install Carrel" --msgbox \
+            "No internal disk was found. Carrel can only be installed on an internal disk." \
             10 70
         continue
     }
 
     size_bytes="$(lsblk -b -dno SIZE "/dev/$target" 2>/dev/null || echo 0)"
     if [ "$size_bytes" -lt $((8 * 1024 * 1024 * 1024)) ]; then
-        whiptail --title "Install Stylos" --msgbox \
-            "/dev/$target is smaller than 8 GB. Stylos needs at least 8 GB." 10 70
+        whiptail --title "Install Carrel" --msgbox \
+            "/dev/$target is smaller than 8 GB. Carrel needs at least 8 GB." 10 70
         continue
     fi
 
     log "erase prompt"
-    answer="$(whiptail --title "Install Stylos" --inputbox \
+    answer="$(whiptail --title "Install Carrel" --inputbox \
         "This erases everything on /dev/$target, including other operating systems and files.
 
 Type ERASE (in capitals) to continue." \
         12 70 3>&1 1>&2 2>&3)" || continue
     log "erase prompt answered"
     if [ "$answer" != "ERASE" ]; then
-        whiptail --title "Install Stylos" --msgbox \
+        whiptail --title "Install Carrel" --msgbox \
             "The word ERASE was not typed. Nothing was changed." 9 60
         continue
     fi
 
     log "installing /dev/$src_disk -> /dev/$target"
-    whiptail --title "Installing Stylos" --infobox \
-        "Writing Stylos to /dev/$target. Do not unplug the computer." 8 70
+    whiptail --title "Installing Carrel" --infobox \
+        "Writing Carrel to /dev/$target. Do not unplug the computer." 8 70
     if ! dd if="/dev/$src_disk" of="/dev/$target" bs=4M conv=fsync status=none; then
-        whiptail --title "Install Stylos" --msgbox \
+        whiptail --title "Install Carrel" --msgbox \
             "Writing to /dev/$target failed. Nothing was changed." 9 70
         log "dd failed"
         continue
     fi
     sync
     log "image written; growing the data partition"
-    /usr/lib/stylos/grow-data "/dev/$target" >>/dev/ttyS0 2>&1 || true
+    /usr/lib/carrel/grow-data "/dev/$target" >>/dev/ttyS0 2>&1 || true
     sync
     register_boot_entry "$target"
     log "complete on /dev/$target"
-    whiptail --title "Stylos installed" --msgbox \
-        "Stylos is installed on /dev/$target.
+    whiptail --title "Carrel installed" --msgbox \
+        "Carrel is installed on /dev/$target.
 
 Remove the USB stick, then press Enter to reboot." 10 70
     log "rebooting"

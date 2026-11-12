@@ -17,7 +17,7 @@ done
 # /data is the mountpoint of the data partition.  The directory on the root
 # image is only a placeholder for the (very short) time before data.mount.
 install -d -m 0755 -o 1000 -g 1000 "$BUILDROOT/data/writing"
-install -d -m 0755 "$BUILDROOT/usr/share/stylos"
+install -d -m 0755 "$BUILDROOT/usr/share/carrel"
 
 # Presets cannot mask units, so mask the getty templates directly.  A symlink
 # to /dev/null is exactly what `systemctl mask` creates.  This also stops the
@@ -40,7 +40,7 @@ mkosi-chroot systemctl set-default graphical.target
 #   grubx64.efi   Debian-signed systemd-boot (shim's default second stage)
 #   mmx64.efi     MokManager, started by shim when a MOK enrolment is pending
 if [ "${1:-}" = "final" ]; then
-    esp="$BUILDROOT/efi/EFI/stylos"
+    esp="$BUILDROOT/efi/EFI/carrel"
     install -d -m 0755 "$esp"
     install -m 0644 "$BUILDROOT/usr/lib/shim/shimx64.efi.signed" "$esp/shimx64.efi"
     install -m 0644 "$BUILDROOT/usr/lib/shim/mmx64.efi.signed" "$esp/mmx64.efi"

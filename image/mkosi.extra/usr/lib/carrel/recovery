@@ -1,7 +1,7 @@
 #!/bin/bash
-# Stylos recovery menu.
+# Carrel recovery menu.
 #
-# Booted with systemd.unit=stylos-recovery.target from the boot menu.  There
+# Booted with systemd.unit=carrel-recovery.target from the boot menu.  There
 # is no shell: every action is one item in this menu.
 set -u
 
@@ -9,10 +9,10 @@ export TERM=linux
 export NCURSES_NO_UTF8_ACS=1
 
 log() {
-    echo "STYLOS-RECOVERY: $*" >>/dev/ttyS0 2>/dev/null || true
+    echo "CARREL-RECOVERY: $*" >>/dev/ttyS0 2>/dev/null || true
 }
 
-slot="$(sed -n 's/.*stylos\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
+slot="$(sed -n 's/.*carrel\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
 case "$slot" in
     a) other=b ;;
     b) other=a ;;
@@ -20,17 +20,17 @@ case "$slot" in
 esac
 
 boot_previous() {
-    if [ ! -f "/boot/loader/entries/stylos-$other.conf" ]; then
-        whiptail --title "Stylos recovery" --msgbox \
+    if [ ! -f "/boot/loader/entries/carrel-$other.conf" ]; then
+        whiptail --title "Carrel recovery" --msgbox \
             "The previous system (slot $other) is not installed." 9 60
         return
     fi
-    if whiptail --title "Stylos recovery" --yesno \
+    if whiptail --title "Carrel recovery" --yesno \
         "Boot the previous system (slot $other) now?" 9 60; then
-        printf 'default stylos-%s.conf\ntimeout 2\neditor no\n' "$other" >/boot/loader/loader.conf
+        printf 'default carrel-%s.conf\ntimeout 2\neditor no\n' "$other" >/boot/loader/loader.conf
         if [ -f /boot/grub/grubenv ]; then
             grub-editenv /boot/grub/grubenv set \
-                "stylos_default=$other" stylos_tries=good
+                "carrel_default=$other" carrel_tries=good
             log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
         fi
         log "booting previous slot $other"
@@ -75,20 +75,20 @@ copy_writing() {
             "/dev/$disk has no partition. Format it first." 9 60
         return
     fi
-    mkdir -p /run/stylos-usb
+    mkdir -p /run/carrel-usb
     log "mounting /dev/$part"
     # -n: the recovery root is read-only and /etc/mtab is a /proc symlink;
     # skipping the mtab update keeps util-linux from mounting and immediately
     # undoing it when the update fails.
-    if ! mount_output="$(timeout 60 mount -n -t ext4 -o rw "/dev/$part" /run/stylos-usb 2>&1)"; then
+    if ! mount_output="$(timeout 60 mount -n -t ext4 -o rw "/dev/$part" /run/carrel-usb 2>&1)"; then
         log "could not mount /dev/$part: $mount_output"
         whiptail --title "Copy writing" --msgbox \
             "Could not mount /dev/$part. Use a FAT or ext4 partition." 9 70
-        rmdir /run/stylos-usb 2>/dev/null || true
+        rmdir /run/carrel-usb 2>/dev/null || true
         return
     fi
     log "mounted /dev/$part"
-    local dest="/run/stylos-usb/stylos-writing-$(date +%Y%m%d-%H%M%S)"
+    local dest="/run/carrel-usb/carrel-writing-$(date +%Y%m%d-%H%M%S)"
     mkdir -p "$dest"
     log "copying /data/writing to $dest"
     whiptail --title "Copy writing" --infobox \
@@ -96,13 +96,13 @@ copy_writing() {
     if timeout 300 cp -a /data/writing/. "$dest"/; then
         log "copy finished"
         sync
-        umount -n /run/stylos-usb
-        rmdir /run/stylos-usb 2>/dev/null || true
+        umount -n /run/carrel-usb
+        rmdir /run/carrel-usb 2>/dev/null || true
         log "copied to $dest on /dev/$part"
         whiptail --title "Copy writing" --msgbox \
             "Writing copied to $dest on /dev/$part." 9 70
     else
-        umount -n /run/stylos-usb 2>/dev/null || true
+        umount -n /run/carrel-usb 2>/dev/null || true
         whiptail --title "Copy writing" --msgbox \
             "The copy failed. The drive may be full." 9 60
     fi
@@ -114,7 +114,7 @@ reset_settings() {
         10 70; then
         return
     fi
-    rm -f /data/.stylos/settings.json /data/.stylos/stats.json
+    rm -f /data/.carrel/settings.json /data/.carrel/stats.json
     whiptail --title "Reset settings" --msgbox "Settings were reset." 8 60
 }
 
@@ -124,7 +124,7 @@ src_disk="$(lsblk -srno NAME "$src_src" 2>/dev/null | tail -1 | tr -d ' ' || tru
 
 log "menu"
 while true; do
-    choice="$(whiptail --title "Stylos recovery" --menu \
+    choice="$(whiptail --title "Carrel recovery" --menu \
         "Choose an action. There is no shell here." 18 70 6 \
         "previous" "Boot previous system" \
         "copy" "Copy all writing to USB drive" \

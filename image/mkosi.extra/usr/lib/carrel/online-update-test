@@ -1,16 +1,16 @@
 #!/bin/sh
 # Test hook: stage an online update from a URL, then apply it through the
 # daemon's D-Bus API.  The unit only runs when the test harness wrote
-# /data/.stylos/update/test-url, so a production device never opens the
+# /data/.carrel/update/test-url, so a production device never opens the
 # network here.
 set -u
 
 log() {
-    echo "STYLOS-TEST-UPDATE: $*" >&2
-    echo "STYLOS-TEST-UPDATE: $*" >>/dev/ttyS0 2>/dev/null || true
+    echo "CARREL-TEST-UPDATE: $*" >&2
+    echo "CARREL-TEST-UPDATE: $*" >>/dev/ttyS0 2>/dev/null || true
 }
 
-url_file=/data/.stylos/update/test-url
+url_file=/data/.carrel/update/test-url
 [ -f "$url_file" ] || exit 0
 url="$(cat "$url_file")"
 log "staging from $url"
@@ -26,7 +26,7 @@ while ! curl -fsS --max-time 2 "${url%/}/SHA256SUMS" -o /dev/null 2>/dev/null; d
 done
 log "network window open"
 
-output="$(/usr/bin/stylosd update --url "$url" 2>&1)"
+output="$(/usr/bin/carreld update --url "$url" 2>&1)"
 result=$?
 if [ "$result" -ne 0 ]; then
     log "rejected: $output"

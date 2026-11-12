@@ -1,9 +1,9 @@
 [Unit]
-Description=Stylos recovery menu
-Documentation=file:///usr/share/doc/stylos
+Description=Carrel recovery menu
+Documentation=file:///usr/share/doc/carrel
 Conflicts=graphical.target
 After=local-fs.target data.mount
-Before=stylos-recovery.target
+Before=carrel-recovery.target
 
 [Service]
 Type=oneshot
@@ -14,7 +14,7 @@ TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
 TimeoutStartSec=infinity
-ExecStart=/usr/lib/stylos/recovery
+ExecStart=/usr/lib/carrel/recovery
 
 [Install]
-WantedBy=stylos-recovery.target
+WantedBy=carrel-recovery.target

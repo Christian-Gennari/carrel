@@ -11,20 +11,20 @@
 set -eu
 
 log() {
-    echo "stylos-data-init: $*" >&2
-    echo "STYLOS-DATA: $*" >>/dev/ttyS0 2>/dev/null || true
+    echo "carrel-data-init: $*" >&2
+    echo "CARREL-DATA: $*" >>/dev/ttyS0 2>/dev/null || true
 }
 
 data=/data
-mkdir -p "$data/writing" "$data/var" "$data/etc" "$data/.etc-work" "$data/.stylos"
+mkdir -p "$data/writing" "$data/var" "$data/etc" "$data/.etc-work" "$data/.carrel"
 chown 1000:1000 "$data/writing" 2>/dev/null || true
 chmod 0755 "$data/writing"
-# stylosd runs as root and creates history.git; the shell runs as writer and
+# carreld runs as root and creates history.git; the shell runs as writer and
 # needs to write the journal, settings and stats next to it.  Create the
-# directory as writer before stylosd starts, otherwise the daemon's root-owned
-# .stylos would lock the shell out.
-install -d -m 0755 -o 1000 -g 1000 "$data/writing/.stylos" \
-    "$data/writing/.stylos/journal" 2>/dev/null || true
+# directory as writer before carreld starts, otherwise the daemon's root-owned
+# .carrel would lock the shell out.
+install -d -m 0755 -o 1000 -g 1000 "$data/writing/.carrel" \
+    "$data/writing/.carrel/journal" 2>/dev/null || true
 
 # First boot: copy the image's /var skeleton so dpkg, systemd and friends find
 # the directories they expect.  The copy happens before /var is covered.

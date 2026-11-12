@@ -4,40 +4,40 @@
 # The payload is staged on the data partition (during a sync, or by a service
 # technician from a USB stick) as:
 #
-#   /data/.stylos/update/payload/stylos-root-<slot>-<version>.raw
-#   /data/.stylos/update/payload/stylos-verity-<slot>-<version>.raw
-#   /data/.stylos/update/payload/stylos-verity-<slot>-sig-<version>.sig
-#   /data/.stylos/update/payload/stylos-<slot>-<version>.conf   (boot entry)
+#   /data/.carrel/update/payload/carrel-root-<slot>-<version>.raw
+#   /data/.carrel/update/payload/carrel-verity-<slot>-<version>.raw
+#   /data/.carrel/update/payload/carrel-verity-<slot>-sig-<version>.sig
+#   /data/.carrel/update/payload/carrel-<slot>-<version>.conf   (boot entry)
 #
 # Only the inactive slot is touched.  The transfer definitions live in
-# /usr/lib/stylos/sysupdate and are selected here, so a boot from slot B
+# /usr/lib/carrel/sysupdate and are selected here, so a boot from slot B
 # writes slot A and vice versa.
 set -eu
 
 log() {
-    echo "STYLOS-UPDATE: $*" >&2
-    echo "STYLOS-UPDATE: $*" >>/dev/ttyS0 2>/dev/null || true
+    echo "CARREL-UPDATE: $*" >&2
+    echo "CARREL-UPDATE: $*" >>/dev/ttyS0 2>/dev/null || true
 }
 
-slot="$(sed -n 's/.*stylos\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
+slot="$(sed -n 's/.*carrel\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
 case "$slot" in
     a) other=b ;;
     b) other=a ;;
     *) log "cannot determine the running slot"; exit 1 ;;
 esac
 
-base=/data/.stylos/update
+base=/data/.carrel/update
 [ -d "$base/payload" ] || exit 0
 
-defs=/run/stylos-update.d
+defs=/run/carrel-update.d
 mkdir -p "$defs"
 rm -f "$defs"/*.transfer
 # Boot entry last: it is the entry point of the update.  Root, verity hashes and the
 # signature must be in place before anything can select the new kernel.
-cp "/usr/lib/stylos/sysupdate/root.transfer" "$defs/10-root.transfer"
-cp "/usr/lib/stylos/sysupdate/verity.transfer" "$defs/20-verity.transfer"
-cp "/usr/lib/stylos/sysupdate/sig.transfer" "$defs/30-sig.transfer"
-cp "/usr/lib/stylos/sysupdate/entry-$other.transfer" "$defs/40-entry.transfer"
+cp "/usr/lib/carrel/sysupdate/root.transfer" "$defs/10-root.transfer"
+cp "/usr/lib/carrel/sysupdate/verity.transfer" "$defs/20-verity.transfer"
+cp "/usr/lib/carrel/sysupdate/sig.transfer" "$defs/30-sig.transfer"
+cp "/usr/lib/carrel/sysupdate/entry-$other.transfer" "$defs/40-entry.transfer"
 
 log "applying an update to slot $other from $base"
 # The list output is small and makes a rejected/incomplete update set
@@ -50,7 +50,7 @@ if ! SYSTEMD_LOG_LEVEL=debug /usr/lib/systemd/systemd-sysupdate \
     exit 1
 fi
 
-entry="$(ls -1t /boot/loader/entries/stylos-$other-*+*.conf 2>/dev/null | head -1 || true)"
+entry="$(ls -1t /boot/loader/entries/carrel-$other-*+*.conf 2>/dev/null | head -1 || true)"
 if [ -n "$entry" ]; then
     # systemd-boot displays and matches the entry ID without the boot-count
     # suffix (+3); the file keeps the suffix and is renamed as tries are
@@ -77,14 +77,14 @@ if [ -f /boot/grub/grubenv ]; then
     fi
     if [ -n "${roothash:-}" ]; then
         grub-editenv /boot/grub/grubenv set \
-            "stylos_default=$other" "stylos_tries=3" \
-            "stylos_${other}_roothash=$roothash"
+            "carrel_default=$other" "carrel_tries=3" \
+            "carrel_${other}_roothash=$roothash"
         log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
         log "slot $other roothash is $roothash"
     else
         log "could not read slot $other roothash; keeping the old value"
         grub-editenv /boot/grub/grubenv set \
-            "stylos_default=$other" "stylos_tries=3"
+            "carrel_default=$other" "carrel_tries=3"
         log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
     fi
 fi

@@ -1,8 +1,8 @@
 [Unit]
-Description=Stylos installer (only active when booted from a USB stick)
-Documentation=file:///usr/share/doc/stylos
+Description=Carrel installer (only active when booted from a USB stick)
+Documentation=file:///usr/share/doc/carrel
 After=local-fs.target
-Before=graphical.target stylos-session.service
+Before=graphical.target carrel-session.service
 ConditionPathExists=/dev/tty1
 
 [Service]
@@ -14,7 +14,7 @@ TTYPath=/dev/tty1
 TTYReset=yes
 TTYVHangup=yes
 TimeoutStartSec=infinity
-ExecStart=/usr/lib/stylos/installer
+ExecStart=/usr/lib/carrel/installer
 
 [Install]
 WantedBy=graphical.target

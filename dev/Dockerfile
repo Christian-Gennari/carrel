@@ -1,4 +1,4 @@
-# Stylos dev container: everything needed to build and test Stylos.
+# Carrel dev container: everything needed to build and test Carrel.
 FROM debian:trixie
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -33,6 +33,6 @@ RUN echo 'export PATH=/opt/cargo/bin:$PATH' > /etc/profile.d/rust.sh
 # The cargo caches are named volumes. Make sure a fresh volume (and a volume
 # created by an older version of this image) is writable for the host user.
 RUN mkdir -p /opt/cargo/registry /opt/cargo/git && chmod -R a+rwX /opt/cargo
-COPY --chmod=0755 entrypoint.sh /usr/local/bin/stylos-dev-entrypoint
+COPY --chmod=0755 entrypoint.sh /usr/local/bin/carrel-dev-entrypoint
 WORKDIR /work
-ENTRYPOINT ["/usr/local/bin/stylos-dev-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/carrel-dev-entrypoint"]

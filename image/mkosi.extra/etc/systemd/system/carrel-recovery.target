@@ -1,0 +1,7 @@
+[Unit]
+Description=Carrel recovery
+Documentation=file:///usr/share/doc/carrel
+Requires=carrel-recovery.service
+After=carrel-recovery.service
+Conflicts=graphical.target
+AllowIsolate=yes

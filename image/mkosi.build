@@ -1,29 +1,29 @@
 #!/bin/sh
-# Install the real Stylos binaries into the image.
+# Install the real Carrel binaries into the image.
 #
-# The Makefile builds stylos-shell and stylosd with cargo in the dev container
-# (the same container that runs mkosi) and points STYLOS_BINARIES at the
+# The Makefile builds carrel-shell and carreld with cargo in the dev container
+# (the same container that runs mkosi) and points CARREL_BINARIES at the
 # release directory.  Building here instead would need a Rust toolchain and a
 # fresh crates.io download inside the mkosi build image on every build; the
 # binaries are build outputs and are never committed.
 set -eu
 
-binaries="${STYLOS_BINARIES:-$SRCDIR/target/release}"
+binaries="${CARREL_BINARIES:-$SRCDIR/target/release}"
 
-for binary in stylos-shell stylosd; do
+for binary in carrel-shell carreld; do
     if [ ! -x "$binaries/$binary" ]; then
         echo "mkosi.build: $binaries/$binary is missing" >&2
-        echo "mkosi.build: run 'cargo build --release -p stylos-shell -p stylosd' first" >&2
+        echo "mkosi.build: run 'cargo build --release -p carrel-shell -p carreld' first" >&2
         exit 1
     fi
     install -D -m 0755 "$binaries/$binary" "$DESTDIR/usr/bin/$binary"
 done
 
-# The daemon's unit, D-Bus policy and documentation come from the stylosd
+# The daemon's unit, D-Bus policy and documentation come from the carreld
 # crate so there is exactly one copy of each file.
-install -D -m 0644 "$SRCDIR/stylosd/systemd/stylosd.service" \
-    "$DESTDIR/usr/lib/systemd/system/stylosd.service"
-install -D -m 0644 "$SRCDIR/stylosd/dbus/page.nostos.Carrel.Daemon1.conf" \
+install -D -m 0644 "$SRCDIR/carreld/systemd/carreld.service" \
+    "$DESTDIR/usr/lib/systemd/system/carreld.service"
+install -D -m 0644 "$SRCDIR/carreld/dbus/page.nostos.Carrel.Daemon1.conf" \
     "$DESTDIR/usr/share/dbus-1/system.d/page.nostos.Carrel.Daemon1.conf"
 
 # Public release keys.  The private half never enters the image; systemd-
@@ -43,26 +43,26 @@ if [ ! -f "$verity_cert" ]; then
     exit 1
 fi
 install -D -m 0644 "$update_pubkey" "$DESTDIR/usr/lib/systemd/import-pubring.gpg"
-install -D -m 0644 "$verity_cert" "$DESTDIR/usr/share/stylos/keys/verity.crt"
+install -D -m 0644 "$verity_cert" "$DESTDIR/usr/share/carrel/keys/verity.crt"
 
 # The release URL is fixed at build time.  A device checks it only during a
 # sync session (spec/02-sync-protocol.md, Updates).
-install -d -m 0755 "$DESTDIR/usr/lib/stylos"
-printf '%s\n' "${STYLOS_UPDATE_URL:-}" >"$DESTDIR/usr/lib/stylos/update-url"
+install -d -m 0755 "$DESTDIR/usr/lib/carrel"
+printf '%s\n' "${CARREL_UPDATE_URL:-}" >"$DESTDIR/usr/lib/carrel/update-url"
 
 # Optional build-time secret.  dev/run.sh mounts the host's copy read-only at
-# $SRCDIR/.stylos-oauth.toml and exports STYLOS_OAUTH_TOML; the file is never
+# $SRCDIR/.carrel-oauth.toml and exports CARREL_OAUTH_TOML; the file is never
 # committed.  A build without it is a valid self-build (Google Drive pairing
 # is simply unavailable).
-oauth="$SRCDIR/.stylos-oauth.toml"
-if [ ! -f "$oauth" ] && [ -f "$SRCDIR/image/.stylos-oauth.toml" ]; then
-    oauth="$SRCDIR/image/.stylos-oauth.toml"
+oauth="$SRCDIR/.carrel-oauth.toml"
+if [ ! -f "$oauth" ] && [ -f "$SRCDIR/image/.carrel-oauth.toml" ]; then
+    oauth="$SRCDIR/image/.carrel-oauth.toml"
 fi
-if [ ! -f "$oauth" ] && [ -n "${STYLOS_OAUTH_TOML:-}" ]; then
-    oauth="$STYLOS_OAUTH_TOML"
+if [ ! -f "$oauth" ] && [ -n "${CARREL_OAUTH_TOML:-}" ]; then
+    oauth="$CARREL_OAUTH_TOML"
 fi
 if [ -f "$oauth" ]; then
-    install -D -m 0644 "$oauth" "$DESTDIR/usr/share/stylos/oauth.toml"
+    install -D -m 0644 "$oauth" "$DESTDIR/usr/share/carrel/oauth.toml"
 else
     echo "mkosi.build: no oauth.toml, building without Google Drive client IDs"
 fi
