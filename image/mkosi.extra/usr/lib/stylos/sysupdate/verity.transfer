@@ -1,5 +1,5 @@
 # dm-verity hash tree for the root filesystem.  It must be installed with the
-# root it belongs to; the UKI/GRUB roothash is what authenticates the pair.
+# root it belongs to; the boot entry/GRUB roothash is what authenticates the pair.
 [Transfer]
 
 [Source]

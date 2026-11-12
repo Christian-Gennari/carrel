@@ -47,7 +47,7 @@ const PAIRING_TIMEOUT: Duration = Duration::from_secs(600);
 const PAIRING_POLL: Duration = Duration::from_secs(2);
 
 /// Default Nostos endpoint from `spec/02-sync-protocol.md`.
-pub const NOSTOS_URL: &str = "https://api.nostos.app/stylos/v1";
+pub const NOSTOS_URL: &str = "https://app.nostos.page/stylos/v1";
 
 /// What the Sync screen shows: one state, one line, one time.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]

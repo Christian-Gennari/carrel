@@ -110,11 +110,27 @@ pub fn selected_index(list: &gtk::ListBox) -> usize {
         .unwrap_or(0)
 }
 
-/// Keep the selected row visible without waiting for a key repeat.
+/// Keep the selected row visible.
+///
+/// Screens rebuild their list on every key press, so the new rows have no
+/// size yet when this is called and the bounds are empty. The scroll is done
+/// again once the layout is done, which is what makes the last rows of a long
+/// list (Settings at 800 px: Update, About) reachable with the keyboard.
 pub fn scroll_to_row(scroller: &gtk::ScrolledWindow, list: &gtk::ListBox, row: &gtk::ListBoxRow) {
+    scroll_now(scroller, list, row);
+    let scroller = scroller.clone();
+    let list = list.clone();
+    let row = row.clone();
+    glib::idle_add_local_once(move || scroll_now(&scroller, &list, &row));
+}
+
+fn scroll_now(scroller: &gtk::ScrolledWindow, list: &gtk::ListBox, row: &gtk::ListBoxRow) {
     let Some(bounds) = row.compute_bounds(list) else {
         return;
     };
+    if bounds.height() <= 0.0 {
+        return;
+    }
     let adjustment = scroller.vadjustment();
     let top = f64::from(bounds.y());
     let bottom = top + f64::from(bounds.height());

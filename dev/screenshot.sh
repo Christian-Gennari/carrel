@@ -26,6 +26,8 @@ The kettle clicks off at six. I write at the kitchen table while the house is st
 > A sentence is a small room. You walk in, close the door, and look around.
 
 Some mornings the words come *slowly*.[^1](nostos:cite/quiet-mornings-42)
+
+As the library puts it, [a sentence is a small room](nostos:cite/small-room-7) and the door closes behind you.[^2](nostos:cite/small-room-7)
 EOF
 
 cat > "$root/Novel/Chapter one.md" <<'EOF'
@@ -150,6 +152,8 @@ shoot sync-pair-gdrive-paper paper true true pair-gdrive ""
 # Settings, Paper and Night.
 shoot settings-paper paper true true settings ""
 shoot settings-night night true true settings ""
+# The last rows (Update, About) must scroll into view at 800 px.
+shoot settings-last-paper paper true true settings "" STYLOS_SETTINGS_SELECT=99
 
 # Wi-Fi scan list.
 shoot wifi-paper paper true true wifi ""

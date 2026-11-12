@@ -7,12 +7,19 @@ Scenarios (all run by `make test-boot`):
   bios       same through SeaBIOS + GRUB
   install    boot the base image as a USB stick, install to a blank disk,
              boot the installed disk and screenshot the editor
-  recovery   boot the recovery UKI and screenshot its menu
+  recovery   boot the recovery entry and screenshot its menu
   powercut   type with QMP sendkey, system_reset, boot again and check that
              the text reached /data/writing
   update     stage the offline update fixture, apply it with sysupdate, make
              the new slot fail to reach boot-complete three times and assert
              that the previous slot boots
+  secureboot boot the image, install it to a blank disk and boot the installed
+             disk, all in QEMU with OVMF's Microsoft keys enrolled and Secure
+             Boot enforcing (shim -> Debian systemd-boot -> Debian kernel);
+             assert the installer made Stylos the first UEFI boot entry
+  update-secureboot  update + forced rollback on the Secure Boot install
+  release    flash the release .img.xz onto a fresh, larger virtual USB disk,
+             try Stylos from it on UEFI, UEFI Secure Boot and BIOS
 
 Only the Python standard library and the tools in dev/Dockerfile are used.
 """
@@ -38,6 +45,10 @@ import pefile
 
 OVMF_CODE = "/usr/share/OVMF/OVMF_CODE_4M.fd"
 OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.fd"
+# Secure Boot enforcing, with the Microsoft keys (and so Debian's shim)
+# enrolled.  These need SMM, see Qemu._command.
+OVMF_CODE_MS = "/usr/share/OVMF/OVMF_CODE_4M.ms.fd"
+OVMF_VARS_MS = "/usr/share/OVMF/OVMF_VARS_4M.ms.fd"
 
 ESP_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 BIOS_BOOT_GUID = "21686148-6449-6e6f-744e-656564454649"
@@ -198,18 +209,24 @@ def extract_erofs(image: Path, part: dict, destination: Path) -> None:
         )
 
 
-def uki_section(uki: Path, section: str, work: Path) -> bytes:
-    output = work / f"{uki.name}.{section}"
-    run("objcopy", "--dump-section", f".{section}={output}", uki, work / "objcopy.tmp")
-    return output.read_bytes().rstrip(b"\0")
+def entry_options(entry: Path) -> str:
+    """The kernel command line of a Boot Loader Specification Type #1 entry."""
+    for line in entry.read_text().splitlines():
+        if line.startswith("options"):
+            return line.partition(" ")[2].strip()
+    return ""
 
 
-def uki_cmdline(uki: Path, work: Path) -> str:
-    return uki_section(uki, "cmdline", work).decode(errors="replace")
+def entry_value(entry: Path, key: str) -> str:
+    for line in entry.read_text().splitlines():
+        name, _, value = line.partition(" ")
+        if name == key:
+            return value.strip()
+    return ""
 
 
-def uki_is_signed(uki: Path) -> bool:
-    pe = pefile.PE(str(uki), fast_load=True)
+def pe_is_signed(binary: Path) -> bool:
+    pe = pefile.PE(str(binary), fast_load=True)
     try:
         # IMAGE_DIRECTORY_ENTRY_SECURITY (index 4) holds the Authenticode blob.
         return pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].VirtualAddress != 0
@@ -331,8 +348,11 @@ class QMP:
 class Qemu:
     def __init__(self, name: str, out: Path, mode: str,
                  disks: list[dict], *, usb: dict | None = None,
-                 network: bool = False) -> None:
+                 network: bool = False, secure: bool = False,
+                 vars_from: Path | None = None) -> None:
         self.name = name
+        self.secure = secure
+        self.vars_from = vars_from
         self.out = out
         self.mode = mode
         self.disks = disks
@@ -352,7 +372,8 @@ class Qemu:
         cmd = [
             "qemu-system-x86_64",
             "-name", f"stylos-{self.name}",
-            "-machine", "q35,accel=kvm:tcg",
+            "-machine",
+            "q35,accel=kvm:tcg" + (",smm=on" if self.secure else ""),
             "-m", "2048",
             "-smp", "2",
             "-display", "none",
@@ -373,13 +394,25 @@ class Qemu:
             cmd += ["-nic", "none"]
 
         if self.mode == "uefi":
-            if not Path(OVMF_CODE).exists() or not Path(OVMF_VARS).exists():
+            code = OVMF_CODE_MS if self.secure else OVMF_CODE
+            template = OVMF_VARS_MS if self.secure else OVMF_VARS
+            if not Path(code).exists() or not Path(template).exists():
                 raise BootError("OVMF firmware is not installed in the dev container")
             if not self.vars.exists():
-                shutil.copyfile(OVMF_VARS, self.vars)
+                # Start from the NVRAM of an earlier run (the installer's boot
+                # entry lives there) or from a clean template.
+                source = self.vars_from if self.vars_from is not None else Path(template)
+                shutil.copyfile(source, self.vars)
             cmd[cmd.index("-boot"):cmd.index("-boot") + 2] = []
+            if self.secure:
+                # SMM-protected variable store: Secure Boot cannot be turned
+                # off from inside the guest.
+                cmd += [
+                    "-global", "driver=cfi.pflash01,property=secure,value=on",
+                    "-global", "ICH9-LPC.disable_s3=1",
+                ]
             cmd += [
-                "-drive", f"if=pflash,format=raw,readonly=on,file={OVMF_CODE}",
+                "-drive", f"if=pflash,format=raw,readonly=on,file={code}",
                 "-drive", f"if=pflash,format=raw,file={self.vars}",
             ]
 
@@ -401,6 +434,7 @@ class Qemu:
     def __enter__(self) -> "Qemu":
         self.qmp_path.unlink(missing_ok=True)
         self.serial.unlink(missing_ok=True)
+        self.vars.unlink(missing_ok=True)
         with self.log.open("w") as log:
             self.proc = subprocess.Popen(
                 self._command(), stdout=log, stderr=subprocess.STDOUT,
@@ -463,6 +497,17 @@ class Qemu:
             time.sleep(delay)
 
     def screenshot(self, path: Path, *, light: bool = True) -> Path:
+        # On a busy machine the first frame can arrive late (TCG, shared
+        # CPU): retry a dark or empty screen for a while before failing.
+        problem = ""
+        for attempt in range(20):
+            problem = self._screendump(path, light)
+            if not problem:
+                return path
+            time.sleep(3)
+        raise BootError(problem)
+
+    def _screendump(self, path: Path, light: bool) -> str:
         assert self.qmp is not None
         path.parent.mkdir(parents=True, exist_ok=True)
         try:
@@ -473,7 +518,7 @@ class Qemu:
             run("convert", ppm, path)
             ppm.unlink(missing_ok=True)
         if not path.exists() or path.stat().st_size < 2048:
-            raise BootError(f"[{self.name}] screenshot looks empty: {path}")
+            return f"[{self.name}] screenshot looks empty: {path}"
         if shutil.which("identify"):
             values = subprocess.run(
                 ["identify", "-format", "%[fx:mean] %[fx:standard_deviation]", str(path)],
@@ -481,14 +526,10 @@ class Qemu:
             ).stdout.split()
             mean, stddev = float(values[0]), float(values[1])
             if light and mean < 0.5:
-                raise BootError(
-                    f"[{self.name}] screenshot too dark (mean={mean}); editor missing?"
-                )
+                return f"[{self.name}] screenshot too dark (mean={mean}); editor missing?"
             if light and stddev < 0.01:
-                raise BootError(
-                    f"[{self.name}] screenshot has no contrast (stddev={stddev})"
-                )
-        return path
+                return f"[{self.name}] screenshot has no contrast (stddev={stddev})"
+        return ""
 
     def reset(self) -> None:
         assert self.qmp is not None
@@ -579,15 +620,40 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         failures,
     )
 
-    # ESP: the bootloader, both slot UKIs and the recovery entry.
+    # ESP: the Secure Boot chain, the A/B boot entries and the recovery entry.
     with mounted(image, esp, "vfat", root=out / "test") as boot:
-        for name in ("stylos-a.efi", "stylos-0-recovery.efi"):
-            path = boot / "EFI/Linux" / name
-            expect(path.is_file() and path.stat().st_size > 50 * 1024**2,
-                   f"ESP is missing a full {name}", failures)
+        work = out / "test" / "esp-check"
+        work.mkdir(parents=True, exist_ok=True)
+        # Debian's signed binaries, unchanged.  shim is BOOTX64.EFI on
+        # removable media and under EFI/stylos for the firmware boot entry;
+        # systemd-boot is shim's second stage (grubx64.efi).
+        for directory in ("EFI/BOOT", "EFI/stylos"):
+            for name in ("grubx64.efi", "mmx64.efi"):
+                path = boot / directory / name
+                expect(path.is_file() and path.stat().st_size > 50 * 1024,
+                       f"ESP is missing {directory}/{name}", failures)
+                expect(path.is_file() and pe_is_signed(path),
+                       f"{directory}/{name} is not signed", failures)
+        shim = boot / "EFI/stylos/shimx64.efi"
+        expect(shim.is_file() and shim.stat().st_size > 500 * 1024,
+               "ESP is missing EFI/stylos/shimx64.efi", failures)
+        expect(shim.is_file() and pe_is_signed(shim), "shim is not signed", failures)
+        expect((boot / "EFI/BOOT/BOOTX64.EFI").is_file()
+               and (boot / "EFI/BOOT/BOOTX64.EFI").read_bytes() == shim.read_bytes(),
+               "EFI/BOOT/BOOTX64.EFI is not shim", failures)
+        expect((boot / "EFI/BOOT/grubx64.efi").is_file()
+               and (boot / "EFI/BOOT/grubx64.efi").read_bytes()
+               == (boot / "EFI/stylos/grubx64.efi").read_bytes(),
+               "the removable-media second stage differs from EFI/stylos", failures)
+        expect(not any((boot / "EFI/Linux").glob("*.efi")) if (boot / "EFI/Linux").exists()
+               else True, "the ESP still has self-signed UKIs", failures)
+        for name in ("stylos-a.conf", "stylos-recovery.conf"):
+            expect((boot / "loader/entries" / name).is_file(),
+                   f"ESP is missing the {name} boot entry", failures)
         loader = (boot / "loader/loader.conf").read_text()
-        expect("default stylos-a.efi" in loader, "loader.conf does not default to slot A",
+        expect("default stylos-a.conf" in loader, "loader.conf does not default to slot A",
                failures)
+        expect("editor no" in loader, "loader.conf does not disable the editor", failures)
         grub = (boot / "grub/grub.cfg").read_text()
         expect("Stylos recovery" in grub, "GRUB menu has no recovery entry", failures)
         expect("stylos_tries" in grub and "save_env --file /grub/grubenv" in grub,
@@ -597,21 +663,22 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
                "GRUB slot A has no verity root hash", failures)
         expect("roothash=${stylos_b_roothash}" in grub,
                "GRUB slot B has no verity root hash", failures)
-        expect(any((boot / "stylos").glob("*/vmlinuz")),
-               "ESP has no kernel for the BIOS path", failures)
+        kernels = list((boot / "stylos").glob("*/vmlinuz"))
+        expect(bool(kernels), "ESP has no kernel for the boot entries", failures)
+        # The kernel is Debian's signed kernel: shim verifies it for
+        # systemd-boot.
+        expect(all(pe_is_signed(kernel) for kernel in kernels),
+               "the kernel is not signed", failures)
 
-        work = out / "test" / "uki-check"
-        work.mkdir(parents=True, exist_ok=True)
-        cmdline = uki_cmdline(boot / "EFI/Linux/stylos-a.efi", work)
-        expect("roothash=" in cmdline, "slot A UKI has no roothash=", failures)
+        entry = boot / "loader/entries/stylos-a.conf"
+        cmdline = entry_options(entry)
+        expect("roothash=" in cmdline, "slot A entry has no roothash=", failures)
         expect("systemd.verity_root_data=PARTUUID=11111111" in cmdline,
-               "slot A UKI does not name the verity data partition", failures)
+               "slot A entry does not name the verity data partition", failures)
         expect("systemd.verity_root_hash=PARTUUID=55555555" in cmdline,
-               "slot A UKI does not name the verity hash partition", failures)
-        expect(uki_is_signed(boot / "EFI/Linux/stylos-a.efi"),
-               "slot A UKI is not signed", failures)
-        expect(uki_is_signed(boot / "EFI/Linux/stylos-0-recovery.efi"),
-               "recovery UKI is not signed", failures)
+               "slot A entry does not name the verity hash partition", failures)
+        expect(entry_value(entry, "linux").endswith("/vmlinuz"),
+               "slot A entry has no kernel", failures)
         grubenv = work / "grubenv"
         shutil.copyfile(boot / "grub/grubenv", grubenv)
         env = subprocess.run(
@@ -660,8 +727,8 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         "/usr/lib/stylos/sysupdate/root.transfer",
         "/usr/lib/stylos/sysupdate/verity.transfer",
         "/usr/lib/stylos/sysupdate/sig.transfer",
-        "/usr/lib/stylos/sysupdate/uki-a.transfer",
-        "/usr/lib/stylos/sysupdate/uki-b.transfer",
+        "/usr/lib/stylos/sysupdate/entry-a.transfer",
+        "/usr/lib/stylos/sysupdate/entry-b.transfer",
         "/usr/lib/stylos/repart-grow/50-data.conf",
         "/usr/lib/stylos/update-url",
         "/usr/lib/systemd/import-pubring.gpg",
@@ -745,23 +812,20 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         "payload/stylos-root-0.2.0.raw",
         "payload/stylos-verity-0.2.0.raw",
         "payload/stylos-verity-sig-0.2.0.sig",
-        "payload/stylos-b-0.2.0.efi",
+        "payload/stylos-b-0.2.0.conf",
         "README",
     ):
         expect((update_dir / name).exists(), f"missing update fixture {name}", failures)
-    fixture_uki = update_dir / "payload/stylos-b-0.2.0.efi"
-    if fixture_uki.exists():
-        expect(uki_is_signed(fixture_uki), "the update fixture UKI is not signed", failures)
 
     # Verify the actual verity tree, not just that the partitions exist.
     work = out / "test" / "verity-check"
     work.mkdir(parents=True, exist_ok=True)
     with mounted(image, esp, "vfat", root=out / "test") as boot:
-        cmdline = uki_cmdline(boot / "EFI/Linux/stylos-a.efi", work)
+        cmdline = entry_options(boot / "loader/entries/stylos-a.conf")
         root_b_hash = grubenv_get(boot / "grub/grubenv", "stylos_b_roothash")
     match = re.search(r"roothash=([0-9a-f]{64})", cmdline)
     if not match:
-        failures.append("cannot read the root hash from slot A UKI")
+        failures.append("cannot read the root hash from the slot A entry")
     else:
         with loop_device(image, root_a) as data_dev, loop_device(image, verity_a) as hash_dev:
             result = subprocess.run(
@@ -797,6 +861,21 @@ def runtime_check(qemu: Qemu) -> None:
     failures = []
     if qemu.mode == "uefi":
         expect("EFI stub" in text, "UEFI boot did not use the EFI stub", failures)
+        # boot-complete reads the SecureBoot EFI variable the kernel exposes.
+        # Without Secure Boot the firmware has no SecureBoot variable at all.
+        if qemu.secure:
+            expect("STYLOS-BOOT: secureboot=1" in text,
+                   "the firmware's Secure Boot state is not 1", failures)
+        else:
+            expect("STYLOS-BOOT: secureboot=1" not in text,
+                   "Secure Boot is unexpectedly on", failures)
+        if qemu.secure:
+            expect("EFI stub: UEFI Secure Boot is enabled." in text,
+                   "the EFI stub did not see Secure Boot", failures)
+            expect("secureboot: Secure boot enabled" in text,
+                   "the kernel did not report Secure Boot enabled", failures)
+            expect("Kernel is locked down from EFI Secure Boot" in text,
+                   "the kernel is not locked down by Secure Boot", failures)
     else:
         expect("BOOT_IMAGE=" in text, "BIOS boot did not use GRUB", failures)
         expect("EFI stub" not in text, "BIOS boot unexpectedly used the EFI stub", failures)
@@ -854,31 +933,35 @@ def qcow2_overlay(base: Path, path: Path) -> Path:
     return path
 
 
-def scenario_boot(mode: str, image: Path, out: Path, timeout: float) -> None:
-    overlay = qcow2_overlay(image, out / "test" / f"boot-{mode}" / "disk.qcow2")
-    with Qemu(f"boot-{mode}", out, mode,
-              [{"path": overlay, "format": "qcow2"}]) as qemu:
+def scenario_boot(mode: str, image: Path, out: Path, timeout: float,
+                  secure: bool = False) -> None:
+    label = "secureboot" if secure else mode
+    overlay = qcow2_overlay(image, out / "test" / f"boot-{label}" / "disk.qcow2")
+    with Qemu(f"boot-{label}", out, mode,
+              [{"path": overlay, "format": "qcow2"}], secure=secure) as qemu:
         boot_to_editor(qemu, timeout, first_run=True)
         runtime_check(qemu)
         # Type one line so the screenshot shows the real editor (and proves
         # that QMP keyboard input reaches stylos-shell).
         qemu.type_text("The quiet morning")
         time.sleep(1.5)
-        shot = qemu.screenshot(out / f"screenshot-{mode}.png")
+        shot = qemu.screenshot(out / f"screenshot-{label}.png")
         # QEMU has no battery.  The old image showed a hard-coded 76 %; the
         # real daemon path must show no percentage at all.
         text = ocr(shot)
         if re.search(r"\d+\s*%", text):
-            raise BootError(f"[{mode}] bottom line still shows a battery value:\n{text}")
-        print(f"{mode}: PASS (no battery percentage in screenshot)", flush=True)
+            raise BootError(f"[{label}] bottom line still shows a battery value:\n{text}")
+        print(f"{label}: PASS (no battery percentage in screenshot)", flush=True)
 
 
 def wait_installer(qemu: Qemu, marker: str, timeout: float = 600.0) -> None:
     qemu.wait(rf"STYLOS-INSTALLER: {re.escape(marker)}", timeout)
 
 
-def scenario_install(image: Path, out: Path, timeout: float) -> Path:
-    base = out / "test" / "install"
+def scenario_install(image: Path, out: Path, timeout: float,
+                     secure: bool = False) -> Path:
+    label = "install-secureboot" if secure else "install"
+    base = out / "test" / label
     base.mkdir(parents=True, exist_ok=True)
     source = qcow2_overlay(image, base / "usb.qcow2")
     target = base / "disk.img"
@@ -886,10 +969,10 @@ def scenario_install(image: Path, out: Path, timeout: float) -> Path:
         target.unlink()
     run("qemu-img", "create", "-q", "-f", "raw", target, "16G")
 
-    with Qemu("install", out, "uefi", [{"path": target, "format": "raw"}],
-              usb={"path": source, "format": "qcow2"}) as qemu:
+    with Qemu(label, out, "uefi", [{"path": target, "format": "raw"}],
+              usb={"path": source, "format": "qcow2"}, secure=secure) as qemu:
         wait_installer(qemu, "main menu", timeout)
-        qemu.screenshot(out / "screenshot-install-menu.png", light=False)
+        qemu.screenshot(out / f"screenshot-{label}-menu.png", light=False)
         qemu.key("down")
         qemu.key("ret")
         wait_installer(qemu, "disk menu", 120)
@@ -899,22 +982,40 @@ def scenario_install(image: Path, out: Path, timeout: float) -> Path:
         qemu.key("ret")
         wait_installer(qemu, "installing", 120)
         wait_installer(qemu, "complete", timeout)
+        installer_log = qemu.text()
         qemu.stop()
+
+    # The installer must have made Stylos the first UEFI boot entry.
+    match = re.search(r"UEFI boot entry Stylos is first \(Boot([0-9A-Fa-f]{4})\)",
+                      installer_log)
+    if not match:
+        raise BootError("the installer did not register a Stylos UEFI boot entry")
+    entry = match.group(1).upper()
+    if not re.search(rf"BootOrder: {entry}\b", installer_log):
+        raise BootError(f"Boot{entry} (Stylos) is not first in BootOrder")
+    if not re.search(rf"Boot{entry}\* Stylos.*\\EFI\\stylos\\shimx64\.efi",
+                     installer_log, re.IGNORECASE):
+        raise BootError("the Stylos boot entry does not point at shim")
 
     parts = read_gpt(target)
     data = part_named(parts, "stylos-data")
     if data["size"] < 10 * 1024**3:
         raise BootError(f"installer did not grow data: {data['size'] // 1024**3} GiB")
 
-    # Boot the installed disk without the USB stick.
-    with Qemu("installed", out, "uefi", [{"path": target, "format": "raw"}]) as qemu:
+    # Boot the installed disk without the USB stick, with the firmware
+    # variables the installer wrote (so the Stylos entry is used).
+    installed = "installed-secureboot" if secure else "installed"
+    nvram = out / "test" / label / "OVMF_VARS.fd"
+    with Qemu(installed, out, "uefi", [{"path": target, "format": "raw"}],
+              secure=secure, vars_from=nvram) as qemu:
         boot_to_editor(qemu, timeout, first_run=True)
         runtime_check(qemu)
         qemu.type_text("The quiet morning")
         time.sleep(1.5)
-        qemu.screenshot(out / "screenshot-install.png")
+        qemu.screenshot(out / ("screenshot-install-secureboot.png" if secure
+                               else "screenshot-install.png"))
         qemu.powerdown()
-    print("install: PASS", flush=True)
+    print(f"{label}: PASS", flush=True)
     return target
 
 
@@ -933,7 +1034,7 @@ def scenario_recovery(disk: Path, out: Path, timeout: float) -> None:
     with mounted(disk, esp, "vfat", writable=True, root=out / "test") as boot:
         loader = boot / loader_path
         original = loader.read_text()
-        loader.write_text("default stylos-0-recovery.efi\ntimeout 2\n")
+        loader.write_text("default stylos-recovery.conf\ntimeout 2\neditor no\n")
     try:
         with Qemu("recovery", out, "uefi", [{"path": disk, "format": "raw"}],
                   usb={"path": usb, "format": "raw"}) as qemu:
@@ -1084,10 +1185,11 @@ def scenario_online_update(disk: Path, release_dir: Path, out: Path,
 
 
 def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
-                    mode: str) -> None:
-    overlay = qcow2_overlay(disk, out / "test" / f"update-{mode}" / "disk.qcow2")
-    with Qemu(f"update-{mode}", out, mode,
-              [{"path": overlay, "format": "qcow2"}]) as qemu:
+                    mode: str, secure: bool = False) -> None:
+    label = "secureboot" if secure else mode
+    overlay = qcow2_overlay(disk, out / "test" / f"update-{label}" / "disk.qcow2")
+    with Qemu(f"update-{label}", out, mode,
+              [{"path": overlay, "format": "qcow2"}], secure=secure) as qemu:
         qemu.wait(r"STYLOS-UPDATE: applying", timeout)
         qemu.wait(r"STYLOS-UPDATE: .*applied", timeout)
 
@@ -1096,7 +1198,7 @@ def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
         # boot the OS removes the exhausted entry and reboots into A.
         for attempt in range(1, 4):
             qemu.wait(r"stylos\.slot=b", timeout)
-            print(f"update-{mode}: slot B attempt {attempt}", flush=True)
+            print(f"update-{label}: slot B attempt {attempt}", flush=True)
             time.sleep(12)
             if attempt < 3:
                 qemu.reset()
@@ -1109,9 +1211,65 @@ def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
         qemu.wait(r"Started stylos-session\.service", timeout)
         qemu.wait(r"STYLOS-BOOT: slot a marked good", timeout)
         time.sleep(5)
-        qemu.screenshot(out / f"screenshot-update-rollback-{mode}.png")
+        qemu.screenshot(out / f"screenshot-update-rollback-{label}.png")
+        if secure:
+            if "STYLOS-BOOT: secureboot=1" not in qemu.text():
+                raise BootError("the update/rollback boots did not run with Secure Boot")
+            if "secureboot: Secure boot disabled" in qemu.text():
+                raise BootError("Secure Boot was off during the update/rollback boots")
         qemu.powerdown()
-    print(f"update-{mode}: PASS", flush=True)
+    print(f"update-{label}: PASS", flush=True)
+
+
+def flash_release(archive: Path, out: Path) -> Path:
+    """Decompress a release .img.xz onto a fresh virtual USB disk.
+
+    The disk is larger than the image, like a real stick: the image is written
+    to its start with dd, as the README tells users to do.
+    """
+    usb = out / "test" / "release" / "usb.img"
+    usb.parent.mkdir(parents=True, exist_ok=True)
+    usb.unlink(missing_ok=True)
+    run("truncate", "-s", "16G", usb)
+    with subprocess.Popen(["xz", "-dc", str(archive)], stdout=subprocess.PIPE) as xz:
+        run("dd", f"of={usb}", "bs=4M", "conv=notrunc", "status=none", stdin=xz.stdout)
+        xz.stdout.close()
+        if xz.wait() != 0:
+            raise BootError(f"xz could not decompress {archive}")
+    return usb
+
+
+def scenario_release(archive: Path, out: Path, timeout: float) -> None:
+    """Try Stylos from the flashed release image on UEFI, Secure Boot and BIOS."""
+    for label, mode, secure in (
+        ("uefi", "uefi", False), ("secureboot", "uefi", True), ("bios", "bios", False),
+    ):
+        usb = flash_release(archive, out)
+        name = f"release-{label}"
+        with Qemu(name, out, mode, [], secure=secure,
+                  usb={"path": usb, "format": "raw"}) as qemu:
+            wait_installer(qemu, "main menu", timeout)
+            time.sleep(2)
+            qemu.key("ret")  # Try Stylos (the default choice)
+            wait_installer(qemu, "try selected", 60)
+            boot_to_editor(qemu, timeout, first_run=True)
+            runtime_check(qemu)
+            qemu.type_text("The quiet morning")
+            time.sleep(1.5)
+            qemu.screenshot(out / f"screenshot-release-{label}.png")
+            # The first boot grows the data partition (stylos-grow-data) and its
+            # file system (systemd-growfs) to the stick's size.
+            if "Starting systemd-growfs@data.service" not in qemu.text():
+                raise BootError(f"[{name}] the data file system was not grown")
+            qemu.powerdown()
+        data = part_named(read_gpt(usb), "stylos-data")
+        if data["size"] < 10 * 1024**3:
+            raise BootError(
+                f"[{name}] data is {data['size'] // 1024**2} MiB after the first boot; "
+                "expected it to fill the 16 GiB stick"
+            )
+        print(f"release-{label}: PASS (flashed image, try Stylos)", flush=True)
+    usb.unlink(missing_ok=True)
 
 
 # --------------------------------------------------------------------------
@@ -1126,9 +1284,12 @@ def main() -> int:
                         help="directory with the offline update fixture")
     parser.add_argument("--release-dir", type=Path,
                         help="directory with the signed online release")
+    parser.add_argument("--release-image", type=Path,
+                        help="release .img.xz for the 'release' scenario")
     parser.add_argument("--scenario", default="all",
                         choices=("all", "checks", "uefi", "bios", "install",
-                                 "recovery", "powercut", "update", "online"))
+                                 "recovery", "powercut", "update", "online",
+                                 "secureboot", "update-secureboot", "release"))
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="seconds for one boot (default 300)")
     args = parser.parse_args()
@@ -1156,6 +1317,7 @@ def main() -> int:
 
     errors: list[str] = []
     installed: Path | None = None
+    installed_sb: Path | None = None
     try:
         if args.scenario in ("all", "uefi"):
             scenario_boot("uefi", args.image, args.out, args.timeout)
@@ -1180,6 +1342,28 @@ def main() -> int:
             clear_update(installed, args.out)
         if args.scenario in ("all", "online"):
             scenario_online_update(installed, args.release_dir, args.out, args.timeout)
+        # Secure Boot: OVMF with the Microsoft keys, enforcing.
+        if args.scenario in ("all", "secureboot"):
+            scenario_boot("uefi", args.image, args.out, args.timeout, secure=True)
+            installed_sb = scenario_install(args.image, args.out, args.timeout,
+                                            secure=True)
+        if args.scenario in ("all", "update-secureboot"):
+            if installed_sb is None:
+                reused = args.out / "test" / "install-secureboot" / "disk.img"
+                if reused.exists() and args.scenario != "all":
+                    installed_sb = reused
+                    print(f"reusing installed disk {installed_sb}", flush=True)
+                else:
+                    installed_sb = scenario_install(args.image, args.out,
+                                                    args.timeout, secure=True)
+            stage_update(installed_sb, args.update_dir, args.out)
+            scenario_update(installed_sb, args.update_dir, args.out, args.timeout,
+                            "uefi", secure=True)
+            clear_update(installed_sb, args.out)
+        if args.scenario == "release":
+            if args.release_image is None or not args.release_image.is_file():
+                raise BootError("--release-image must name the release .img.xz")
+            scenario_release(args.release_image.resolve(), args.out, args.timeout)
     except BootError as exc:
         errors.append(str(exc))
         print(f"FAILED: {exc}", file=sys.stderr)

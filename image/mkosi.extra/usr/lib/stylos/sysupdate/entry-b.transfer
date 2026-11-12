@@ -3,10 +3,10 @@
 [Source]
 Type=regular-file
 Path=/data/.stylos/update/payload
-MatchPattern=stylos-b-@v.efi
+MatchPattern=stylos-b-@v.conf
 
 [Target]
 Type=regular-file
-Path=/EFI/Linux
+Path=/loader/entries
 PathRelativeTo=esp
-MatchPattern=stylos-b-@v+3.efi
+MatchPattern=stylos-b-@v+3.conf

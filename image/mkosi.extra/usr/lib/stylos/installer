@@ -4,8 +4,9 @@
 # Runs only when the running root is on a USB disk (removable or TRAN=usb).
 # Offers "Try Stylos" or "Install to this computer".  Installing copies the
 # running USB image to the internal disk with dd, grows the data partition to
-# fill the disk and reboots.  The writer must type ERASE; there is no other
-# confirmation path.
+# fill the disk, makes Stylos the first UEFI boot entry (when the computer
+# booted in UEFI mode) and reboots.  The writer must type ERASE; there is no
+# other confirmation path.
 set -u
 
 export TERM=linux
@@ -31,6 +32,60 @@ if [ "$removable" != "1" ] && [ "$transport" != "usb" ]; then
 fi
 
 log "USB boot on /dev/$src_disk"
+
+# Make Stylos the default UEFI boot entry.  The entry points at Microsoft-
+# signed shim on the new ESP, so Secure Boot stays on and the writer never opens
+# the firmware settings.  Best effort: a firmware that refuses the entry still
+# boots the disk through the removable-media path (EFI/BOOT/BOOTX64.EFI).
+# Numbers of the firmware boot entries labelled "Stylos".
+stylos_entries() {
+    efibootmgr 2>/dev/null \
+        | awk '$1 ~ /^Boot[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]\*?$/ && $2 == "Stylos" {print substr($1, 5, 4)}'
+}
+
+register_boot_entry() {
+    local disk="/dev/$1" esp number new order rest
+    [ -d /sys/firmware/efi ] || { log "BIOS boot; no UEFI boot entry"; return 0; }
+    if ! mountpoint -q /sys/firmware/efi/efivars; then
+        mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+    fi
+    command -v efibootmgr >/dev/null 2>&1 || { log "efibootmgr is missing"; return 0; }
+    udevadm settle >/dev/null 2>&1 || true
+    blockdev --rereadpt "$disk" >/dev/null 2>&1 || true
+    udevadm settle >/dev/null 2>&1 || true
+    esp="$(lsblk -nlo PATH,PARTUUID "$disk" 2>/dev/null \
+        | awk 'tolower($2)=="44444444-4444-4444-8444-444444444444"{print $1; exit}')"
+    if [ -z "$esp" ]; then
+        log "no ESP found on $disk; no UEFI boot entry"
+        return 0
+    fi
+    number="$(cat "/sys/class/block/${esp##*/}/partition" 2>/dev/null || true)"
+    [ -n "$number" ] || { log "no partition number for $esp"; return 0; }
+
+    # Remove entries from an earlier install, then create ours.
+    for old in $(stylos_entries); do
+        efibootmgr -q -b "$old" -B >/dev/null 2>&1 || true
+    done
+    if ! efibootmgr -q -c -d "$disk" -p "$number" -L Stylos \
+            -l '\EFI\stylos\shimx64.efi' >/dev/null 2>&1; then
+        log "efibootmgr could not create the Stylos entry"
+        return 0
+    fi
+    new="$(stylos_entries | head -1)"
+    # efibootmgr -c already puts the new entry first; make it explicit so a
+    # firmware that appends does not leave another system in front.
+    if [ -n "$new" ]; then
+        order="$(efibootmgr 2>/dev/null | sed -n 's/^BootOrder: *//p')"
+        rest="$(printf '%s' "$order" | tr ',' '\n' | grep -v -i "^$new\$" | paste -sd, -)"
+        if [ -n "$rest" ]; then
+            efibootmgr -q -o "$new,$rest" >/dev/null 2>&1 || true
+        else
+            efibootmgr -q -o "$new" >/dev/null 2>&1 || true
+        fi
+    fi
+    efibootmgr -v 2>&1 | while read -r line; do log "efibootmgr: $line"; done
+    log "UEFI boot entry Stylos is first (Boot${new:-????})"
+}
 
 menu() {
     log "main menu"
@@ -112,6 +167,7 @@ Type ERASE (in capitals) to continue." \
     log "image written; growing the data partition"
     /usr/lib/stylos/grow-data "/dev/$target" >>/dev/ttyS0 2>&1 || true
     sync
+    register_boot_entry "$target"
     log "complete on /dev/$target"
     whiptail --title "Stylos installed" --msgbox \
         "Stylos is installed on /dev/$target.

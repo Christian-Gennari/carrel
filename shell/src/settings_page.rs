@@ -366,13 +366,23 @@ impl SettingsPage {
         let widget = ui::page();
         widget.append(&column);
 
+        // Screenshot hook (dev/screenshot.sh): start with a later row selected,
+        // as if the writer had pressed Down that many times.
+        let mut initial = SettingsState::default();
+        if let Some(index) = std::env::var("STYLOS_SETTINGS_SELECT")
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+        {
+            initial.select(index);
+        }
+
         let page = Rc::new(Self {
             widget,
             list,
             scroller,
             hint,
             note,
-            state: RefCell::new(SettingsState::default()),
+            state: RefCell::new(initial),
             settings,
             root,
             client,

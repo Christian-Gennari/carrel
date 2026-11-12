@@ -2,21 +2,28 @@
 """Finish the Stylos disk image after mkosi has assembled it.
 
 mkosi builds one unified kernel image with its own command line.  Stylos needs
-three (slot A, slot B and the recovery menu), each with a different root hash,
-and the BIOS GRUB menu needs the same slots.  Doing this in a post-output
-script keeps the slot-specific values next to the partition definitions instead
-of spreading them through mkosi profiles.
+three boot entries (slot A, slot B and the recovery menu), each with a
+different root hash, and the BIOS GRUB menu needs the same slots.  Doing this
+in a post-output script keeps the slot-specific values next to the partition
+definitions instead of spreading them through mkosi profiles.
+
+UEFI boots through Debian's chain of trust (WP7c): Microsoft-signed shim
+(``BOOTX64.EFI``) -> Debian-signed systemd-boot (installed under shim's default
+second-stage name ``grubx64.efi``) -> Debian-signed kernel.  The slot entries
+are Boot Loader Specification Type #1 files in ``/loader/entries``; the
+dm-verity root hash is on each entry's ``options`` line.  Nothing here is
+signed with a Stylos key: the shim, systemd-boot and kernel binaries are
+Debian's, taken unchanged from the packages in the image.
 
 The verity hash and signature partitions are created by systemd-repart (see
-image/mkosi.repart); this script reads the per-slot root hash from repart's
-JSON output, puts ``roothash=`` plus the fixed data/hash partition UUIDs into
-the UKI command lines and GRUB entries, and signs the UKIs with the release
-key when one is configured.
+image/mkosi.repart); this script computes the per-slot root hash from them and
+puts ``roothash=`` plus the fixed data/hash partition UUIDs into the entry
+options and GRUB entries.
 
 The script also writes the offline update fixture used by tests/boot/: a copy
 of the root filesystem (with a failing unit), its verity hash/signature and a
-UKI for slot B whose command line masks the session, so boot never reaches
-boot-complete.target.
+boot entry for slot B whose command line masks the session, so boot never
+reaches boot-complete.target.
 """
 
 from __future__ import annotations
@@ -43,6 +50,17 @@ HASH_B_UUID = "66666666-6666-4666-8666-666666666666"
 SIG_A_UUID = "77777777-7777-4777-8777-777777777777"
 SIG_B_UUID = "88888888-8888-4888-8888-888888888888"
 
+# Boot menu order (systemd-boot sorts Type #1 entries by sort-key).  A is first
+# so a missing or exhausted slot B falls back to A, never to the recovery menu.
+SORT_KEY = {"a": "stylos-1-a", "b": "stylos-2-b", "recovery": "stylos-9-recovery"}
+
+# The Secure Boot files staged on the ESP by image/mkosi.postinst, straight
+# from Debian's shim-signed, shim-helpers-amd64-signed and
+# systemd-boot-efi-amd64-signed packages.  shim loads grubx64.efi from its own
+# directory by default, so Debian's signed systemd-boot is installed under that
+# name.
+SECURE_BOOT_FILES = ("shimx64.efi", "grubx64.efi", "mmx64.efi")
+
 ROOT_UUID = {"a": ROOT_A_UUID, "b": ROOT_B_UUID}
 HASH_UUID = {"a": HASH_A_UUID, "b": HASH_B_UUID}
 SIG_UUID = {"a": SIG_A_UUID, "b": SIG_B_UUID}
@@ -55,8 +73,6 @@ BASE_CMDLINE = (
 VERSION = os.environ.get("STYLOS_VERSION", "0.1.0")
 UPDATE_VERSION = os.environ.get("STYLOS_UPDATE_VERSION", "0.2.0")
 
-UKIFY = "/usr/bin/ukify"
-STUB = "/usr/lib/systemd/boot/efi/linuxx64.efi.stub"
 SYSTEMD_REPART = "/usr/bin/systemd-repart"
 VERITYSETUP = "/usr/sbin/veritysetup"
 
@@ -179,19 +195,6 @@ def slot_root_hashes(image: Path, parts: list[dict]) -> dict[str, str]:
     return hashes
 
 
-def signing_arguments() -> list[str]:
-    key = os.environ.get("STYLOS_VERITY_KEY")
-    cert = os.environ.get("STYLOS_VERITY_CERT")
-    if not key or not cert:
-        return []
-    return [
-        "--signtool=sbsign",
-        f"--secureboot-private-key={key}",
-        f"--secureboot-certificate={cert}",
-        "--sign-kernel",
-    ]
-
-
 def verity_format(root: Path, work: Path) -> tuple[Path, str]:
     """Make a dm-verity hash tree for ``root`` and return (hash, root hash)."""
     hash_file = work / (root.name + ".verity")
@@ -282,44 +285,19 @@ def kernel_versions(esp: Esp) -> str:
     raise SystemExit("no kernel version directory on the ESP")
 
 
-def extract_sections(esp: Esp, work: Path, kver: str) -> tuple[Path, Path, Path, Path]:
-    esp.copy_out(f"/stylos/{kver}/vmlinuz", work / "vmlinuz")
-    esp.copy_out("/stylos/initrd", work / "initrd")
-    esp.copy_out(f"/stylos/{kver}/kernel-modules.initrd", work / "modules.initrd")
-
-    base = work / "base.efi"
-    for line in esp.mdir("/EFI/Linux").splitlines():
-        name = line.rstrip("/").split("/")[-1]
-        if name.endswith(".efi") and name.startswith("stylos-"):
-            esp.copy_out(f"/EFI/Linux/{name}", base)
-            break
-    if not base.exists():
-        raise SystemExit("mkosi did not produce a UKI on the ESP")
-
-    # objcopy insists on an output file even when it only dumps a section.
-    # Give it a throwaway copy instead of /dev/null (some binutils versions
-    # treat that as a truncated output and fail).
-    copied = work / "base-with-osrel.efi"
-    run("objcopy", "--dump-section", f".osrel={work / 'osrel'}", base, copied)
-    copied.unlink(missing_ok=True)
-    return work / "vmlinuz", work / "initrd", work / "modules.initrd", work / "osrel"
-
-
-def build_uki(
-    work: Path, output: Path, kver: str, cmdline: str,
-) -> None:
-    run(
-        UKIFY, "build",
-        f"--linux={work / 'vmlinuz'}",
-        f"--initrd={work / 'initrd'}",
-        f"--initrd={work / 'modules.initrd'}",
-        f"--os-release=@{work / 'osrel'}",
-        f"--uname={kver}",
-        f"--cmdline={cmdline}",
-        f"--stub={STUB}",
-        f"--output={output}",
-        *signing_arguments(),
-        stdout=subprocess.DEVNULL,
+def entry_conf(
+    slot: str, title: str, version: str, kver: str, roothash: str,
+    sort_key: str, extra: str = "",
+) -> str:
+    """A Boot Loader Specification Type #1 entry for systemd-boot."""
+    return (
+        f"title {title}\n"
+        f"version {version}\n"
+        f"sort-key {sort_key}\n"
+        f"linux /stylos/{kver}/vmlinuz\n"
+        "initrd /stylos/initrd\n"
+        f"initrd /stylos/{kver}/kernel-modules.initrd\n"
+        f"options {cmdline(slot, roothash, extra)}\n"
     )
 
 
@@ -433,8 +411,12 @@ def build_update_payload(
         verity_signature("0" * 64, work)
     )
 
-    broken = cmdline("b", roothash, "systemd.mask=stylos-session.service")
-    build_uki(work, payload / f"stylos-b-{UPDATE_VERSION}.efi", kver, broken)
+    (payload / f"stylos-b-{UPDATE_VERSION}.conf").write_text(
+        entry_conf(
+            "b", "Stylos (other system)", UPDATE_VERSION, kver, roothash,
+            SORT_KEY["b"], "systemd.mask=stylos-session.service",
+        )
+    )
 
     (out / "update" / "README").write_text(
         f"""Stylos {UPDATE_VERSION} offline update fixture (built by image/assemble.py).
@@ -443,7 +425,7 @@ Copy payload/ to /data/.stylos/update/payload/ on a running Stylos and
 reboot.  stylos-update.service applies the inactive slot with
 systemd-sysupdate, sets the boot-counting entry as the default and reboots.
 
-This particular payload is intentionally broken: its kernel command line
+This particular payload is intentionally broken: its entry's kernel command line
 masks stylos-session.service, so boot-complete.target is never reached and
 the boot counter falls back to the previous slot after three attempts.
 """
@@ -458,9 +440,6 @@ def main() -> int:
     out = Path(sys.argv[2])
     if not image.exists():
         print(f"image missing: {image}", file=sys.stderr)
-        return 2
-    if not Path(UKIFY).exists() or not Path(STUB).exists():
-        print("ukify or the systemd-stub is missing from the build host", file=sys.stderr)
         return 2
 
     parts = read_gpt(image)
@@ -478,35 +457,47 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory(dir=out) as tmp:
         work = Path(tmp)
-        extract_sections(esp, work, kver)
 
-        uki_a = work / "stylos-a.efi"
-        uki_recovery = work / "stylos-recovery.efi"
-        build_uki(work, uki_a, kver, cmdline("a", roothashes["a"]))
-        build_uki(
-            work, uki_recovery, kver,
-            cmdline("a", roothashes["a"], "systemd.unit=stylos-recovery.target"),
-        )
-
-        # Drop mkosi's single-slot UKI and its loader entry; systemd-boot
-        # discovers the three slot UKIs in EFI/Linux automatically.
+        # Drop what mkosi installed: its single-slot UKI, its loader entries
+        # and its (unsigned) systemd-boot.  The Debian-signed chain replaces
+        # them below.
         for line in esp.mdir("/EFI/Linux").splitlines():
             if line.endswith(".efi") and "stylos-" in line:
                 esp.remove(f"/EFI/Linux/{line.rstrip('/').split('/')[-1]}")
         for line in esp.mdir("/loader/entries").splitlines():
             if line.endswith(".conf"):
                 esp.remove(f"/loader/entries/{line.rstrip('/').split('/')[-1]}")
+        esp.remove("/EFI/systemd/systemd-bootx64.efi")
 
-        esp.copy_in(uki_a, "/EFI/Linux/stylos-a.efi")
-        # Slot B has no UKI until an update installs one.  A stale good-looking
-        # stylos-b.efi would be selected after a failed counted B entry even
-        # though sysupdate has already replaced the B root filesystem.
-        # The 0 prefix sorts after slots A and B (systemd-boot lists entries in
-        # reverse order), so a failed slot falls back to A rather than to the
-        # recovery menu.
-        esp.copy_in(uki_recovery, "/EFI/Linux/stylos-0-recovery.efi")
+        # Secure Boot chain.  /EFI/BOOT is the removable-media (USB) path and
+        # /EFI/stylos the path the installer registers with efibootmgr.
+        for name in SECURE_BOOT_FILES:
+            staged = work / name
+            esp.copy_out(f"/EFI/stylos/{name}", staged)
+            if staged.stat().st_size < 50 * 1024:
+                raise SystemExit(f"/EFI/stylos/{name} on the ESP is missing or empty")
+            # shim is BOOTX64.EFI on removable media; its second stage and
+            # MokManager sit beside it under their own names.
+            target = "BOOTX64.EFI" if name == "shimx64.efi" else name
+            esp.copy_in(staged, f"/EFI/BOOT/{target}")
+
+        # Slot A is the default.  Slot B has no entry until an update installs
+        # one: a stale good-looking stylos-b.conf would be selected after a
+        # failed counted B entry even though sysupdate has already replaced the
+        # B root filesystem.
         esp.write(
-            "default stylos-a.efi\ntimeout 2\n", "/loader/loader.conf",
+            entry_conf("a", "Stylos", VERSION, kver, roothashes["a"], SORT_KEY["a"]),
+            "/loader/entries/stylos-a.conf", work, "stylos-a.conf",
+        )
+        esp.write(
+            entry_conf(
+                "a", "Stylos recovery", VERSION, kver, roothashes["a"],
+                SORT_KEY["recovery"], "systemd.unit=stylos-recovery.target",
+            ),
+            "/loader/entries/stylos-recovery.conf", work, "stylos-recovery.conf",
+        )
+        esp.write(
+            "default stylos-a.conf\ntimeout 2\neditor no\n", "/loader/loader.conf",
             work, "loader.conf",
         )
 

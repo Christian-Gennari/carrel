@@ -1,7 +1,7 @@
 //! Signed online updates.
 //!
 //! `systemd-sysupdate` downloads a release (root, verity hash, verity
-//! signature and UKI) from the URL baked into the image.  The manifest
+//! signature and boot entry) from the URL baked into the image.  The manifest
 //! `SHA256SUMS` is verified against the public keyring installed in the image
 //! (`/usr/lib/systemd/import-pubring.gpg`).
 //!
@@ -273,7 +273,7 @@ impl Updater {
             ("10-root", "stylos-root-@v.raw".to_owned()),
             ("20-verity", "stylos-verity-@v.raw".to_owned()),
             ("30-sig", "stylos-verity-sig-@v.sig".to_owned()),
-            ("40-uki", format!("stylos-{slot}-@v.efi")),
+            ("40-entry", format!("stylos-{slot}-@v.conf")),
         ] {
             let text = format!(
                 "[Transfer]\n\
@@ -370,7 +370,7 @@ fn staged_percent(staged: &Path, version: &str) -> u8 {
             }
         }
     }
-    // root, verity hash, signature and UKI.
+    // root, verity hash, signature and boot entry.
     files.min(4) * 100 / 4
 }
 

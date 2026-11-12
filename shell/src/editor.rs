@@ -54,6 +54,10 @@ pub struct EditorPage {
     /// The paragraph currently drawn at full strength in focus mode.
     focus_previous: Cell<Option<(i32, i32)>>,
     restyle_generation: Cell<u64>,
+    /// Character ranges of the `[label](nostos:cite/…)` links in the buffer,
+    /// from the last restyle, and the one the cursor is in (drawn raw).
+    cite_links: RefCell<Vec<(usize, usize)>>,
+    cite_open: Cell<Option<(usize, usize)>>,
     status_generation: Cell<u64>,
     battery: Rc<dyn Battery>,
     save_error: Cell<bool>,
@@ -179,6 +183,8 @@ impl EditorPage {
             tags,
             focus_previous: Cell::new(None),
             restyle_generation: Cell::new(0),
+            cite_links: RefCell::new(Vec::new()),
+            cite_open: Cell::new(None),
             status_generation: Cell::new(0),
             battery,
             save_error: Cell::new(false),
@@ -240,6 +246,7 @@ impl EditorPage {
                 .map(|name| name.as_str() == "insert")
                 .unwrap_or(false);
             if is_insert && !page.loading.get() {
+                page.sync_cites();
                 page.sync_focus();
                 scroll_to_cursor(&view, &buffer);
             }
@@ -369,14 +376,22 @@ impl EditorPage {
 
     fn buffer_text(&self) -> String {
         self.buffer
-            .text(&self.buffer.start_iter(), &self.buffer.end_iter(), false)
+            // Hidden characters (citation syntax) are part of the file text.
+            .text(&self.buffer.start_iter(), &self.buffer.end_iter(), true)
             .to_string()
     }
 
     fn restyle_now(&self) {
         let text = self.buffer_text();
         let spans = markdown::spans(&text);
-        self.tags.paint(&self.buffer, &spans);
+        *self.cite_links.borrow_mut() = spans
+            .iter()
+            .filter(|span| span.kind == Kind::CiteLink)
+            .map(|span| (span.start, span.end))
+            .collect();
+        let open = self.cite_under_cursor();
+        self.cite_open.set(open);
+        self.tags.paint(&self.buffer, &spans, open);
         // Markdown tags and focus tags are separate; after a paint the focus
         // state only needs the cheap incremental check.
         self.sync_focus();
@@ -384,6 +399,26 @@ impl EditorPage {
 
     fn scroll_to_cursor(&self) {
         scroll_to_cursor(&self.view, &self.buffer);
+    }
+
+    /// The citation link the cursor is in or touches. Its raw Markdown is
+    /// shown; every other link shows only its small marker.
+    fn cite_under_cursor(&self) -> Option<(usize, usize)> {
+        let cursor = usize::try_from(self.buffer.cursor_position()).ok()?;
+        self.cite_links
+            .borrow()
+            .iter()
+            .copied()
+            .find(|&(start, end)| start <= cursor && cursor <= end)
+    }
+
+    /// After a cursor move: redraw only when the cursor entered or left a
+    /// citation link.
+    fn sync_cites(&self) {
+        let open = self.cite_under_cursor();
+        if open != self.cite_open.get() {
+            self.restyle_now();
+        }
     }
 
     /// The body font as Pango will draw it: the first family from the
@@ -1049,6 +1084,10 @@ struct Tags {
     dim: gtk::TextTag,
     quote: gtk::TextTag,
     cite: gtk::TextTag,
+    /// Quoted words in a citation link: not shrunk, only underlined.
+    cite_text: gtk::TextTag,
+    /// Citation link syntax (brackets and target) while the cursor is away.
+    hidden: gtk::TextTag,
     headings: Vec<gtk::TextTag>,
     /// Focus mode: everything but the cursor's paragraph, at 35 % opacity.
     focus: gtk::TextTag,
@@ -1083,6 +1122,13 @@ impl Tags {
         // Citation markers use the dim text colour, not the accent.
         cite.set_foreground(Some(&palette.dim()));
 
+        let cite_text = make("stylos-cite-text");
+        cite_text.set_underline(pango::Underline::Single);
+        cite_text.set_foreground(Some(&palette.dim()));
+
+        let hidden = make("stylos-cite-hidden");
+        hidden.set_invisible(true);
+
         let focus = make("stylos-focus-dim");
         focus.set_foreground_rgba(Some(&palette.focus_text()));
 
@@ -1108,6 +1154,8 @@ impl Tags {
             tag.set_priority(4);
         }
         cite.set_priority(7);
+        cite_text.set_priority(7);
+        hidden.set_priority(8);
         dim.set_priority(9);
         focus.set_priority(11);
 
@@ -1117,6 +1165,8 @@ impl Tags {
             dim,
             quote,
             cite,
+            cite_text,
+            hidden,
             headings,
             focus,
         }
@@ -1125,25 +1175,47 @@ impl Tags {
     fn update_colors(&self, palette: &theme::Palette) {
         self.dim.set_foreground(Some(&palette.dim()));
         self.cite.set_foreground(Some(&palette.dim()));
+        self.cite_text.set_foreground(Some(&palette.dim()));
         self.focus.set_foreground_rgba(Some(&palette.focus_text()));
     }
 
     /// Every tag this module owns. Focus tags are not in this list: they
     /// survive a restyle and are updated by the editor's focus logic.
     fn own(&self) -> Vec<&gtk::TextTag> {
-        let mut tags = vec![&self.bold, &self.italic, &self.dim, &self.quote, &self.cite];
+        let mut tags = vec![
+            &self.bold,
+            &self.italic,
+            &self.dim,
+            &self.quote,
+            &self.cite,
+            &self.cite_text,
+            &self.hidden,
+        ];
         tags.extend(self.headings.iter());
         tags
     }
 
-    fn paint(&self, buffer: &sourceview::Buffer, spans: &[markdown::Span]) {
+    /// `open` is the citation link the cursor is in: its raw Markdown is
+    /// drawn dimmed, at normal size, instead of the marker.
+    fn paint(
+        &self,
+        buffer: &sourceview::Buffer,
+        spans: &[markdown::Span],
+        open: Option<(usize, usize)>,
+    ) {
         let start = buffer.start_iter();
         let end = buffer.end_iter();
         for tag in self.own() {
             buffer.remove_tag(tag, &start, &end);
         }
         for span in spans {
+            let in_open = open.is_some_and(|(from, to)| span.start >= from && span.end <= to);
             let tag = match span.kind {
+                Kind::CiteLink => continue,
+                Kind::CiteHidden | Kind::CiteMarker | Kind::CiteText if in_open => &self.dim,
+                Kind::CiteHidden => &self.hidden,
+                Kind::CiteMarker => &self.cite,
+                Kind::CiteText => &self.cite_text,
                 Kind::Bold => &self.bold,
                 Kind::Italic => &self.italic,
                 Kind::Marker => &self.dim,
@@ -1172,7 +1244,7 @@ impl Lines for BufferLines<'_> {
     fn is_blank(&self, line: i32) -> bool {
         let from = self.buffer.iter_at_offset(self.start(line));
         let to = self.buffer.iter_at_offset(self.end(line));
-        self.buffer.text(&from, &to, false).trim().is_empty()
+        self.buffer.text(&from, &to, true).trim().is_empty()
     }
 
     fn start(&self, line: i32) -> i32 {

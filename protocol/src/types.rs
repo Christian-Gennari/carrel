@@ -432,7 +432,7 @@ mod tests {
                 topics: vec!["writing".into()],
                 citation: Some(LibraryCitation {
                     markdown: "[The Quiet Hours, p. 41](nostos:cite/quote-1)".into(),
-                    url: "https://nostos.app/library/quote-1".into(),
+                    url: "https://nostos.example/library/quote-1".into(),
                 }),
             }],
             deleted: vec!["quote-0".into()],
@@ -458,7 +458,7 @@ mod tests {
                     "topics": ["writing"],
                     "citation": {
                         "markdown": "[The Quiet Hours, p. 41](nostos:cite/quote-1)",
-                        "url": "https://nostos.app/library/quote-1"
+                        "url": "https://nostos.example/library/quote-1"
                     }
                 }],
                 "deleted": ["quote-0"],

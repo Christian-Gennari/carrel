@@ -50,7 +50,7 @@ impl Fixture {
         library.insert(
             "quote-1",
             Citation::new("Marilynne Robinson, *Gilead*, p. 12")
-                .with_url("https://nostos.app/library/quote-1"),
+                .with_url("https://nostos.example/library/quote-1"),
         );
         library.insert(
             "quote-2",

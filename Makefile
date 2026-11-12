@@ -23,7 +23,11 @@ VERITY_KEY     ?= $(STYLOS_KEY_DIR)/verity.key
 VERITY_CERT    ?= $(STYLOS_KEY_DIR)/verity.crt
 UPDATE_SECRET  ?= $(STYLOS_KEY_DIR)/update-secret.gpg
 UPDATE_PUBKEY  ?= $(ROOT)/image/keys/update-pubring.gpg
+# Version of the online-update payloads (out/release/).  The flashable image
+# (out/dist/) is named after the version the image itself was built with.
 RELEASE_VERSION ?= 0.2.0
+IMAGE_VERSION  ?= $(shell sed -n 's/^ImageVersion=//p' "$(CURDIR)/image/mkosi.conf")
+DIST_DIR       := $(OUT)/dist
 
 # Where an installed device looks for signed update payloads.  It contains
 # SHA256SUMS and SHA256SUMS.gpg at the root.  Override for a private mirror.
@@ -82,13 +86,17 @@ test-boot:
 		--update-dir "$(IMAGE_DIR)/update" --release-dir "$(OUT)/release" \
 		--out "$(OUT)"
 
-# Build signed online-update payloads from the image just built.  The image
-# must have been built first; the private signing key stays outside git.
+# Build the release from the image just built (`make image` first; the private
+# signing key stays outside git):
+#   out/release/  signed online-update payloads (SHA256SUMS + .gpg)
+#   out/dist/     stylos-<version>.img.xz for users to flash, plus .sha256 and
+#                 a detached GPG signature (.asc) by the release key
 release:
 	python3 "$(ROOT)/image/release.py" --image "$(IMAGE)" \
 		--out "$(OUT)/release" --version "$(RELEASE_VERSION)" \
 		--verity-key "$(VERITY_KEY)" --verity-cert "$(VERITY_CERT)" \
-		--update-secret "$(UPDATE_SECRET)"
+		--update-secret "$(UPDATE_SECRET)" \
+		--dist "$(DIST_DIR)" --image-version "$(IMAGE_VERSION)"
 
 clean:
 	rm -rf "$(OUT)" "$(PKG_CACHE)" "$(ROOT)/mkosi.workspace"
