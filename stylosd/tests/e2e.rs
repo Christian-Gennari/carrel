@@ -754,3 +754,25 @@ async fn server_http_rules() {
 
     server.shutdown().await;
 }
+
+/// `stylos-server` is self-hosted and has no library: its `/library` 404 is
+/// not a sync error, it marks the cache unavailable so the Quotes palette can
+/// say "Quotes need a Nostos account.".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_self_hosted_server_marks_quotes_unavailable() {
+    let server = TestServer::start().await;
+    let client = TestClient::pair(&server, "laptop-library").await;
+    client.write("note.md", "A sentence is a small room.\n");
+    let report = client.sync().await;
+    assert!(report.library_unavailable, "{report:?}");
+    assert_eq!(report.library_items, 0);
+
+    let cache = stylosd::library::LibraryCache::from_state_dir(&client.state).unwrap();
+    assert!(cache.is_unavailable().unwrap());
+    assert_eq!(cache.count().unwrap(), 0);
+
+    // The files still synced; an unavailable library never blocks writing.
+    let files = server_files(&client.config).await;
+    assert!(files.iter().any(|file| file.path == "note.md"), "{files:?}");
+    server.shutdown().await;
+}

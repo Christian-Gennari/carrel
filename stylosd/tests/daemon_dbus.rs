@@ -14,7 +14,10 @@ use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 use futures_util::StreamExt;
+use stylos_protocol::{LibraryBook, LibraryItem, LibraryItemKind, LibraryPage};
 use stylosd::history::HistoryEntry;
+use stylosd::library::{LibraryCache, LibraryFilterOptions, LibraryHit};
+use stylosd::SyncConfig;
 
 /// Kills a child process when the test ends, even on panic.
 struct KillOnDrop(Child);
@@ -191,17 +194,17 @@ async fn daemon_serves_commit_history_and_restore() {
     let versions: Vec<HistoryEntry> = reply.body().deserialize().unwrap();
     assert_eq!(versions.len(), 2, "Restore must not add a version");
 
-    // The stubs answer with a clear "not implemented" D-Bus error.
+    // Without a server pairing the library has no account to read from, so
+    // the palette gets the spec's sentence rather than an empty list.
     let error = proxy
         .call_method(
             "SearchLibrary",
             &("quote", HashMap::<String, String>::new()),
         )
         .await
-        .expect_err("SearchLibrary is a stub");
+        .expect_err("an unpaired device has no library");
     let text = format!("{error}");
-    assert!(text.contains("not implemented"), "{text}");
-    assert!(text.contains("WP9"), "{text}");
+    assert!(text.contains("Quotes need a Nostos account."), "{text}");
 
     // UpdateStatus is a working stub: there is never an update in WP4.
     let reply = call(&proxy, "UpdateStatus", &()).await;
@@ -373,5 +376,139 @@ async fn daemon_pairs_with_google_drive_and_syncs() {
         std::fs::read_to_string(rfkill.join("rfkill0/soft")).unwrap(),
         "1",
         "the radio must be blocked again after Unpair"
+    );
+}
+
+/// The Quotes palette reads the real FTS5 cache through D-Bus. The daemon and
+/// the cache are separate processes, so this also proves the palette sees a
+/// sync's committed pages without restarting anything.
+#[tokio::test]
+async fn daemon_serves_cached_library_quotes_and_filters() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let writing = dir.path().join("writing");
+    let state = dir.path().join("state");
+    let rfkill = dir.path().join("rfkill");
+    std::fs::create_dir_all(&writing).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(rfkill.join("rfkill0")).unwrap();
+    std::fs::write(rfkill.join("rfkill0/type"), "wlan\n").unwrap();
+    std::fs::write(rfkill.join("rfkill0/soft"), "1").unwrap();
+
+    SyncConfig {
+        server_url: "https://nostos.example/v1".into(),
+        token: "token".into(),
+        cert_sha256: None,
+        server_name: Some("Nostos".into()),
+        device_pubkey: String::new(),
+    }
+    .save(&state)
+    .unwrap();
+
+    {
+        let mut cache = LibraryCache::from_state_dir(&state).unwrap();
+        let page = LibraryPage {
+            books: vec![
+                LibraryBook {
+                    id: "b1".into(),
+                    title: "The Quiet Hours".into(),
+                    author: "Mara Ellison".into(),
+                    topics: vec!["writing".into()],
+                },
+                LibraryBook {
+                    id: "b2".into(),
+                    title: "On Attention".into(),
+                    author: "Iris Vale".into(),
+                    topics: vec!["attention".into()],
+                },
+            ],
+            items: vec![
+                LibraryItem {
+                    id: "q1".into(),
+                    kind: LibraryItemKind::Highlight,
+                    book_id: "b1".into(),
+                    text: "A sentence is a small room. You walk in and close the door.".into(),
+                    note: String::new(),
+                    location: "p. 41".into(),
+                    topics: vec!["writing".into()],
+                    citation: None,
+                },
+                LibraryItem {
+                    id: "q2".into(),
+                    kind: LibraryItemKind::Note,
+                    book_id: "b2".into(),
+                    text: "Attention is a door you can close.".into(),
+                    note: "A note about the door.".into(),
+                    location: "p. 8".into(),
+                    topics: vec!["attention".into()],
+                    citation: None,
+                },
+            ],
+            deleted: Vec::new(),
+            cursor: "11".into(),
+        };
+        cache.apply_page(&page, "11").unwrap();
+    }
+
+    let (_bus, address) = start_bus(dir.path());
+    let _daemon = start_daemon(&writing, &state, &rfkill, &address);
+    let connection = connect(&address).await;
+    wait_for_name(&connection).await;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.stylos.Daemon1",
+        "/org/stylos/Daemon1",
+        "org.stylos.Daemon1",
+    )
+    .await
+    .expect("daemon proxy");
+
+    let reply = call(
+        &proxy,
+        "SearchLibrary",
+        &("sentence", HashMap::<String, String>::new()),
+    )
+    .await;
+    let hits: Vec<LibraryHit> = reply.body().deserialize().expect("library hits");
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].id, "q1");
+    assert_eq!(hits[0].kind, "highlight");
+    assert_eq!(hits[0].book_title, "The Quiet Hours");
+    assert_eq!(hits[0].author, "Mara Ellison");
+    assert_eq!(hits[0].location, "p. 41");
+    assert!(hits[0].text.contains("small room"));
+
+    let mut filters = HashMap::new();
+    filters.insert("topic".to_string(), "attention".to_string());
+    let reply = call(&proxy, "SearchLibrary", &("", filters)).await;
+    let hits: Vec<LibraryHit> = reply.body().deserialize().unwrap();
+    assert_eq!(hits.len(), 1, "{hits:?}");
+    assert_eq!(hits[0].id, "q2");
+
+    let reply = call(&proxy, "LibraryFilters", &()).await;
+    let options: LibraryFilterOptions = reply.body().deserialize().expect("filter options");
+    assert_eq!(
+        options
+            .books
+            .iter()
+            .map(|book| book.title.as_str())
+            .collect::<Vec<_>>(),
+        vec!["On Attention", "The Quiet Hours"]
+    );
+    assert_eq!(options.authors, vec!["Iris Vale", "Mara Ellison"]);
+    assert!(options.topics.contains(&"writing".to_string()));
+
+    // Unpairing removes the cache, so the previous account's quotes can never
+    // be shown under another server.
+    call(&proxy, "Unpair", &()).await;
+    let error = proxy
+        .call_method(
+            "SearchLibrary",
+            &("sentence", HashMap::<String, String>::new()),
+        )
+        .await
+        .expect_err("the library is gone after Unpair");
+    assert!(
+        format!("{error}").contains("Quotes need a Nostos account."),
+        "{error}"
     );
 }

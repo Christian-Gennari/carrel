@@ -5,6 +5,7 @@
 //! unit-tested with fakes. [`crate::dbus`] only translates D-Bus calls into
 //! these methods and [`DaemonEvent`]s back into signals.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -25,6 +26,9 @@ use crate::gdrive::{
     GdriveConfig, GdriveReport, GdriveRunner, OAuthApp, OAuthClient, OAuthEndpoints,
 };
 use crate::history::{History, HistoryEntry};
+use crate::library::{
+    clear as clear_library, LibraryCache, LibraryFilterOptions, LibraryHit, UNAVAILABLE_MESSAGE,
+};
 use crate::network::{Connectivity, Network, WifiNetwork, PORTAL_MESSAGE};
 use crate::pairing::{generate_device_pubkey, PairingSession};
 use crate::power::{BatteryStatus, Power, Session, LOW_BATTERY_PERCENT};
@@ -399,6 +403,39 @@ impl DaemonCore {
         Ok(summary)
     }
 
+    // ----- library (Quotes palette) ---------------------------------------
+
+    /// Ranked library hits for the Quotes palette.
+    ///
+    /// A device with no server pairing, or a self-hosted server that answered
+    /// `404` for `/library`, gets one calm sentence instead of an empty list:
+    /// the palette shows it as the reason there are no quotes.
+    pub fn search_library(
+        &self,
+        query: &str,
+        filters: &HashMap<String, String>,
+    ) -> Result<Vec<LibraryHit>> {
+        let cache = self.open_library()?;
+        cache.search(query, filters)
+    }
+
+    /// Books, authors and topics for the palette's filter chips.
+    pub fn library_filters(&self) -> Result<LibraryFilterOptions> {
+        let cache = self.open_library()?;
+        cache.filter_options()
+    }
+
+    fn open_library(&self) -> Result<LibraryCache> {
+        if !SyncConfig::is_configured(&self.state_dir)? {
+            bail!("{UNAVAILABLE_MESSAGE}");
+        }
+        let cache = LibraryCache::from_state_dir(&self.state_dir)?;
+        if cache.is_unavailable()? {
+            bail!("{UNAVAILABLE_MESSAGE}");
+        }
+        Ok(cache)
+    }
+
     // ----- export and import ----------------------------------------------
 
     /// Removable drives attached to this device, for the Export screen.
@@ -591,7 +628,12 @@ impl DaemonCore {
                         .server_name
                         .clone()
                         .unwrap_or_else(|| config.server_url.clone());
-                    config.save(&core.state_dir).map(|()| label)
+                    config.save(&core.state_dir).map(|()| {
+                        // The cache belongs to the previous account; never show
+                        // one writer's quotes under another server.
+                        clear_library(&core.state_dir);
+                        label
+                    })
                 }
                 Err(error) => Err(error),
             };
@@ -730,6 +772,7 @@ impl DaemonCore {
         ] {
             remove_if_exists(&path)?;
         }
+        clear_library(&self.state_dir);
         Ok(())
     }
 
@@ -950,12 +993,19 @@ fn describe_summary(summary: &SyncSummary) -> String {
         (Some(server), Some(drive)) if server.is_noop() && drive.is_noop() => {
             "Already up to date.".to_string()
         }
-        (Some(server), Some(drive)) => format!(
-            "Synced: {} pulled, {} pushed; Google Drive: {}.",
-            server.pulled,
-            server.pushed,
-            describe_gdrive_counts(drive)
-        ),
+        (Some(server), Some(drive)) => {
+            let mut line = format!(
+                "Synced: {} pulled, {} pushed; Google Drive: {}.",
+                server.pulled,
+                server.pushed,
+                describe_gdrive_counts(drive)
+            );
+            if let Some(library) = server.library_summary() {
+                line.push(' ');
+                line.push_str(&library);
+            }
+            line
+        }
         (None, None) => "Already up to date.".to_string(),
     }
 }
@@ -977,13 +1027,22 @@ fn describe_gdrive_counts(report: &GdriveReport) -> String {
 
 fn describe_report(report: &SyncReport) -> String {
     if report.is_noop() {
-        "Already up to date.".to_string()
-    } else {
-        format!(
-            "Synced: {} pulled, {} pushed, {} conflict(s).",
-            report.pulled, report.pushed, report.conflicts
-        )
+        return "Already up to date.".to_string();
     }
+    if report.library_only() {
+        return report
+            .library_summary()
+            .unwrap_or_else(|| "Already up to date.".to_string());
+    }
+    let mut line = format!(
+        "Synced: {} pulled, {} pushed, {} conflict(s).",
+        report.pulled, report.pushed, report.conflicts
+    );
+    if let Some(library) = report.library_summary() {
+        line.push(' ');
+        line.push_str(&library);
+    }
+    line
 }
 
 fn remove_if_exists(path: &Path) -> Result<()> {
