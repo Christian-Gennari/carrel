@@ -1,7 +1,7 @@
 # Writer research (WP11)
 
 What the research literature says about the screen and the environment that
-help a person write, and what this means for Stylos. This is the input for
+help a person write, and what this means for Carrel. This is the input for
 WP12 (UI review). It does not change any rule in `00-rules.md`.
 
 **Evidence labels** used in every finding and rule:
@@ -36,7 +36,7 @@ What the evidence supports well:
    is done faster but with more stress [41]; phone notifications raise
    self-reported inattention [45]. Most interruptions at a computer are
    self-started [50], and blocking the sources helps focus [49]. *Strong for
-   the cost, Moderate for blocking.* Stylos's core idea (one app, network off,
+   the cost, Moderate for blocking.* Carrel's core idea (one app, network off,
    no notifications) is the best-supported part of the design.
 2. **Dark text on a light background reads better than the reverse** for
    people with normal vision, in bright and in dim rooms [22–26]. *Strong.*
@@ -82,7 +82,7 @@ the mere presence of a phone drains cognition [47, 48]; unfinished work is
 remembered better (Zeigarnik) [61]; moderate background noise boosts
 creativity (single study, not replicated) [76].
 
-Where the current Stylos design **disagrees** with the evidence (details in
+Where the current Carrel design **disagrees** with the evidence (details in
 section 5):
 
 - Body text is specified in **pixels**. On high-DPI laptop panels 19 px can
@@ -123,14 +123,14 @@ easier the medium length (~55 characters); comprehension did not differ much
 [15, 16]. WCAG 2.2 success criterion 1.4.8 (AAA) asks for lines of no more
 than 80 characters [37]. Typographers recommend 45–75 [84] (*Opinion*, but
 consistent with the data). For *composing* (not reading), no study tested
-line length. Stylos's 60–75 is inside every recommended range.
+line length. Carrel's 60–75 is inside every recommended range.
 
 **F3 · Line height has small effects within normal values. — Moderate.**
 Rello et al. found little effect of line spacing between 0.8 and 1.8, with
 only the tightest (0.8) hurting comprehension [17]. Wider spacing helps in
 peripheral vision, presumably by reducing crowding [21]. WCAG 1.4.8 asks for
 at least 1.5 within paragraphs and 1.4.12 requires that layouts survive 1.5
-[37]. Stylos's 1.6 meets this; going much higher brings no proven benefit and
+[37]. Carrel's 1.6 meets this; going much higher brings no proven benefit and
 costs lines on a small laptop screen.
 
 **F4 · Serif vs sans: no reliable difference. — Moderate.**
@@ -192,14 +192,14 @@ blue-blocking spectacles probably do not reduce eye strain, and sleep effects
 are uncertain [30]. *Unsupported claim:* "blue light at night ruins sleep" in
 the sense of large effects from a normal-brightness writing screen; the
 magnitude claims are overstated, and engagement and brightness seem to matter
-as much as spectrum [29]. Stylos has no engaging feeds, which removes the
+as much as spectrum [29]. Carrel has no engaging feeds, which removes the
 part of the problem that is best supported.
 
 **F11 · E-ink vs LCD: small and inconsistent differences. — Weak.**
 One study found more visual fatigue (fewer blinks, higher fatigue score) on
 an LCD tablet than on e-ink or paper [31]; another found no difference in
 reading effort (EEG and eye tracking) between paper, e-ink and LCD, even
-though readers *said* they preferred paper [33]. Stylos runs on laptop LCDs;
+though readers *said* they preferred paper [33]. Carrel runs on laptop LCDs;
 this is not a reason to change course, but it supports keeping the LCD dim
 and steady (no flashing, no animation).
 
@@ -239,20 +239,20 @@ well-being and attention in a field experiment [79]. In field studies of
 office workers, about half of interruptions were self-interruptions [50], and
 software that blocked distracting sites raised self-rated focus and
 productivity, most for people low in self-control (32 workers) [49].
-Stylos's design (no browser, network off, no notifications) removes both the
+Carrel's design (no browser, network off, no notifications) removes both the
 external and the self-started paths.
 
 **F16 · The "brain drain" from a phone's mere presence did not
 replicate. — Moderate.**
 The original finding [47] failed a pre-registered direct replication with
-~380 participants [48]. Do not market Stylos with this claim. The supported
+~380 participants [48]. Do not market Carrel with this claim. The supported
 claim is narrower: removing the *ability* to switch (F15) helps.
 
 **F17 · Motion and sudden onsets capture attention automatically. —
 Strong (vision science).**
 Motion onset captures attention even when it is irrelevant [51]. A blinking
 caret, animated counters, sliding toasts and pulsing indicators are all
-motion onsets. This supports Stylos's "no animation, no caret blink" rule.
+motion onsets. This supports Carrel's "no animation, no caret blink" rule.
 WCAG 2.3.3 also asks that motion from interaction can be turned off [37].
 
 **F18 · Focus mode (dimming other paragraphs): no evidence. — Opinion.**
@@ -277,7 +277,7 @@ in parallel [9]. Blau's classroom "invisible writing" study is descriptive
 [10]. Monitor-gazing typists (who see and re-read their text) wrote faster
 and more fluently than keyboard-gazers, with similar final quality [11].
 Conclusion: hiding text is a niche exercise (some freewriting tools offer
-it), not a default. Stylos does not hide text; this is right.
+it), not a default. Carrel does not hide text; this is right.
 
 **F21 · Visible word counts and goals. — Strong (monitoring), Moderate
 (display form), no direct writing study.**
@@ -291,7 +291,7 @@ progress bar did not on average reduce drop-out across 32 experiments, and
 slow-then-fast bars increased it [55]. There is no study of a live word count
 during composition. Writers' reports that a running count causes anxiety or
 "writing to the number" are *Opinion*; they are plausible given the
-working-memory view (F24) and Stylos already lets the count be hidden (F1 key,
+working-memory view (F24) and Carrel already lets the count be hidden (F1 key,
 Hairline).
 
 **F22 · Spellcheck and autocorrect during drafting. — Weak / Opinion.**
@@ -389,7 +389,7 @@ large study [73]. No product rule follows except: do not prescribe a time.
 **F34 · Sound. — Weak.**
 Irrelevant speech and secondary tasks reduce writing fluency [77]. The
 "moderate noise boosts creativity" result [76] is a single paper with no
-direct replication found. Stylos's silence is consistent with the evidence;
+direct replication found. Carrel's silence is consistent with the evidence;
 keystroke sounds have no evidence either way (*Opinion*).
 
 **F35 · Posture and keyboard. — Moderate (posture), Opinion (keyboard).**
@@ -413,7 +413,7 @@ show a demand, not an effect.
 Newport's "digital minimalism" [80] is an argument, not a study. The nearest
 strong evidence: deactivating Facebook for four weeks raised subjective
 well-being and freed about an hour a day (large RCT) [81]. The
-mechanism Stylos relies on is the better-tested one in F14–F15.
+mechanism Carrel relies on is the better-tested one in F14–F15.
 
 ### 2.6 What to avoid: engagement mechanics
 
@@ -448,7 +448,7 @@ directly.
 
 ---
 
-## 3. Design rules for Stylos
+## 3. Design rules for Carrel
 
 Each rule is testable. Strength follows the weakest needed link.
 "F" numbers point to section 2.
@@ -559,7 +559,7 @@ Each rule is testable. Strength follows the weakest needed link.
 
 ---
 
-## 5. Where the current Stylos design agrees or disagrees with the evidence
+## 5. Where the current Carrel design agrees or disagrees with the evidence
 
 References are to `00-rules.md` (rules) and `03-ui.md` (UI).
 
@@ -567,7 +567,7 @@ References are to `00-rules.md` (rules) and `03-ui.md` (UI).
 
 | Design point | Evidence |
 |---|---|
-| One app owns the screen; no app switching (rule 1) | F14, F15 — Strong/Moderate. The best-supported part of Stylos. |
+| One app owns the screen; no app switching (rule 1) | F14, F15 — Strong/Moderate. The best-supported part of Carrel. |
 | Network off unless the user syncs (rule 2) | F15 (blocking self-interruption) — Moderate. |
 | Silence: no pop-ups, toasts, badges, sounds, update prompts (rule 6) | F14, F17, F38, F41 — Strong. |
 | Fast to the cursor (rule 5) | F28, F29 — Opinion/Moderate. |

@@ -1,4 +1,4 @@
-# AGENTS.md — Stylos
+# AGENTS.md — Carrel
 
 Read `spec/00-rules.md` first. Then the spec for your work package in
 `spec/05-phases.md` and the specs it points to. The specs win over your own
@@ -23,11 +23,11 @@ choose the smallest change that keeps the rules.
 - Licenses: `protocol/` and `server/` MIT; everything else GPL-3.0-or-later.
   Put `license = "..."` in each `Cargo.toml`.
 - Keep pure logic (storage, sync, protocol) free of GTK so it is testable.
-- No network access from `stylos-shell`, ever.
+- No network access from `carrel-shell`, ever.
 
 ## Git
 
-- Remote: private GitHub repo `Christian-Gennari/stylos`. `main` changes only
+- Remote: private GitHub repo `Christian-Gennari/carrel`. `main` changes only
   through merged pull requests; never push to `main` or rewrite it.
 - Work on your own branch/worktree. Small commits, imperative messages.
 - Every PR closes an issue. If your work package has no issue, create one

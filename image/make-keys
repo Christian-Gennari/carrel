@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 IMAGE_KEYS = Path(__file__).resolve().parent / "keys"
-SUBJECT = "/CN=Carrel development release verity"
+SUBJECT = "/CN=Carrel release verity"
 
 
 def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
@@ -62,7 +62,7 @@ def main() -> int:
             run(
                 "gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
                 "--quick-generate-key",
-                "Carrel development update signing <carrel-dev@localhost>",
+                "Carrel release update signing <carrel-release@localhost>",
                 "rsa3072", "sign", "0",
                 env=env,
             )
