@@ -28,4 +28,24 @@ else
   args+=(--user "$(id -u):$(id -g)" -e HOME=/tmp -e STYLOS_CHOWN=0)
 fi
 if [ $# -eq 0 ]; then set -- bash; fi
-exec docker run "${args[@]}" "$image" "$@"
+# The Google Drive client IDs live outside git.  Put them at a fixed path in
+# the repository for the duration of the container run (0600, gitignored) and
+# remove the copy afterwards.  mkosi.build copies the file only when it
+# exists; a build without it is a valid self-build image.  The secret is
+# never committed and never enters the image unless present here.
+oauth="${STYLOS_OAUTH_TOML:-${HOME:-/home/dev}/.config/stylos/oauth.toml}"
+oauth_copy="$root/.stylos-oauth.toml"
+oauth_image_copy="$root/image/.stylos-oauth.toml"
+cleanup_oauth=0
+if [ -f "$oauth" ]; then
+  install -m 0600 "$oauth" "$oauth_copy"
+  install -m 0600 "$oauth" "$oauth_image_copy"
+  args+=(-e "STYLOS_OAUTH_TOML=/work/.stylos-oauth.toml")
+  cleanup_oauth=1
+fi
+status=0
+docker run "${args[@]}" "$image" "$@" || status=$?
+if [ "$cleanup_oauth" = 1 ]; then
+  rm -f "$oauth_copy" "$oauth_image_copy"
+fi
+exit "$status"

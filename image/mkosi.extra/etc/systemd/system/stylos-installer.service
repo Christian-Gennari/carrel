@@ -1,0 +1,20 @@
+[Unit]
+Description=Stylos installer (only active when booted from a USB stick)
+Documentation=file:///usr/share/doc/stylos
+After=local-fs.target
+Before=graphical.target stylos-session.service
+ConditionPathExists=/dev/tty1
+
+[Service]
+Type=oneshot
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TimeoutStartSec=infinity
+ExecStart=/usr/lib/stylos/installer
+
+[Install]
+WantedBy=graphical.target

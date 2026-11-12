@@ -1,0 +1,37 @@
+#!/bin/sh
+# Grow the data partition to fill its disk.
+#
+# With an argument, operate on that whole disk (the installer passes the new
+# internal disk before rebooting).  Without one, find the disk that carries
+# /dev/disk/by-partlabel/stylos-data.
+set -eu
+
+log() {
+    echo "STYLOS-GROW: $*" >&2
+    echo "STYLOS-GROW: $*" >>/dev/ttyS0 2>/dev/null || true
+}
+
+disk="${1:-}"
+if [ -z "$disk" ]; then
+    part="$(readlink -f /dev/disk/by-partlabel/stylos-data 2>/dev/null || true)"
+    if [ -z "$part" ]; then
+        # udev may not have created the by-partlabel link yet; ask blkid.
+        part="$(blkid -t PARTLABEL=stylos-data -o device 2>/dev/null | head -1 || true)"
+    fi
+    [ -n "$part" ] || exit 0
+    parent="$(lsblk -no PKNAME "$part" 2>/dev/null | head -1)"
+    [ -n "$parent" ] || exit 0
+    disk="/dev/$parent"
+fi
+
+[ -b "$disk" ] || exit 0
+
+# No free space (already grown) is a success.  A failure here must not fail
+# boot-complete on a machine whose data partition is already correct; the
+# installer grows the partition before the first boot of an installed disk.
+if ! systemd-repart --dry-run=no --empty=allow \
+    --definitions=/usr/lib/stylos/repart-grow "$disk"; then
+    log "could not grow data on $disk; continuing with the existing size"
+    exit 0
+fi
+log "data on $disk is grown"

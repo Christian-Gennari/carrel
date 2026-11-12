@@ -14,6 +14,7 @@ fi
 if [ "${STYLOS_CHOWN:-0}" = "1" ] && [ "$(id -u)" = "0" ]; then
     for dir in \
         /work/out \
+        /work/target \
         /work/mkosi.cache \
         /work/mkosi.workspace \
         /work/image/mkosi.cache \

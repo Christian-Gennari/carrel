@@ -3,6 +3,14 @@
 enable stylos-session.service
 enable stylos-rfkill.service
 enable NetworkManager.service
+enable stylosd.service
+
+# A/B image plumbing.
+enable stylos-grow-data.service
+enable stylos-data-init.service
+enable stylos-boot-complete.service
+enable stylos-update.service
+enable stylos-installer.service
 
 # NetworkManager owns networking; do not run systemd-networkd or a standalone
 # wpa_supplicant next to it.  wpa_supplicant stays D-Bus activatable for the
@@ -11,6 +19,8 @@ disable systemd-networkd.service
 disable systemd-networkd.socket
 disable systemd-networkd-wait-online.service
 disable wpa_supplicant.service
+disable systemd-sysupdate.timer
+disable systemd-sysupdate-reboot.timer
 
 # getty units are masked by mkosi.postinst (presets cannot mask); disabling
 # the default tty1 instance removes the getty.target.wants symlink.

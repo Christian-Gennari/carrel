@@ -1,0 +1,120 @@
+#!/bin/bash
+# Stylos installer.
+#
+# Runs only when the running root is on a USB disk (removable or TRAN=usb).
+# Offers "Try Stylos" or "Install to this computer".  Installing copies the
+# running USB image to the internal disk with dd, grows the data partition to
+# fill the disk and reboots.  The writer must type ERASE; there is no other
+# confirmation path.
+set -u
+
+export TERM=linux
+export NCURSES_NO_UTF8_ACS=1
+
+TTY=/dev/tty1
+log() {
+    echo "STYLOS-INSTALLER: $*" >>/dev/ttyS0 2>/dev/null || true
+}
+
+# The installer is only for USB boots.  Booting the installed disk skips it.
+root_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+src_disk="$(lsblk -no PKNAME "$root_src" 2>/dev/null | head -1 || true)"
+[ -n "$src_disk" ] || exit 0
+removable="$(cat "/sys/block/$src_disk/removable" 2>/dev/null || echo 0)"
+transport="$(lsblk -dno TRAN "/dev/$src_disk" 2>/dev/null | tr -d ' ' || true)"
+if [ "$removable" != "1" ] && [ "$transport" != "usb" ]; then
+    log "internal boot on /dev/$src_disk; not the installer"
+    exit 0
+fi
+
+log "USB boot on /dev/$src_disk"
+
+menu() {
+    log "main menu"
+    whiptail --title "Stylos" --menu \
+        "This USB stick runs Stylos. You can try it, or install it on this computer." \
+        15 70 2 \
+        "try" "Try Stylos (nothing is changed)" \
+        "install" "Install to this computer" \
+        3>&1 1>&2 2>&3
+}
+
+choose_disk() {
+    local args=() name size model
+    while read -r line; do
+        eval "$line"
+        [ "$TYPE" = "disk" ] || continue
+        [ "$NAME" = "$src_disk" ] && continue
+        case "$NAME" in loop*|sr*|zram*|ram*) continue ;; esac
+        # Only internal disks: no removable media and no USB transport.
+        local rm tran
+        rm="$(cat "/sys/block/$NAME/removable" 2>/dev/null || echo 0)"
+        tran="$(lsblk -dno TRAN "/dev/$NAME" 2>/dev/null | tr -d ' ' || true)"
+        [ "$rm" = "1" ] && continue
+        [ "$tran" = "usb" ] && continue
+        args+=("$NAME" "$SIZE $MODEL")
+    done < <(lsblk -b -d -n -P -o NAME,TYPE,SIZE,MODEL)
+
+    [ "${#args[@]}" -gt 0 ] || return 1
+    log "disk menu"
+    whiptail --title "Install Stylos" --menu \
+        "Choose the internal disk to erase and install Stylos on." \
+        20 70 10 "${args[@]}" 3>&1 1>&2 2>&3
+}
+
+while true; do
+    choice="$(menu)" || { log "cancelled; powering off"; systemctl poweroff; exit 0; }
+    if [ "$choice" = "try" ]; then
+        log "try selected"
+        exit 0
+    fi
+
+    target="$(choose_disk)" || {
+        whiptail --title "Install Stylos" --msgbox \
+            "No internal disk was found. Stylos can only be installed on an internal disk." \
+            10 70
+        continue
+    }
+
+    size_bytes="$(lsblk -b -dno SIZE "/dev/$target" 2>/dev/null || echo 0)"
+    if [ "$size_bytes" -lt $((8 * 1024 * 1024 * 1024)) ]; then
+        whiptail --title "Install Stylos" --msgbox \
+            "/dev/$target is smaller than 8 GB. Stylos needs at least 8 GB." 10 70
+        continue
+    fi
+
+    log "erase prompt"
+    answer="$(whiptail --title "Install Stylos" --inputbox \
+        "This erases everything on /dev/$target, including other operating systems and files.
+
+Type ERASE (in capitals) to continue." \
+        12 70 3>&1 1>&2 2>&3)" || continue
+    log "erase prompt answered"
+    if [ "$answer" != "ERASE" ]; then
+        whiptail --title "Install Stylos" --msgbox \
+            "The word ERASE was not typed. Nothing was changed." 9 60
+        continue
+    fi
+
+    log "installing /dev/$src_disk -> /dev/$target"
+    whiptail --title "Installing Stylos" --infobox \
+        "Writing Stylos to /dev/$target. Do not unplug the computer." 8 70
+    if ! dd if="/dev/$src_disk" of="/dev/$target" bs=4M conv=fsync status=none; then
+        whiptail --title "Install Stylos" --msgbox \
+            "Writing to /dev/$target failed. Nothing was changed." 9 70
+        log "dd failed"
+        continue
+    fi
+    sync
+    log "image written; growing the data partition"
+    /usr/lib/stylos/grow-data "/dev/$target" >>/dev/ttyS0 2>&1 || true
+    sync
+    log "complete on /dev/$target"
+    whiptail --title "Stylos installed" --msgbox \
+        "Stylos is installed on /dev/$target.
+
+Remove the USB stick, then press Enter to reboot." 10 70
+    log "rebooting"
+    systemctl reboot
+    exit 0
+done

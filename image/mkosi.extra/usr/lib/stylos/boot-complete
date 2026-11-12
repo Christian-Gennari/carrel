@@ -1,0 +1,68 @@
+#!/bin/sh
+# Mark the running slot good once boot-complete.target has been reached.
+#
+# Boot counting works like this:
+#   * a new UKI is installed as EFI/Linux/stylos-<slot>-<version>+3.efi
+#   * systemd-boot decrements the +N counter on every attempt
+#   * when this service runs and boot-complete.target is active, the counted
+#     file is renamed to stylos-<slot>.efi and becomes the persistent default
+#   * if boot never completes, after three attempts systemd-boot removes the
+#     counted entry and the previous slot (stylos-<other>.efi) boots
+#
+# The BIOS path uses grubenv instead of the EFI boot counter; see
+# image/mkosi.extra/efi/grub/grub.cfg.
+set -eu
+
+log() {
+    echo "STYLOS-BOOT: $*" >&2
+    echo "STYLOS-BOOT: $*" >>/dev/ttyS0 2>/dev/null || true
+}
+
+slot="$(sed -n 's/.*stylos\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
+[ -n "$slot" ] || exit 0
+
+if systemctl list-units --state=failed --no-legend --plain 2>/dev/null | grep -q .; then
+    # A failed update that reached userspace still consumes a boot-counting
+    # try.  systemd-boot 257 keeps selecting an exhausted +0- entry, so when
+    # the counter reaches zero the OS itself removes it and switches the
+    # default to the other slot.
+    counted="$(ls -1 /boot/EFI/Linux/stylos-$slot-*+*.efi 2>/dev/null | head -1 || true)"
+    tries="$(basename "${counted:-}" | sed -n 's/.*+\([0-9][0-9]*\)-.*/\1/p')"
+    other=$([ "$slot" = a ] && echo b || echo a)
+    good="/boot/EFI/Linux/stylos-$other.efi"
+    if [ -n "$counted" ] && [ "${tries:-1}" = "0" ] && [ -f "$good" ]; then
+        rm -f "$counted"
+        printf 'default stylos-%s.efi\ntimeout 2\n' "$other" >/boot/loader/loader.conf
+        if [ -f /boot/grub/grubenv ]; then
+            grub-editenv /boot/grub/grubenv set \
+                "stylos_default=$other" stylos_a_tries=0 stylos_b_tries=0 2>/dev/null || true
+        fi
+        log "slot $slot exhausted its boot counter; falling back to $other"
+        sync
+        systemctl reboot
+        exit 0
+    fi
+    log "failed units on this boot; slot $slot is not marked good"
+    exit 0
+fi
+
+if [ -d /sys/firmware/efi ] && [ -d /boot/EFI/Linux ]; then
+    good="/boot/EFI/Linux/stylos-$slot.efi"
+    counted="$(ls -1 /boot/EFI/Linux/stylos-$slot-*+*.efi 2>/dev/null | tail -1 || true)"
+    if [ -n "$counted" ]; then
+        mv -f "$counted" "$good"
+        log "renamed $(basename "$counted") to $(basename "$good")"
+    fi
+    if [ -f "$good" ]; then
+        printf 'default stylos-%s.efi\ntimeout 2\n' "$slot" >/boot/loader/loader.conf
+    fi
+fi
+
+# GRUB (BIOS) has no EFI variables; keep its boot counter in grubenv.
+if [ -f /boot/grub/grubenv ]; then
+    grub-editenv /boot/grub/grubenv set \
+        "stylos_default=$slot" stylos_a_tries=0 stylos_b_tries=0 2>/dev/null || true
+fi
+
+log "slot $slot marked good"
+exit 0
