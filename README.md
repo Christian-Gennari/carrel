@@ -15,7 +15,7 @@ A free operating system that turns an old laptop into a quiet, distraction-free 
 <table>
   <tr>
     <td><img src="docs/images/editor-night.png" alt="The editor on the Night theme"></td>
-    <td><img src="docs/images/quotes.png" alt="The quotes palette, searching a library"></td>
+    <td><img src="docs/images/quotes.png" alt="Typing @ in the editor opens the quotes palette at the caret"></td>
     <td><img src="docs/images/sync.png" alt="The sync screen"></td>
   </tr>
 </table>
@@ -67,6 +67,8 @@ not supported. Details: [spec/04-hardware.md](spec/04-hardware.md).
 [Nostos](https://nostos.page) is a library for the books you read. With Carrel,
 your drafts appear in the Nostos Writing Studio, and your highlights, notes and
 passages are searchable on the device, offline, and insert as live citations.
+Type `@` at the start of a word (or press Ctrl+') and the palette opens at the
+cursor, the same way it does in the Writing Studio.
 
 Carrel works fully without any account. When you press the sync key it can
 send your drafts to Nostos Cloud, to your own server

@@ -691,33 +691,34 @@ impl EditorPage {
         Ok(())
     }
 
-    /// Insert a block at the cursor as a normal journaled edit: the Quotes
-    /// palette uses it for a block quote plus its citation.
+    /// The text view, for the Quotes palette to anchor at the caret.
+    pub fn view(&self) -> sourceview::View {
+        self.view.clone()
+    }
+
+    pub fn buffer(&self) -> sourceview::Buffer {
+        self.buffer.clone()
+    }
+
+    /// Replace the characters `from..to` (buffer offsets) with a block, the
+    /// way the Quotes palette replaces `@query` with a quote and its citation.
+    /// It is one undo step: undo brings the replaced text back.
     ///
-    /// When the cursor is mid-line the block starts a new paragraph; when text
-    /// follows the cursor it starts a new paragraph too, so the citation never
-    /// becomes a lazy continuation of the quote.
-    pub fn insert_block(self: &Rc<Self>, block: &str) -> Result<(), String> {
+    /// When the block does not start its line, it starts a new paragraph and
+    /// the spaces that stood before the replaced text are dropped.
+    pub fn replace_with_block(
+        self: &Rc<Self>,
+        range: Option<(i32, i32)>,
+        block: &str,
+    ) -> Result<(), String> {
         if self.doc.borrow().is_none() {
             return Err("No file is open.".to_owned());
         }
         if block.is_empty() {
             return Ok(());
         }
-        let mark = self.buffer.get_insert();
-        let cursor = self.buffer.iter_at_mark(&mark);
-        let at_line_start = cursor.line_offset() == 0;
-        let at_end = cursor.offset() == self.buffer.end_iter().offset();
-        let next_is_newline = {
-            let mut next = cursor;
-            next.forward_char();
-            next.char() == '\n'
-        };
-        let prefix = if at_line_start { "" } else { "\n\n" };
-        let suffix = if at_end || next_is_newline { "" } else { "\n" };
-        let text = format!("{prefix}{block}{suffix}");
         self.loading.set(false);
-        self.buffer.insert_at_cursor(&text);
+        place_block(&self.buffer, range, block);
         let words = stats::count_words(&self.buffer_text());
         self.last_words.set(words);
         self.update_status(false);
@@ -1052,6 +1053,40 @@ impl EditorPage {
             }
         });
     }
+}
+
+/// Put `block` at the caret, replacing the characters `range` first, as one
+/// user action (one undo step). See [`EditorPage::replace_with_block`].
+pub fn place_block(buffer: &sourceview::Buffer, range: Option<(i32, i32)>, block: &str) {
+    buffer.begin_user_action();
+    if let Some((from, to)) = range {
+        let mut start = buffer.iter_at_offset(from);
+        let mut end = buffer.iter_at_offset(to);
+        buffer.delete(&mut start, &mut end);
+        buffer.place_cursor(&buffer.iter_at_offset(from));
+    }
+    let mut cursor = buffer.iter_at_mark(&buffer.get_insert());
+    if range.is_some() && cursor.line_offset() > 0 {
+        // `word @quote` leaves `word ` behind: take the trailing spaces back,
+        // so the paragraph break does not carry them.
+        let mut line_start = cursor;
+        line_start.set_line_offset(0);
+        let before = buffer.text(&line_start, &cursor, false);
+        let trimmed = before.trim_end_matches([' ', '\u{00A0}']);
+        let removed = before.chars().count() - trimmed.chars().count();
+        if removed > 0 {
+            let mut from = buffer.iter_at_offset(cursor.offset() - removed as i32);
+            buffer.delete(&mut from, &mut cursor);
+            cursor = buffer.iter_at_mark(&buffer.get_insert());
+        }
+    }
+    let at_line_start = cursor.line_offset() == 0;
+    let at_end = cursor.offset() == buffer.end_iter().offset();
+    let next_is_newline = cursor.char() == '\n';
+    let prefix = if at_line_start { "" } else { "\n\n" };
+    let suffix = if at_end || next_is_newline { "" } else { "\n" };
+    buffer.insert_at_cursor(&format!("{prefix}{block}{suffix}"));
+    buffer.end_user_action();
 }
 
 fn scroll_to_cursor(view: &sourceview::View, buffer: &sourceview::Buffer) {

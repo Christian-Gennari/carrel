@@ -19,7 +19,7 @@ use crate::files::FilesPage;
 use crate::first_run::FirstRunPage;
 use crate::history::HistoryPage;
 use crate::nav::Navigator;
-use crate::quotes::QuotesPage;
+use crate::quotes::QuotePalette;
 use crate::settings::{Settings, Theme};
 use crate::settings_page::SettingsPage;
 use crate::store::{self, Store};
@@ -91,7 +91,7 @@ pub fn run(application: &gtk::Application) {
 
     let files = FilesPage::new(store.clone(), Rc::clone(&editor), stack.clone());
     let history = HistoryPage::new(client.clone(), Rc::clone(&nav), Rc::clone(&editor));
-    let quotes = QuotesPage::new(client.clone(), Rc::clone(&nav), Rc::clone(&editor));
+    let quotes = QuotePalette::new(client.clone(), Rc::clone(&editor));
     let sync = SyncPage::new(client.clone(), Rc::clone(&nav));
     let wifi = WifiPage::new(client.clone(), Rc::clone(&nav));
 
@@ -135,7 +135,6 @@ pub fn run(application: &gtk::Application) {
     stack.add_named(&editor.widget, Some("editor"));
     stack.add_named(&files.widget, Some("files"));
     stack.add_named(&history.widget, Some("history"));
-    stack.add_named(&quotes.widget, Some("quotes"));
     stack.add_named(&sync.widget, Some("sync"));
     stack.add_named(&settings_page.widget, Some("settings"));
     stack.add_named(&wifi.widget, Some("wifi"));
@@ -224,27 +223,22 @@ pub fn run(application: &gtk::Application) {
                     nav.show("settings");
                     return glib::Propagation::Stop;
                 }
-                if key == gdk::Key::bracketright {
-                    // One key opens and closes the palette from any screen.
-                    if visible == "quotes" {
-                        nav.show_editor();
-                    } else {
-                        quotes.open();
-                    }
-                    return glib::Propagation::Stop;
-                }
             }
 
             match visible.as_str() {
                 "files" => files.handle_key(keyval, state),
                 "history" => history.handle_key(keyval, state),
-                "quotes" => quotes.handle_key(keyval, state),
                 "sync" => sync.handle_key(keyval, state),
                 "settings" => settings_page.handle_key(keyval, state),
                 "wifi" => wifi.handle_key(keyval, state),
                 "export" => export.handle_key(keyval, state),
                 "first_run" => first_run.handle_key(keyval, state),
-                _ => editor.handle_key(keyval, state),
+                // The Quotes palette (Ctrl+' and the `@` trigger) lives in the
+                // editor, so it sees the editor's keys first.
+                _ => match quotes.handle_key(keyval, state) {
+                    glib::Propagation::Stop => glib::Propagation::Stop,
+                    glib::Propagation::Proceed => editor.handle_key(keyval, state),
+                },
             }
         });
     }
@@ -267,7 +261,6 @@ pub fn run(application: &gtk::Application) {
         match start.as_str() {
             "files" => nav.show("files"),
             "history" => nav.show("history"),
-            "quotes" => nav.show("quotes"),
             "sync" => nav.show("sync"),
             "settings" => nav.show("settings"),
             "wifi" => nav.show("wifi"),
@@ -291,6 +284,15 @@ pub fn run(application: &gtk::Application) {
     });
 
     window.present();
+
+    // The screenshot script types a query into the editor, as a writer would,
+    // so the Quotes palette can be photographed open at the caret.
+    if let Ok(text) = std::env::var("CARREL_SHOT_QUOTE_TEXT") {
+        let quotes = Rc::clone(&quotes);
+        glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
+            quotes.type_at_end(&text);
+        });
+    }
 }
 
 fn present_root_error(application: &gtk::Application, root: &Path, error: &std::io::Error) {
