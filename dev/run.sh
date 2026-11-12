@@ -13,7 +13,7 @@ fi
 # Release keys live outside git but both `make keys` and `make image` run in
 # the container.  Mount the host's Carrel config directory so the private keys
 # are written back to (and read from) ~/.config/carrel/keys.
-carrel_config="${CARREL_CONFIG_DIR:-${HOME:-/home/dev}/.config/carrel}"
+carrel_config="${CARREL_CONFIG_DIR:-${HOME}/.config/carrel}"
 mkdir -p "$carrel_config"
 args=(--rm --init -v "$root:/work" -w /work
       -v "$carrel_config:/carrel-config"
@@ -40,7 +40,7 @@ if [ $# -eq 0 ]; then set -- bash; fi
 # remove the copy afterwards.  mkosi.build copies the file only when it
 # exists; a build without it is a valid self-build image.  The secret is
 # never committed and never enters the image unless present here.
-oauth="${CARREL_OAUTH_TOML:-${HOME:-/home/dev}/.config/carrel/oauth.toml}"
+oauth="${CARREL_OAUTH_TOML:-${HOME}/.config/carrel/oauth.toml}"
 oauth_copy="$root/.carrel-oauth.toml"
 oauth_image_copy="$root/image/.carrel-oauth.toml"
 cleanup_oauth=0

@@ -1,8 +1,8 @@
 # Phases and work packages
 
-Each work package (WP) is one branch and one worker. A WP is done only when
+Each work package (WP) is one branch and one author. A WP is done only when
 its **gate** passes inside the dev container (`dev/run.sh …`) and the result
-is committed on its branch. The orchestrator reviews and merges to `main`.
+is committed on its branch. A maintainer reviews and merges to `main`.
 
 ## Phase 1 — Foundations (parallel)
 
