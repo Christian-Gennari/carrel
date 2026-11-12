@@ -315,9 +315,11 @@ impl EditorPage {
     }
 
     fn update_column_width(&self) {
-        let layout = self.view.create_pango_layout(Some(&"0".repeat(70)));
-        let (width, _) = layout.pixel_size();
-        let width = (width + 96).clamp(520, 1100);
+        // ~70 average characters of body text (spec/03-ui.md). Digits are
+        // wider than average letters, so use Pango's approximate char width.
+        let metrics = self.view.pango_context().metrics(None, None);
+        let char_width = metrics.approximate_char_width() / gtk::pango::SCALE;
+        let width = (char_width * 70 + 96).clamp(520, 1100);
         if self.scroller.width_request() != width {
             self.scroller.set_width_request(width);
         }
@@ -685,8 +687,9 @@ impl Tags {
         dim.set_foreground(Some(palette.dim));
 
         let quote = make("stylos-quote");
-        quote.set_indent(28);
-        quote.set_left_margin(28);
+        // A tag's left margin replaces the view's (32 px), so add the quote
+        // indent to it; wrapped lines then line up with the first line.
+        quote.set_left_margin(32 + 28);
         quote.set_pixels_below_lines(6);
 
         let cite = make("stylos-cite");
