@@ -368,7 +368,6 @@ def grub_cfg(kver: str) -> str:
         "set timeout=2\n"
         "serial --unit=0 --speed=115200\n"
         "terminal_output serial console\n"
-        'echo "GRUB root=$root prefix=$prefix"\n'
         "if [ -f /grub/grubenv ]; then\n"
         "    load_env --file /grub/grubenv stylos_default stylos_tries "
         "stylos_a_roothash stylos_b_roothash\n"

@@ -15,7 +15,9 @@ url_file=/data/.stylos/update/test-url
 url="$(cat "$url_file")"
 log "staging from $url"
 
-# NetworkManager needs a moment to configure QEMU's user-mode NIC.
+# NetworkManager needs a moment to configure QEMU's user-mode NIC.  The
+# normal image has no saved wired connection, so connect it explicitly here.
+nmcli device connect enp0s3 >/dev/null 2>&1 || true
 i=0
 while ! curl -fsS --max-time 2 "${url%/}/SHA256SUMS" -o /dev/null 2>/dev/null; do
     i=$((i + 1))

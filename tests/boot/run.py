@@ -232,7 +232,7 @@ def serve_directory(directory: Path):
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
     proc = subprocess.Popen(
-        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
+        [sys.executable, "-m", "http.server", str(port), "--bind", "0.0.0.0"],
         cwd=directory,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -1056,6 +1056,7 @@ def scenario_online_update(disk: Path, release_dir: Path, out: Path,
                     raise BootError("a bad update signature was applied")
                 if "stylos.slot=b" in qemu.text():
                     raise BootError("a bad update signature switched the boot slot")
+                time.sleep(5)
                 qemu.screenshot(out / "screenshot-online-bad-signature.png")
                 qemu.powerdown()
 
