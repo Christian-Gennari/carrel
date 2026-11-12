@@ -152,6 +152,110 @@ button:hover {{
     background-color: {background};
     color: {text};
 }}
+entry {{
+    background-color: {selection};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 6px;
+    padding: 7px 11px;
+    font-size: 13pt;
+}}
+entry:focus, entry:focus-within {{
+    border-color: {accent};
+    outline-style: none;
+    outline-width: 0;
+    box-shadow: none;
+}}
+.setting-row {{
+    padding: 8px 14px;
+    border-radius: 7px;
+}}
+.setting-row:selected {{
+    background-color: {selection};
+}}
+.setting-label {{
+    color: {text};
+    font-size: 14pt;
+}}
+.setting-value {{
+    color: {muted};
+    font-size: 12pt;
+}}
+.section-title {{
+    color: {muted};
+    font-size: 12pt;
+    margin-bottom: 6px;
+}}
+.step-title {{
+    color: {text};
+    font-size: 18pt;
+    margin-top: 20px;
+    margin-bottom: 6px;
+}}
+.sync-progress {{
+    color: {text};
+    font-size: 13pt;
+    padding: 6px 0 0 0;
+}}
+.preview-title {{
+    color: {muted};
+    font-size: 10pt;
+}}
+.preview-text {{
+    color: {text};
+    font-size: 12pt;
+}}
+.preview-scroller {{
+    border-left: 1px solid {border};
+}}
+.notice-line {{
+    color: {muted};
+    font-size: 10pt;
+    padding: 8px 2px 2px 2px;
+}}
+.notice-ok {{
+    color: {accent};
+}}
+.done-heading {{
+    color: {accent};
+    font-size: 18pt;
+    margin-top: 14px;
+}}
+.battery-note {{
+    color: {accent};
+    background-color: {selection};
+    border-radius: 7px;
+    font-size: 10pt;
+    padding: 5px 14px;
+}}
+.pairing-code {{
+    color: {text};
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: 30pt;
+}}
+.pairing-url {{
+    color: {muted};
+    font-size: 11pt;
+}}
+.wifi-signal {{
+    color: {dim};
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: 11pt;
+}}
+.wifi-signal-off {{
+    color: {border};
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: 11pt;
+}}
+.history-time {{
+    color: {text};
+    font-size: 13pt;
+}}
+.qr {{
+    background-color: #fbf7ef;
+    padding: 10px;
+    border-radius: 6px;
+}}
 "#,
         background = palette.background,
         text = palette.text,
@@ -159,6 +263,7 @@ button:hover {{
         muted = palette.muted,
         selection = palette.selection,
         border = palette.border,
+        accent = palette.accent,
         danger = palette.danger,
         family = family,
         size = size,
