@@ -21,7 +21,9 @@ rusqlite.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+stylos-export = { path = "../export" }
 stylos-protocol = { path = "../protocol" }
+tempfile.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 tokio-rustls.workspace = true
@@ -37,4 +39,4 @@ zbus.workspace = true
 axum.workspace = true
 base64.workspace = true
 stylos-server = { path = "../server" }
-tempfile.workspace = true
+zip.workspace = true

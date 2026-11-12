@@ -37,6 +37,9 @@ pub trait GdriveRunner: Send + Sync {
 pub struct DriveSyncRunner {
     /// Set by the export work package once the real converter exists.
     converter: Option<Arc<dyn DocxConverter>>,
+    /// Explicit OAuth client credentials (the `--oauth` CLI flag). `None`
+    /// keeps the image/default lookup of [`OAuthApp::load`].
+    app: Option<OAuthApp>,
 }
 
 impl DriveSyncRunner {
@@ -48,11 +51,21 @@ impl DriveSyncRunner {
     pub fn with_converter(converter: Arc<dyn DocxConverter>) -> Self {
         Self {
             converter: Some(converter),
+            app: None,
         }
     }
 
-    fn oauth_client() -> Result<OAuthClient> {
-        let app = OAuthApp::load()?;
+    /// Use explicit OAuth client credentials instead of [`OAuthApp::load`].
+    pub fn with_app(mut self, app: OAuthApp) -> Self {
+        self.app = Some(app);
+        self
+    }
+
+    fn oauth_client(&self) -> Result<OAuthClient> {
+        let app = match &self.app {
+            Some(app) => app.clone(),
+            None => OAuthApp::load()?,
+        };
         OAuthClient::new(app, OAuthEndpoints::from_env_or_default())
     }
 }
@@ -66,7 +79,7 @@ impl GdriveRunner for DriveSyncRunner {
     ) -> Result<crate::gdrive::GdriveReport> {
         let config =
             GdriveConfig::load(state_dir)?.context("Google Drive is not paired on this device")?;
-        let oauth = Self::oauth_client()?;
+        let oauth = self.oauth_client()?;
         let access_token = oauth.refresh(&config.refresh_token).await?;
         let api = DriveClient::new(DriveEndpoints::from_env_or_default(), access_token)?;
         let mut state = GdriveState::from_dir(state_dir)?;
@@ -87,7 +100,7 @@ impl GdriveRunner for DriveSyncRunner {
         let Some(config) = GdriveConfig::load(state_dir)? else {
             return Ok(());
         };
-        let oauth = Self::oauth_client()?;
+        let oauth = self.oauth_client()?;
         oauth.revoke(&config.refresh_token).await
     }
 }
