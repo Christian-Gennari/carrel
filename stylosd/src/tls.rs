@@ -35,6 +35,7 @@ pub enum TlsMode {
 #[derive(Clone, Default)]
 pub struct ObservedCert {
     inner: Arc<Mutex<Option<String>>>,
+    publicly_trusted: Arc<Mutex<bool>>,
 }
 
 impl ObservedCert {
@@ -43,11 +44,31 @@ impl ObservedCert {
         self.inner.lock().ok().and_then(|value| value.clone())
     }
 
-    fn record(&self, fingerprint: String) {
+    /// True when the observed certificate chain is valid for the host name
+    /// against the public web PKI roots.
+    pub fn publicly_trusted(&self) -> bool {
+        self.publicly_trusted
+            .lock()
+            .map(|value| *value)
+            .unwrap_or(false)
+    }
+
+    fn record(&self, fingerprint: String, publicly_trusted: bool) {
         if let Ok(mut value) = self.inner.lock() {
             *value = Some(fingerprint);
         }
+        if let Ok(mut value) = self.publicly_trusted.lock() {
+            *value = publicly_trusted;
+        }
     }
+}
+
+fn public_verifier(provider: &Arc<CryptoProvider>) -> Result<Arc<WebPkiServerVerifier>> {
+    let mut roots = RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+        .build()
+        .context("build web PKI verifier")
 }
 
 /// Build a rustls client config for the given mode, plus the observation slot.
@@ -66,16 +87,11 @@ pub fn client_config(mode: &TlsMode) -> Result<(rustls::ClientConfig, ObservedCe
         TlsMode::AcceptAny => Arc::new(RecordingVerifier {
             provider: provider.clone(),
             observed: observed.clone(),
+            public: public_verifier(&provider)?,
         }),
-        TlsMode::SystemRoots => {
-            let mut roots = RootCertStore::empty();
-            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let inner =
-                WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
-                    .build()
-                    .context("build web PKI verifier")?;
-            Arc::new(SystemVerifier { inner })
-        }
+        TlsMode::SystemRoots => Arc::new(SystemVerifier {
+            inner: public_verifier(&provider)?,
+        }),
     };
 
     let mut config = rustls::ClientConfig::builder_with_provider(provider)
@@ -174,6 +190,7 @@ impl ServerCertVerifier for PinnedVerifier {
 struct RecordingVerifier {
     provider: Arc<CryptoProvider>,
     observed: ObservedCert,
+    public: Arc<WebPkiServerVerifier>,
 }
 
 impl fmt::Debug for RecordingVerifier {
@@ -186,12 +203,17 @@ impl ServerCertVerifier for RecordingVerifier {
     fn verify_server_cert(
         &self,
         end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: UnixTime,
+        intermediates: &[CertificateDer<'_>],
+        server_name: &ServerName<'_>,
+        ocsp_response: &[u8],
+        now: UnixTime,
     ) -> Result<ServerCertVerified, Error> {
-        self.observed.record(sha256_hex(end_entity.as_ref()));
+        let publicly_trusted = self
+            .public
+            .verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+            .is_ok();
+        self.observed
+            .record(sha256_hex(end_entity.as_ref()), publicly_trusted);
         Ok(ServerCertVerified::assertion())
     }
 

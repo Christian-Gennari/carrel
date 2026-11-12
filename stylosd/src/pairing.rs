@@ -150,7 +150,17 @@ impl PairingSession {
                             }
                             Some(observed)
                         }
-                        None => None,
+                        // No fingerprint: the server expects public-CA
+                        // verification for every later request (TlsMode::SystemRoots).
+                        // Refuse now with a clear message if that would fail,
+                        // instead of pairing and then failing every sync.
+                        None if self.client.observed_cert_publicly_trusted() => None,
+                        None => bail!(
+                            "the server reported no certificate fingerprint, but its \
+                             certificate is not trusted by a public certificate authority; \
+                             give the server a publicly trusted certificate (for example \
+                             through a TLS proxy or `tailscale cert`)"
+                        ),
                     };
                     let token = status
                         .token

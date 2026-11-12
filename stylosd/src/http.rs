@@ -154,6 +154,12 @@ impl HttpClient {
         self.inner.observed.get()
     }
 
+    /// True when the last observed certificate is valid against the public
+    /// web PKI roots for this host name (only recorded in `AcceptAny` mode).
+    pub fn observed_cert_publicly_trusted(&self) -> bool {
+        self.inner.observed.publicly_trusted()
+    }
+
     /// Send one request. `path` is appended to the server URL's path.
     pub async fn request(
         &self,
@@ -293,7 +299,20 @@ impl HttpClient {
             .and_then(|(_, value)| value.parse::<usize>().ok());
 
         if chunked {
-            self.read_to_end(stream, &mut body).await?;
+            // Read until the terminating chunk, not until EOF: servers such as
+            // Kestrel close TCP without a TLS close_notify after the last chunk,
+            // which rustls reports as an error.
+            while !chunked_complete(&body)? {
+                if body.len() > MAX_RESPONSE_BYTES {
+                    bail!("response is larger than {MAX_RESPONSE_BYTES} bytes");
+                }
+                let mut chunk = [0u8; 8192];
+                let count = self.read_some(stream, &mut chunk).await?;
+                if count == 0 {
+                    bail!("connection closed before the last chunk");
+                }
+                body.extend_from_slice(&chunk[..count]);
+            }
             body = decode_chunked(&body)?;
         } else if let Some(length) = content_length {
             if length > MAX_RESPONSE_BYTES {
@@ -340,7 +359,16 @@ impl HttpClient {
                 bail!("response is larger than {MAX_RESPONSE_BYTES} bytes");
             }
             let mut chunk = [0u8; 8192];
-            let count = self.read_some(stream, &mut chunk).await?;
+            let read = tokio::time::timeout(self.inner.timeout, stream.read(&mut chunk))
+                .await
+                .context("reading response timed out")?;
+            let count = match read {
+                Ok(count) => count,
+                // A close-delimited body ends when the peer closes; many
+                // servers skip close_notify, so treat that as end of stream.
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => 0,
+                Err(error) => return Err(error).context("read response"),
+            };
             if count == 0 {
                 return Ok(());
             }
@@ -378,6 +406,39 @@ fn parse_status(line: &str) -> Result<u16> {
         .parse::<u16>()
         .with_context(|| format!("invalid status code in {line:?}"))?;
     Ok(status)
+}
+
+/// True when `input` holds a complete chunked body: every chunk, the zero-size
+/// last chunk and the (possibly empty) trailer section ending in CRLF.
+fn chunked_complete(input: &[u8]) -> Result<bool> {
+    let mut position = 0usize;
+    loop {
+        let Some(line_end) = find_crlf(input, position) else {
+            return Ok(false);
+        };
+        let line =
+            std::str::from_utf8(&input[position..line_end]).context("chunk header is not UTF-8")?;
+        let size_text = line.split(';').next().unwrap_or_default().trim();
+        let size = usize::from_str_radix(size_text, 16)
+            .with_context(|| format!("invalid chunk size {size_text:?}"))?;
+        position = line_end + 2;
+        if size == 0 {
+            // Trailer lines until an empty line.
+            loop {
+                let Some(end) = find_crlf(input, position) else {
+                    return Ok(false);
+                };
+                if end == position {
+                    return Ok(true);
+                }
+                position = end + 2;
+            }
+        }
+        position = match position.checked_add(size + 2) {
+            Some(next) if next <= input.len() => next,
+            _ => return Ok(false),
+        };
+    }
 }
 
 /// Decode a chunked transfer body. Trailing headers are ignored.
@@ -429,6 +490,18 @@ mod tests {
         assert_eq!(parse_status("HTTP/1.1 409 Conflict").unwrap(), 409);
         assert!(parse_status("SSH/1.1 200 OK").is_err());
         assert!(parse_status("HTTP/1.1 nope").is_err());
+    }
+
+    #[test]
+    fn detects_complete_chunked_bodies() {
+        let full = b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
+        assert!(chunked_complete(full).unwrap());
+        for cut in 0..full.len() {
+            assert!(!chunked_complete(&full[..cut]).unwrap(), "cut at {cut}");
+        }
+        let trailers = b"4\r\ntest\r\n0\r\nX-Trailer: 1\r\n\r\n";
+        assert!(chunked_complete(trailers).unwrap());
+        assert!(!chunked_complete(&trailers[..trailers.len() - 2]).unwrap());
     }
 
     #[test]
