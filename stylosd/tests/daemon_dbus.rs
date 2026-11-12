@@ -1,8 +1,11 @@
-//! End-to-end D-Bus test: start `stylosd run` on a private bus and call the
-//! real `Commit`, `History` and `Restore` methods from a client.
+//! End-to-end D-Bus tests: start `stylosd run` on a private bus and call the
+//! real `Commit`, `History`, `Restore`, `Pair`, `Sync` and `Unpair` methods
+//! from a client.
 //!
 //! `dbus-daemon --session` acts as the system bus; `STYLOS_DBUS_ADDRESS` makes
 //! the daemon connect to it instead of `/run/dbus/system_bus_socket`.
+
+mod support;
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -65,7 +68,18 @@ fn start_bus(dir: &Path) -> (KillOnDrop, String) {
 }
 
 fn start_daemon(writing: &Path, state: &Path, rfkill: &Path, address: &str) -> KillOnDrop {
-    let child = Command::new(env!("CARGO_BIN_EXE_stylosd"))
+    start_daemon_with(writing, state, rfkill, address, &[])
+}
+
+fn start_daemon_with(
+    writing: &Path,
+    state: &Path,
+    rfkill: &Path,
+    address: &str,
+    extra_env: &[(&str, String)],
+) -> KillOnDrop {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_stylosd"));
+    command
         .arg("run")
         .env("STYLOS_WRITING_DIR", writing)
         .env("STYLOS_STATE_DIR", state)
@@ -75,9 +89,11 @@ fn start_daemon(writing: &Path, state: &Path, rfkill: &Path, address: &str) -> K
         .env("STYLOS_RFKILL_DIR", rfkill)
         .env("RUST_LOG", "stylosd=warn")
         .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .expect("start stylosd run");
+        .stderr(Stdio::inherit());
+    for (key, value) in extra_env {
+        command.env(key, value);
+    }
+    let child = command.spawn().expect("start stylosd run");
     KillOnDrop(child)
 }
 
@@ -239,4 +255,123 @@ async fn daemon_serves_commit_history_and_restore() {
     let fields = info.fields();
     assert_eq!(fields.len(), 3);
     assert_eq!(fields[0], zbus::zvariant::Value::from("error"));
+}
+
+/// `Pair("gdrive", "")` starts the device flow and returns the code; the
+/// daemon then polls the mocked Google in the background, stores the refresh
+/// token, mirrors the writing directory on `Sync()` and revokes on `Unpair()`.
+#[tokio::test]
+async fn daemon_pairs_with_google_drive_and_syncs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let writing = dir.path().join("writing");
+    let state = dir.path().join("state");
+    let rfkill = dir.path().join("rfkill");
+    std::fs::create_dir_all(&writing).unwrap();
+    std::fs::create_dir_all(&state).unwrap();
+    std::fs::create_dir_all(rfkill.join("rfkill0")).unwrap();
+    std::fs::write(rfkill.join("rfkill0/type"), "wlan\n").unwrap();
+    std::fs::write(rfkill.join("rfkill0/soft"), "1").unwrap();
+
+    let mock = support::MockGoogle::start().await;
+    let oauth = dir.path().join("oauth.toml");
+    std::fs::write(
+        &oauth,
+        "[google]\nclient_id = \"test-client\"\nclient_secret = \"test-secret\"\n",
+    )
+    .unwrap();
+
+    let (_bus, address) = start_bus(dir.path());
+    let _daemon = start_daemon_with(
+        &writing,
+        &state,
+        &rfkill,
+        &address,
+        &[
+            ("STYLOS_OAUTH_CONFIG", oauth.display().to_string()),
+            ("STYLOS_GDRIVE_BASE_URL", mock.base_url().to_string()),
+        ],
+    );
+
+    let connection = connect(&address).await;
+    wait_for_name(&connection).await;
+    let proxy = zbus::Proxy::new(
+        &connection,
+        "org.stylos.Daemon1",
+        "/org/stylos/Daemon1",
+        "org.stylos.Daemon1",
+    )
+    .await
+    .expect("daemon proxy");
+
+    let mut pair_signals = proxy
+        .receive_signal("PairStatus")
+        .await
+        .expect("subscribe to PairStatus");
+    let reply = call(&proxy, "Pair", &("gdrive", "")).await;
+    let info: stylosd::PairingInfo = reply.body().deserialize().expect("pairing info");
+    assert_eq!(info.backend, "gdrive");
+    assert_eq!(info.code, "TEST-CODE");
+    assert!(
+        info.approval_url.starts_with("https://"),
+        "{:?}",
+        info.approval_url
+    );
+    assert!(info.expires_at > 0);
+
+    let signal = tokio::time::timeout(Duration::from_secs(30), pair_signals.next())
+        .await
+        .expect("PairStatus signal did not arrive")
+        .expect("PairStatus stream ended");
+    let (pair_state, code, message): (String, String, String) =
+        signal.body().deserialize().expect("PairStatus body");
+    assert_eq!(pair_state, "approved", "{message}");
+    assert_eq!(code, "TEST-CODE");
+    assert_eq!(
+        std::fs::read_to_string(rfkill.join("rfkill0/soft")).unwrap(),
+        "1",
+        "the radio must be blocked again after pairing"
+    );
+    let stored = std::fs::read_to_string(state.join("sync.toml")).expect("sync.toml was written");
+    assert!(stored.contains("refresh-1"), "{stored}");
+
+    std::fs::write(writing.join("note.md"), "hello drive").unwrap();
+    let mut sync_signals = proxy
+        .receive_signal("SyncStatus")
+        .await
+        .expect("subscribe to SyncStatus");
+    call(&proxy, "Sync", &()).await;
+    let mut last_state = String::new();
+    let mut last_message = String::new();
+    for _ in 0..3 {
+        let signal = tokio::time::timeout(Duration::from_secs(30), sync_signals.next())
+            .await
+            .expect("SyncStatus signal did not arrive")
+            .expect("SyncStatus stream ended");
+        let (state, message, last_sync): (String, String, i64) =
+            signal.body().deserialize().expect("SyncStatus body");
+        assert!(last_sync >= 0);
+        last_state = state;
+        last_message = message;
+        if last_state != "syncing" {
+            break;
+        }
+    }
+    assert_eq!(last_state, "idle", "{last_message}");
+    assert!(last_message.contains("Google Drive"), "{last_message}");
+    assert_eq!(mock.refresh_calls(), 1, "sync refreshes the access token");
+    assert_eq!(mock.content("note.md").as_deref(), Some("hello drive"));
+    assert_eq!(
+        std::fs::read_to_string(rfkill.join("rfkill0/soft")).unwrap(),
+        "1",
+        "the radio must be blocked again after the sync"
+    );
+
+    call(&proxy, "Unpair", &()).await;
+    assert_eq!(mock.revoke_calls(), 1, "Unpair revokes the Google token");
+    assert!(!state.join("sync.toml").exists());
+    assert_eq!(
+        std::fs::read_to_string(rfkill.join("rfkill0/soft")).unwrap(),
+        "1",
+        "the radio must be blocked again after Unpair"
+    );
 }
