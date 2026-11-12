@@ -31,18 +31,45 @@ Pre-alpha. Built mostly by AI agents against the specs in [`spec/`](spec/).
 | `server/` | `stylos-server`: self-hosted sync server (single binary / Docker). |
 | `tests/` | QEMU boot tests and end-to-end sync tests. |
 
-## Build and boot the image
+## Install Stylos
 
-Everything runs in the dev container; the host needs only Docker.
+You do not need Docker, Linux or a build environment to use Stylos.
+
+1. Download `stylos-<version>.img.xz` from the release page. Check it with
+   the `.sha256` file; the `.asc` file is the release signature (see
+   [`image/README.md`](image/README.md#verify-a-download)).
+2. Flash the file to a USB stick (8 GB or more) with one of:
+   - [Fedora Media Writer](https://fedoraproject.org/workstation/download):
+     choose "Select .iso file…", pick the `.img.xz` file (it unpacks it).
+   - [balenaEtcher](https://etcher.balena.io/): "Flash from file".
+   - [Rufus](https://rufus.ie/) on Windows: select the file and choose
+     **DD Image mode** when asked.
+   - `xz -dc stylos-<version>.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync`
+     (check that `/dev/sdX` is the stick).
+3. Boot the laptop from the stick. Choose **Try Stylos** (nothing on the
+   laptop changes) or **Install to this computer** (type `ERASE`; the whole
+   internal disk is replaced).
+
+Secure Boot stays on. Stylos boots through Debian's Microsoft-signed `shim`,
+so you do not change any firmware setting. After an install, Stylos is the
+first entry in the laptop's boot menu.
+
+## Build the image (developers)
+
+Docker is only the **build environment**: it holds the toolchain (Rust, GTK4,
+mkosi, QEMU). It is not part of Stylos and a user never runs it. Everything
+below runs in the dev container; the host needs only Docker.
 
 ```sh
 dev/run.sh --root make image      # build out/image/stylos.img.raw
-dev/run.sh --root make test-boot  # boot UEFI + BIOS, write out/screenshot-*.png
+dev/run.sh --root make release    # signed update payloads + out/dist/stylos-<version>.img.xz
+dev/run.sh --root make test-boot  # boot UEFI, Secure Boot and BIOS in QEMU
 ```
 
-`make test-boot` uses the image from `make image` and checks the WP1 gate
-(serial console + screenshots).  See `image/README.md` for the image layout
-and `tests/boot/run.py` for the assertions.
+`make release` needs the release keys in `~/.config/stylos/keys` (`make
+keys` creates development keys). See `image/README.md` for the image layout,
+Secure Boot chain and release files, and `tests/boot/run.py` for the
+assertions.
 
 ## License
 

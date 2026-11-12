@@ -3,7 +3,7 @@
 
 The image must already exist (``make image``).  This script takes the running
 slot's root filesystem, bumps its version, creates a matching dm-verity hash
-tree and signature, builds signed slot A and B UKIs, and writes a
+tree and signature, writes the slot A and B boot entries, and writes a
 ``SHA256SUMS`` manifest plus its detached GPG signature.  A device built with
 the matching public keyring verifies the manifest with systemd-sysupdate.
 
@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,83 @@ def sign_manifest(manifest: Path, secret: Path) -> None:
         )
 
 
+# The shipped image keeps a small data partition; the installed or flashed
+# system grows it to fill the disk on first boot (stylos-grow-data.service
+# runs systemd-repart, fstab's x-systemd.growfs grows the file system).
+DATA_SHIPPED_BYTES = 256 * 1024 * 1024
+GAP_BYTES = 1024 * 1024  # room for the backup GPT after the data partition
+
+
+def sign_file(path: Path, secret: Path) -> Path:
+    """Detached, ASCII-armoured signature ``<path>.asc`` by the release key."""
+    with tempfile.TemporaryDirectory(prefix="stylos-release-gpg-") as home:
+        os.chmod(home, 0o700)
+        env = dict(os.environ, GNUPGHOME=home)
+        run("gpg", "--batch", "--import", secret, env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        signature = path.with_name(path.name + ".asc")
+        signature.unlink(missing_ok=True)
+        run("gpg", "--batch", "--yes", "--armor", "--detach-sign",
+            "--output", signature, path, env=env)
+    return signature
+
+
+def shrink_image(image: Path, work: Path) -> None:
+    """Cut a copy of the built image down to its content.
+
+    Only the data partition is shrunk: it is empty in a fresh image, so it is
+    recreated at DATA_SHIPPED_BYTES, the image file ends right after it, and
+    the GPT is rewritten there.  The ESP and both root slots keep their size
+    (sysupdate needs two root slots of the same size).  The empty parts of
+    those compress to almost nothing.
+    """
+    parts = assemble.read_gpt(work)
+    data = next(p for p in parts if p["uuid"] == assemble.DATA_UUID)
+    dump = subprocess.run(
+        ["sfdisk", "--dump", str(work)], check=True, capture_output=True, text=True,
+    ).stdout
+    lines = []
+    for line in dump.splitlines():
+        if line.startswith(("last-lba:", "device:")):
+            continue
+        if f"start={data['first']}," in line.replace(" ", ""):
+            line = re.sub(
+                r"size=\s*\d+", f"size={DATA_SHIPPED_BYTES // 512}", line, count=1,
+            )
+        lines.append(line)
+    total = data["first"] * 512 + DATA_SHIPPED_BYTES + GAP_BYTES
+    run("truncate", "-s", total, work)
+    run("sfdisk", "--no-reread", "--no-tell-kernel", work,
+        input="\n".join(lines) + "\n", text=True, stdout=subprocess.DEVNULL)
+    run("mkfs.ext4", "-q", "-F", "-L", "stylos-data",
+        "-E", f"offset={data['first'] * 512}", work, f"{DATA_SHIPPED_BYTES // 1024}k")
+    after = assemble.read_gpt(work)
+    new_data = next(p for p in after if p["uuid"] == assemble.DATA_UUID)
+    if new_data["size"] != DATA_SHIPPED_BYTES or new_data["first"] != data["first"]:
+        raise SystemExit("shrinking the data partition did not give the expected table")
+
+
+def build_dist(image: Path, dist: Path, version: str, secret: Path) -> Path:
+    """``stylos-<version>.img.xz`` + ``.sha256`` + ``.asc`` for users to flash."""
+    if dist.exists():
+        shutil.rmtree(dist)
+    dist.mkdir(parents=True)
+    raw = dist / f"stylos-{version}.img"
+    run("cp", "--sparse=always", image, raw)
+    shrink_image(image, raw)
+    archive = dist / f"stylos-{version}.img.xz"
+    with archive.open("wb") as target:
+        run("xz", "-T4", "-6", "-c", raw, stdout=target)
+    raw.unlink()
+    digest = hashlib.sha256()
+    with archive.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    (dist / f"{archive.name}.sha256").write_text(f"{digest.hexdigest()}  {archive.name}\n")
+    sign_file(archive, secret)
+    return archive
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", required=True, type=Path)
@@ -66,6 +144,11 @@ def main() -> int:
     parser.add_argument("--verity-key", required=True, type=Path)
     parser.add_argument("--verity-cert", required=True, type=Path)
     parser.add_argument("--update-secret", required=True, type=Path)
+    parser.add_argument("--dist", type=Path,
+                        help="also write stylos-<image-version>.img.xz, .sha256 and "
+                             ".asc to this directory")
+    parser.add_argument("--image-version", default=assemble.VERSION,
+                        help="version of the built image (file name of the .img.xz)")
     args = parser.parse_args()
 
     image = args.image.resolve()
@@ -100,10 +183,6 @@ def main() -> int:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         write_os_release(root, args.version)
-        assemble.extract_sections(esp, work, kver)
-        # Use the new root's os-release in the UKI's .osrel section too.
-        shutil.copyfile(root / "usr/lib/os-release", work / "osrel")
-
         root_image = work / "stylos-root.raw"
         run(
             "mkfs.erofs", "-zlz4hc,9", "-L", "stylos-root",
@@ -117,11 +196,11 @@ def main() -> int:
         shutil.copyfile(hash_file, out / f"stylos-verity-{args.version}.raw")
         (out / f"stylos-verity-sig-{args.version}.sig").write_bytes(signature)
         for slot in ("a", "b"):
-            assemble.build_uki(
-                work,
-                out / f"stylos-{slot}-{args.version}.efi",
-                kver,
-                assemble.cmdline(slot, roothash),
+            (out / f"stylos-{slot}-{args.version}.conf").write_text(
+                assemble.entry_conf(
+                    slot, "Stylos", args.version, kver, roothash,
+                    assemble.SORT_KEY[slot],
+                )
             )
 
     files = sorted(
@@ -148,13 +227,17 @@ Files:
   stylos-root-{args.version}.raw          root filesystem
   stylos-verity-{args.version}.raw        dm-verity hash tree
   stylos-verity-sig-{args.version}.sig    signed verity root hash
-  stylos-a-{args.version}.efi              signed slot A UKI
-  stylos-b-{args.version}.efi              signed slot B UKI
+  stylos-a-{args.version}.conf             slot A boot entry
+  stylos-b-{args.version}.conf             slot B boot entry
 
 The root hash is {roothash}.
 """
     )
     print(f"release: {out} ({args.version}, roothash {roothash})")
+    if args.dist is not None:
+        archive = build_dist(image, args.dist.resolve(), args.image_version,
+                             args.update_secret)
+        print(f"release: {archive} ({archive.stat().st_size // 1024**2} MiB)")
     return 0
 
 
