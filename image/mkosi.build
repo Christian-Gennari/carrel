@@ -1,0 +1,15 @@
+#!/bin/sh
+# Build the placeholder stylos-shell.
+#
+# WP2 replaces this with the real Rust + GTK4 shell. Until then the session
+# client is a tiny GTK4 window; it is not a terminal and does not talk to the
+# network.
+set -eu
+
+install -d "$DESTDIR/usr/bin"
+cc -O2 -Wall -Wextra \
+    $(pkg-config --cflags gtk4) \
+    "$SRCDIR/placeholder/stylos-shell.c" \
+    -o "$DESTDIR/usr/bin/stylos-shell" \
+    $(pkg-config --libs gtk4)
+strip "$DESTDIR/usr/bin/stylos-shell" 2>/dev/null || true

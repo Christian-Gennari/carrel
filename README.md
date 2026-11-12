@@ -29,6 +29,19 @@ Pre-alpha. Built mostly by AI agents against the specs in [`spec/`](spec/).
 | `server/` | `stylos-server`: self-hosted sync server (single binary / Docker). |
 | `tests/` | QEMU boot tests and end-to-end sync tests. |
 
+## Build and boot the image
+
+Everything runs in the dev container; the host needs only Docker.
+
+```sh
+dev/run.sh --root make image      # build out/image/stylos.img.raw
+dev/run.sh --root make test-boot  # boot UEFI + BIOS, write out/screenshot-*.png
+```
+
+`make test-boot` uses the image from `make image` and checks the WP1 gate
+(serial console + screenshots).  See `image/README.md` for the image layout
+and `tests/boot/run.py` for the assertions.
+
 ## License
 
 GPL-3.0-or-later for the OS, shell and daemon. MIT for `protocol/` and

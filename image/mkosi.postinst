@@ -1,0 +1,32 @@
+#!/bin/sh
+# Final image customisation: the writer account and its data directory.
+set -eu
+
+if ! mkosi-chroot getent passwd writer >/dev/null 2>&1; then
+    mkosi-chroot useradd --create-home --uid 1000 --user-group \
+        --shell /bin/bash writer
+fi
+
+for group in video render input audio; do
+    if mkosi-chroot getent group "$group" >/dev/null 2>&1; then
+        mkosi-chroot usermod -aG "$group" writer
+    fi
+done
+
+# /data is a plain directory on the root filesystem in WP1.  WP7 moves it to
+# its own partition; keeping the path makes the shell code independent of that.
+install -d -m 0755 -o 1000 -g 1000 "$BUILDROOT/data/writing"
+
+# Presets cannot mask units, so mask the getty templates directly.  A symlink
+# to /dev/null is exactly what `systemctl mask` creates.  This also stops the
+# kernel-console getty, should systemd.getty_auto=no ever be dropped.
+for unit in \
+    getty@.service serial-getty@.service console-getty.service autovt@.service \
+    systemd-networkd.service systemd-networkd.socket \
+    systemd-networkd-wait-online.service systemd-timesyncd.service
+do
+    ln -sfn /dev/null "$BUILDROOT/etc/systemd/system/$unit"
+done
+rm -f "$BUILDROOT/etc/systemd/system/getty.target.wants/getty@tty1.service"
+
+mkosi-chroot systemctl set-default graphical.target

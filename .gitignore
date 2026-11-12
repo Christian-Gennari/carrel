@@ -3,5 +3,7 @@ target/
 /out/
 /mkosi.output/
 /mkosi.cache/
+/mkosi.workspace/
 *.img
 *.qcow2
+__pycache__/

@@ -1,0 +1,18 @@
+# Stylos services.  This file is read after the distribution presets, so it
+# overrides the default enablement.
+enable stylos-session.service
+enable stylos-rfkill.service
+enable NetworkManager.service
+
+# NetworkManager owns networking; do not run systemd-networkd or a standalone
+# wpa_supplicant next to it.  wpa_supplicant stays D-Bus activatable for the
+# Wi-Fi setup screen.
+disable systemd-networkd.service
+disable systemd-networkd.socket
+disable systemd-networkd-wait-online.service
+disable wpa_supplicant.service
+
+# getty units are masked by mkosi.postinst (presets cannot mask); disabling
+# the default tty1 instance removes the getty.target.wants symlink.
+disable getty@tty1.service
+disable serial-getty@ttyS0.service
