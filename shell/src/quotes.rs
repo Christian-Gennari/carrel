@@ -355,6 +355,10 @@ impl QuotesPage {
             if !query.trim().is_empty() {
                 page.entry.set_text(&query);
                 page.state.borrow_mut().query = query;
+                // And can select it, to check the accent text selection.
+                if std::env::var("STYLOS_QUOTE_SELECT").as_deref() == Ok("1") {
+                    page.entry.select_region(0, -1);
+                }
             }
         }
         page

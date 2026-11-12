@@ -49,6 +49,10 @@ pub fn run(application: &gtk::Application) {
     theme::apply(&provider, &settings.borrow());
     if let Some(gtk_settings) = gtk::Settings::default() {
         gtk_settings.set_gtk_application_prefer_dark_theme(settings.borrow().theme == Theme::Night);
+        // spec/03-ui.md: no caret animation, no keystroke sounds.
+        gtk_settings.set_gtk_cursor_blink(false);
+        gtk_settings.set_gtk_enable_event_sounds(false);
+        gtk_settings.set_gtk_enable_input_feedback_sounds(false);
     }
 
     let window = gtk::ApplicationWindow::builder()
