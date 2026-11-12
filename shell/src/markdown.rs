@@ -422,7 +422,9 @@ mod tests {
         let quote = "[a quiet morning](nostos:cite/a)";
         assert!(has(quote, Kind::CiteText, "a quiet morning"));
         assert!(has(quote, Kind::CiteHidden, "["));
-        assert!(!kinds(quote).iter().any(|(kind, _)| *kind == Kind::CiteMarker));
+        assert!(!kinds(quote)
+            .iter()
+            .any(|(kind, _)| *kind == Kind::CiteMarker));
     }
 
     #[test]
@@ -448,7 +450,11 @@ mod tests {
     fn citation_after_emphasis_and_with_a_long_id() {
         let text = "Some mornings the words come *slowly*.[^1](nostos:cite/quiet-mornings-42)";
         assert!(has(text, Kind::CiteMarker, "1"));
-        assert!(has(text, Kind::CiteHidden, "](nostos:cite/quiet-mornings-42)"));
+        assert!(has(
+            text,
+            Kind::CiteHidden,
+            "](nostos:cite/quiet-mornings-42)"
+        ));
     }
 
     #[test]
