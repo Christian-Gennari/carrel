@@ -1,0 +1,23 @@
+[package]
+name = "stylos-shell"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Stylos writing shell: a calm, keyboard-first Markdown editor"
+
+[[bin]]
+name = "stylos-shell"
+path = "src/main.rs"
+
+[[bin]]
+name = "stylos-crash-writer"
+path = "src/bin/crash-writer.rs"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.10", features = ["v4_18"] }
+sourceview = { package = "sourceview5", version = "0.10" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

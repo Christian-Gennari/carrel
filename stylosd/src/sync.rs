@@ -174,7 +174,7 @@ impl Run<'_> {
                     Ok(())
                 } else {
                     // Edited remotely, deleted locally: keep both versions.
-                    let remote = self.fetch_content(entry).await?;
+                    let remote = fetch_content(&self.client, entry).await?;
                     self.ensure_conflict_copy(&entry.path, &remote)?;
                     self.state.upsert(&state_from_entry(entry))?;
                     self.report.conflicts += 1;
@@ -215,7 +215,7 @@ impl Run<'_> {
         let old_path = state.path.clone();
         let Some(local_content) = self.read_local(&old_path)? else {
             if state.hash != entry.hash {
-                let remote = self.fetch_content(entry).await?;
+                let remote = fetch_content(&self.client, entry).await?;
                 self.ensure_conflict_copy(&entry.path, &remote)?;
                 self.report.conflicts += 1;
             }
@@ -240,7 +240,7 @@ impl Run<'_> {
             if content_hash(existing.as_bytes()) != entry.hash {
                 // Another local file already uses the new path. Keep it and
                 // preserve the remote version in a conflict copy.
-                let remote = self.fetch_content(entry).await?;
+                let remote = fetch_content(&self.client, entry).await?;
                 self.ensure_conflict_copy(&entry.path, &remote)?;
                 self.state.upsert(&state_from_entry(entry))?;
                 self.report.conflicts += 1;
@@ -256,7 +256,7 @@ impl Run<'_> {
             self.report.pulled += 1;
             self.tick()?;
         } else {
-            let remote = self.fetch_content(entry).await?;
+            let remote = fetch_content(&self.client, entry).await?;
             self.write_local(&entry.path, &remote.content)?;
             self.remove_local(&old_path)?;
             self.state.upsert(&state_from_entry(entry))?;
@@ -306,7 +306,7 @@ impl Run<'_> {
     }
 
     async fn apply_remote(&mut self, entry: &FileEntry) -> Result<()> {
-        let remote = self.fetch_content(entry).await?;
+        let remote = fetch_content(&self.client, entry).await?;
         self.write_local(&entry.path, &remote.content)?;
         self.state.upsert(&state_from_entry(entry))?;
         self.report.pulled += 1;
@@ -318,34 +318,12 @@ impl Run<'_> {
     /// to it. The state records the server revision, so the push phase then
     /// uploads the local version over it and both copies survive.
     async fn conflict_with_remote(&mut self, entry: &FileEntry, base_path: &str) -> Result<()> {
-        let remote = self.fetch_content(entry).await?;
+        let remote = fetch_content(&self.client, entry).await?;
         self.ensure_conflict_copy(base_path, &remote)?;
         self.state.upsert(&state_from_entry(entry))?;
         self.report.conflicts += 1;
         self.tick()?;
         Ok(())
-    }
-
-    async fn fetch_content(&self, entry: &FileEntry) -> Result<FileContent> {
-        let content: FileContent = self
-            .client
-            .get_json(&endpoints::file(entry.file_id))
-            .await?;
-        if !verify_content_hash(content.content.as_bytes(), &entry.hash) {
-            bail!(
-                "server sent content that does not match the hash for {}",
-                entry.path
-            );
-        }
-        if content.rev != entry.rev {
-            bail!(
-                "server changed {} while syncing (rev {} != {}); run sync again",
-                entry.path,
-                content.rev,
-                entry.rev
-            );
-        }
-        Ok(content)
     }
 
     /// Materialize the server's version as a conflict copy, reusing the file
@@ -631,6 +609,31 @@ struct LocalFile {
     path: String,
     content: String,
     hash: String,
+}
+
+/// Fetch and verify one file's content.
+///
+/// This is a free function rather than a method so the borrow of the HTTP
+/// client — which is `Sync` — is what crosses the await point, not a borrow of
+/// the whole `Run` (whose SQLite state is not). That keeps the sync future
+/// `Send`, so `stylosd` can spawn it on a tokio worker.
+async fn fetch_content(client: &HttpClient, entry: &FileEntry) -> Result<FileContent> {
+    let content: FileContent = client.get_json(&endpoints::file(entry.file_id)).await?;
+    if !verify_content_hash(content.content.as_bytes(), &entry.hash) {
+        bail!(
+            "server sent content that does not match the hash for {}",
+            entry.path
+        );
+    }
+    if content.rev != entry.rev {
+        bail!(
+            "server changed {} while syncing (rev {} != {}); run sync again",
+            entry.path,
+            content.rev,
+            entry.rev
+        );
+    }
+    Ok(content)
 }
 
 fn state_from_entry(entry: &FileEntry) -> FileState {

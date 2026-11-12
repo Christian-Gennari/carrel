@@ -1,20 +1,21 @@
 //! CLI entry point for `stylosd`.
 //!
-//! WP3 ships the sync and pairing commands used by tests and by the future
-//! D-Bus service. The long-running daemon and its D-Bus API arrive in WP4.
+//! `stylosd run` is the system service. `stylosd sync` and `stylosd pair` are
+//! the single-shot commands used by tests and by an administrator.
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
 use clap::{Args, Parser, Subcommand};
+use stylosd::dbus::RunConfig;
 use stylosd::{generate_device_pubkey, sync_once, PairingSession, SyncConfig, SyncOptions};
 
 #[derive(Debug, Parser)]
 #[command(
     name = "stylosd",
     version,
-    about = "Stylos system daemon (sync client)"
+    about = "Stylos system daemon (sync client, history, radio, D-Bus)"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -23,10 +24,23 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Run the D-Bus daemon (the systemd service).
+    Run(RunArgs),
     /// Synchronize the writing directory with the paired server, once.
     Sync(SyncArgs),
     /// Pair this device with a server and store the token.
     Pair(PairArgs),
+}
+
+#[derive(Debug, Args)]
+struct RunArgs {
+    /// Writing directory (plain Markdown files).
+    #[arg(long, env = "STYLOS_WRITING_DIR", default_value = "/data/writing")]
+    dir: PathBuf,
+
+    /// State directory: sync.toml, sync-state.sqlite, history.
+    #[arg(long, env = "STYLOS_STATE_DIR", default_value = "/data/.stylos")]
+    state: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -71,6 +85,20 @@ struct PairArgs {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
+        Command::Run(args) => {
+            tracing_subscriber::fmt()
+                .with_env_filter(
+                    tracing_subscriber::EnvFilter::try_from_default_env()
+                        .unwrap_or_else(|_| "stylosd=info".into()),
+                )
+                .with_target(false)
+                .init();
+            stylosd::dbus::run(RunConfig {
+                writing_dir: args.dir,
+                state_dir: args.state,
+            })
+            .await
+        }
         Command::Sync(args) => run_sync(args).await,
         Command::Pair(args) => run_pair(args).await,
     }

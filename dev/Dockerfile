@@ -11,7 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       debian-archive-keyring \
       qemu-system-x86 qemu-utils ovmf \
       cage weston xvfb imagemagick \
-      pandoc poppler-utils \
+      pandoc poppler-utils cmake \
     && rm -rf /var/lib/apt/lists/*
 # Debian trixie does not package the typst CLI, but PDF export needs it
 # (spec/01-architecture.md). Keep version and checksum in sync with
