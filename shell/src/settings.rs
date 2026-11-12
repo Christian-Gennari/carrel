@@ -67,6 +67,9 @@ impl FontChoice {
 pub const MIN_FONT_SIZE: u32 = 12;
 pub const MAX_FONT_SIZE: u32 = 36;
 pub const FONT_SIZE_STEP: u32 = 2;
+pub const MIN_DAILY_GOAL: u32 = 100;
+pub const MAX_DAILY_GOAL: u32 = 2_000;
+pub const DAILY_GOAL_STEP: u32 = 100;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -80,6 +83,16 @@ pub struct Settings {
     pub typewriter_mode: bool,
     pub spellcheck: bool,
     pub clock: bool,
+    /// Display language (see `locale::LANGUAGES`).
+    pub language: String,
+    /// Keyboard layout code (see `locale::KEYBOARDS`).
+    pub keyboard: String,
+    /// IANA time zone, or `Local time`.
+    pub time_zone: String,
+    /// Sync once more before shutting down, if a server is paired.
+    pub sync_at_shutdown: bool,
+    /// False until the First run flow reaches the editor.
+    pub first_run_complete: bool,
 }
 
 impl Default for Settings {
@@ -93,6 +106,11 @@ impl Default for Settings {
             typewriter_mode: false,
             spellcheck: false,
             clock: false,
+            language: "English".to_owned(),
+            keyboard: "us".to_owned(),
+            time_zone: "Local time".to_owned(),
+            sync_at_shutdown: false,
+            first_run_complete: false,
         }
     }
 }
@@ -120,6 +138,16 @@ impl Settings {
             .next_multiple_of(FONT_SIZE_STEP);
         if self.daily_goal == 0 {
             self.daily_goal = 500;
+        }
+        self.daily_goal = self.daily_goal.clamp(MIN_DAILY_GOAL, MAX_DAILY_GOAL);
+        if self.language.is_empty() {
+            self.language = "English".to_owned();
+        }
+        if self.keyboard.is_empty() {
+            self.keyboard = "us".to_owned();
+        }
+        if self.time_zone.is_empty() {
+            self.time_zone = "Local time".to_owned();
         }
     }
 

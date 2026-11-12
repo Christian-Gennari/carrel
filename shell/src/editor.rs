@@ -10,7 +10,7 @@ use gtk::prelude::*;
 use gtk::{gdk, glib, pango};
 use sourceview::prelude::*;
 
-use crate::battery::Battery;
+use crate::battery::{Battery, BatteryHint, BATTERY_NOTE_SECONDS};
 use crate::markdown::{self, Kind};
 use crate::settings::Settings;
 use crate::store::{naming, stats, DailyStats, Document, Store};
@@ -22,6 +22,9 @@ pub struct EditorPage {
     buffer: sourceview::Buffer,
     scroller: gtk::ScrolledWindow,
     status: gtk::Label,
+    note: gtk::Label,
+    note_generation: Cell<u64>,
+    battery_hint: RefCell<BatteryHint>,
     store: Store,
     settings: Rc<RefCell<Settings>>,
     css: gtk::CssProvider,
@@ -88,9 +91,18 @@ impl EditorPage {
         status.add_css_class("bottom-line");
         status.set_visible(settings.borrow().show_bottom_line);
 
+        let note = gtk::Label::new(None);
+        note.set_xalign(0.5);
+        note.set_halign(gtk::Align::Center);
+        note.set_wrap(true);
+        note.set_margin_bottom(10);
+        note.add_css_class("battery-note");
+        note.set_visible(false);
+
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.add_css_class("stylos-page");
         widget.append(&scroller);
+        widget.append(&note);
         widget.append(&status);
 
         let palette = theme::palette(&settings.borrow());
@@ -104,6 +116,9 @@ impl EditorPage {
             buffer,
             scroller,
             status,
+            note,
+            note_generation: Cell::new(0),
+            battery_hint: RefCell::new(BatteryHint::default()),
             store,
             settings,
             css,
@@ -341,6 +356,80 @@ impl EditorPage {
 
     pub fn focus_editor(&self) {
         self.view.grab_focus();
+    }
+
+    /// A one-line note above the bottom line. Used for the low-battery
+    /// warnings and for "Quotes need a Nostos account" until WP9.
+    pub fn flash_note(self: &Rc<Self>, text: &str, seconds: u64) {
+        let generation = self.note_generation.get().wrapping_add(1);
+        self.note_generation.set(generation);
+        self.note.set_text(text);
+        self.note.set_visible(true);
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_secs(seconds), move || {
+            if let Some(page) = weak.upgrade() {
+                if page.note_generation.get() == generation {
+                    page.note.set_visible(false);
+                }
+            }
+        });
+    }
+
+    /// Ctrl+]: the quotes palette is WP9.
+    pub fn quotes_note(self: &Rc<Self>) {
+        self.flash_note("Quotes need a Nostos account.", 4);
+    }
+
+    /// A new battery reading. The bottom line always updates; when the writer
+    /// hid it, the 10 % and 5 % notes still appear for five seconds.
+    pub fn on_battery(self: &Rc<Self>) {
+        self.refresh_status();
+        if self.settings.borrow().show_bottom_line {
+            return;
+        }
+        let status = self.battery.percent();
+        let charging = self.battery.charging();
+        if !self.battery.present() {
+            return;
+        }
+        let due = self.battery_hint.borrow_mut().observe(status, charging);
+        if let Some(percent) = due {
+            self.flash_note(&format!("{percent}% battery"), BATTERY_NOTE_SECONDS);
+        }
+    }
+
+    /// Flush and report the error instead of only printing it, for History's
+    /// replace-the-file flow.
+    pub fn flush_now(&self) -> Result<(), String> {
+        if let Some(doc) = self.doc.borrow().as_ref() {
+            doc.flush().map_err(|error| error.to_string())?;
+        }
+        self.save_stats();
+        self.save_error.set(false);
+        Ok(())
+    }
+
+    /// Replace the whole document with `text` as a normal journaled edit.
+    /// History uses this to apply an old version; the change is saved before
+    /// returning so the next commit sees it.
+    pub fn replace_text(self: &Rc<Self>, text: &str) -> Result<(), String> {
+        if self.doc.borrow().is_none() {
+            return Err("No file is open.".to_owned());
+        }
+        self.loading.set(false);
+        self.buffer.set_text(text);
+        let words = stats::count_words(text);
+        self.last_words.set(words);
+        self.update_status(false);
+        if let Some(doc) = self.doc.borrow().as_ref() {
+            doc.flush().map_err(|error| error.to_string())?;
+        }
+        let end = self.buffer.end_iter();
+        self.buffer.place_cursor(&end);
+        self.restyle_now();
+        self.update_status(false);
+        self.scroll_to_cursor();
+        Ok(())
     }
 
     pub fn current_rel(&self) -> Option<PathBuf> {
@@ -608,6 +697,13 @@ impl EditorPage {
             settings.show_bottom_line
         };
         self.status.set_visible(visible);
+        if visible {
+            self.note.set_visible(false);
+        } else {
+            // Hiding the line at 10 % or 5 % should show the note at once,
+            // without waiting for the next 30-second battery poll.
+            self.on_battery();
+        }
         self.save_settings();
         let weak = Rc::downgrade(self);
         glib::timeout_add_local_once(Duration::from_millis(50), move || {
@@ -626,6 +722,7 @@ impl EditorPage {
         self.status
             .set_visible(self.settings.borrow().show_bottom_line);
         self.restyle_now();
+        self.refresh_status();
         let weak = Rc::downgrade(self);
         glib::idle_add_local_once(move || {
             if let Some(page) = weak.upgrade() {
