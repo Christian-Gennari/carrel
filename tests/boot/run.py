@@ -913,10 +913,23 @@ def boot_to_editor(qemu: Qemu, timeout: float, *, first_run: bool = False) -> No
     qemu.wait(r"Reached target graphical\.target", timeout)
     time.sleep(3)  # let GTK draw the first frame
     if first_run:
-        # Language, keyboard, time zone, "Connect sync? Not now".
-        for _ in range(4):
-            qemu.key("ret")
-            time.sleep(0.8)
+        # Language, keyboard, time zone, "Connect sync? Not now": answer each
+        # step with Enter, but look at the screen first.  A key sent while the
+        # shell is still busy can be lost, and a blind count of four then
+        # leaves the device on a first-run step instead of the editor.
+        with tempfile.TemporaryDirectory(prefix="first-run-") as scratch:
+            shot = Path(scratch) / "screen.png"
+            for _ in range(12):
+                qemu.screenshot(shot)
+                text = ocr(shot)
+                if not re.search(
+                        r"short answers|Language|Keyboard|Time zone|Connect sync",
+                        text):
+                    break
+                qemu.key("ret")
+                time.sleep(1.5)
+            else:
+                raise BootError("first run did not finish after 12 answers")
         time.sleep(4)
     time.sleep(2)
 
