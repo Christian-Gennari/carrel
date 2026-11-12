@@ -8,6 +8,7 @@
 pub mod config;
 pub mod daemon;
 pub mod dbus;
+pub mod gdrive;
 pub mod history;
 pub mod http;
 pub mod network;
@@ -19,7 +20,8 @@ pub mod sync;
 pub mod tls;
 
 pub use config::SyncConfig;
-pub use daemon::{DaemonCore, DaemonDeps, DaemonEvent, PairingInfo, SyncInfo};
+pub use daemon::{DaemonCore, DaemonDeps, DaemonEvent, PairingInfo, SyncInfo, SyncSummary};
+pub use gdrive::{GdriveConfig, GdriveReport, GdriveRunner, OAuthApp};
 pub use history::HistoryEntry;
 pub use pairing::{generate_device_pubkey, PairCredential, PairingSession};
 pub use sync::{sync_once, SyncError, SyncOptions, SyncReport};

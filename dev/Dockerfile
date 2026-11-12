@@ -11,8 +11,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       debian-archive-keyring \
       qemu-system-x86 qemu-utils ovmf \
       cage weston xvfb imagemagick \
-      pandoc cmake \
+      pandoc poppler-utils cmake \
     && rm -rf /var/lib/apt/lists/*
+# Debian trixie does not package the typst CLI, but PDF export needs it
+# (spec/01-architecture.md). Keep version and checksum in sync with
+# image/mkosi.prepare.
+RUN version=0.15.1 \
+    && sha256=a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c \
+    && url="https://github.com/typst/typst/releases/download/v${version}/typst-x86_64-unknown-linux-musl.tar.xz" \
+    && tmp="$(mktemp -d)" \
+    && curl -fsSL "$url" -o "$tmp/typst.tar.xz" \
+    && echo "$sha256  $tmp/typst.tar.xz" | sha256sum -c - \
+    && tar -xJf "$tmp/typst.tar.xz" -C "$tmp" \
+    && install -D -m 0755 "$tmp/typst-x86_64-unknown-linux-musl/typst" /usr/local/bin/typst \
+    && rm -rf "$tmp"
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal \
       --default-toolchain stable -c rustfmt,clippy && chmod -R a+rwX /opt/rustup /opt/cargo

@@ -24,6 +24,7 @@ use crate::daemon::{
     DaemonCore, DaemonDeps, DaemonEvent, DaemonTasks, EventSink, HttpSyncRunner, PairingInfo,
     SyncInfo,
 };
+use crate::gdrive::DriveSyncRunner;
 use crate::history::HistoryEntry;
 use crate::network::{NetworkManager, WifiNetwork};
 use crate::power::{BatteryStatus, LogindSession, UPowerPower};
@@ -60,6 +61,7 @@ pub async fn run(config: RunConfig) -> Result<()> {
         power: Arc::new(UPowerPower::new()),
         session: Arc::new(LogindSession::new()),
         runner: Arc::new(HttpSyncRunner),
+        gdrive: Some(Arc::new(DriveSyncRunner::new())),
         events: Arc::new(BusSink { sender }),
     })?);
 
@@ -223,10 +225,10 @@ impl Daemon1 {
         self.core.pair(&backend, &url).await.map_err(failed)
     }
 
-    /// Forget the paired server.
+    /// Forget every paired backend.
     #[zbus(name = "Unpair")]
     async fn unpair(&self) -> fdo::Result<()> {
-        self.core.unpair().map_err(failed)
+        self.core.unpair().await.map_err(failed)
     }
 
     // ----- Wi-Fi -----------------------------------------------------------
