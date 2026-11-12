@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["protocol", "server", "stylosd"]
+members = ["protocol", "server", "stylosd", "export"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,6 +10,7 @@ edition = "2021"
 anyhow = "1"
 axum = "0.8"
 base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 clap = { version = "4", features = ["derive", "env"] }
 mdns-sd = "0.21"
 rand = "0.8"
@@ -31,3 +32,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 url = "2"
 uuid = { version = "1", features = ["v7", "serde"] }
 webpki-roots = "1"
+zbus = { version = "5", features = ["blocking-api"] }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
