@@ -111,6 +111,47 @@ pub struct PairingInfo {
     pub expires_at: i64,
 }
 
+/// One ranked hit from the Quotes library (`stylosd::library::LibraryHit`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
+pub struct LibraryHit {
+    pub id: String,
+    /// `"highlight"`, `"note"` or `"passage"`.
+    pub kind: String,
+    pub text: String,
+    pub book_title: String,
+    pub author: String,
+    pub location: String,
+    pub citation_markdown: String,
+}
+
+impl LibraryHit {
+    /// What the palette calls the kind, with an empty field for an unknown one.
+    pub fn kind_label(&self) -> &str {
+        match self.kind.as_str() {
+            "highlight" => "Highlight",
+            "note" => "Note",
+            "passage" => "Passage",
+            _ => "",
+        }
+    }
+}
+
+/// One book in the filter list (`stylosd::library::LibraryBookOption`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
+pub struct LibraryBookOption {
+    pub id: String,
+    pub title: String,
+    pub author: String,
+}
+
+/// Books, authors and topics for the palette's filter chips.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
+pub struct LibraryFilterOptions {
+    pub books: Vec<LibraryBookOption>,
+    pub authors: Vec<String>,
+    pub topics: Vec<String>,
+}
+
 /// A removable drive for the Export screen. Owned by WP6; `ListDrives` is not
 /// on the D-Bus interface yet, so [`ZbusDaemon`] reports it as unsupported.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,12 +340,16 @@ pub trait DaemonClient: Send + Sync + 'static {
     /// `Import(drive_id, paths)` → the imported paths.
     fn import(&self, drive_id: String, paths: Vec<String>) -> Result<Vec<String>, DaemonError>;
 
-    /// `SearchLibrary(query, filters)` → quotes (WP9).
+    /// `SearchLibrary(query, filters)` → ranked quotes. Filters are `book`
+    /// (id or title), `author` and `topic`.
     fn search_library(
         &self,
         query: &str,
         filters: HashMap<String, String>,
-    ) -> Result<Vec<String>, DaemonError>;
+    ) -> Result<Vec<LibraryHit>, DaemonError>;
+
+    /// `LibraryFilters()` → the books, authors and topics worth offering.
+    fn library_filters(&self) -> Result<LibraryFilterOptions, DaemonError>;
 
     /// Subscribe to `BatteryChanged`, `SyncStatus` and `PairStatus`.
     fn subscribe(&self, listener: Box<dyn Fn(DaemonEvent) + Send + Sync + 'static>);
@@ -627,12 +672,24 @@ impl DaemonClient for ZbusDaemon {
         &self,
         query: &str,
         filters: HashMap<String, String>,
-    ) -> Result<Vec<String>, DaemonError> {
+    ) -> Result<Vec<LibraryHit>, DaemonError> {
         self.block_on(async {
             let connection = self.connector.connection().await.map_err(map_zbus)?;
             let proxy = self.connector.proxy(&connection).await.map_err(map_zbus)?;
             let reply = proxy
                 .call_method("SearchLibrary", &(query, filters))
+                .await
+                .map_err(map_zbus)?;
+            reply.body().deserialize().map_err(map_zbus)
+        })
+    }
+
+    fn library_filters(&self) -> Result<LibraryFilterOptions, DaemonError> {
+        self.block_on(async {
+            let connection = self.connector.connection().await.map_err(map_zbus)?;
+            let proxy = self.connector.proxy(&connection).await.map_err(map_zbus)?;
+            let reply = proxy
+                .call_method("LibraryFilters", &())
                 .await
                 .map_err(map_zbus)?;
             reply.body().deserialize().map_err(map_zbus)
@@ -741,6 +798,12 @@ fn map_zbus(error: impl fmt::Display) -> DaemonError {
 // FakeDaemon: tests and screenshots.
 // ---------------------------------------------------------------------------
 
+struct FakeQuote {
+    hit: LibraryHit,
+    book_id: String,
+    topics: Vec<String>,
+}
+
 struct FakeState {
     battery: BatteryStatus,
     sync: SyncInfo,
@@ -754,6 +817,8 @@ struct FakeState {
     unpaired: usize,
     exported: Vec<(Vec<String>, String, String)>,
     imported: Vec<(String, Vec<String>)>,
+    quotes: Vec<FakeQuote>,
+    library_unavailable: bool,
     search_filters: Vec<(String, HashMap<String, String>)>,
 }
 
@@ -856,6 +921,8 @@ impl FakeDaemon {
                 unpaired: 0,
                 exported: Vec::new(),
                 imported: Vec::new(),
+                quotes: demo_quotes(),
+                library_unavailable: false,
                 search_filters: Vec::new(),
             }),
             listeners: Mutex::new(Vec::new()),
@@ -890,6 +957,11 @@ impl FakeDaemon {
                     last_sync: 0,
                 };
             }
+        }
+        match std::env::var("STYLOS_FAKE_LIBRARY").as_deref() {
+            Ok("unavailable") => fake.set_library_unavailable(true),
+            Ok("empty") => fake.set_quotes(Vec::new()),
+            _ => {}
         }
         fake
     }
@@ -927,6 +999,27 @@ impl FakeDaemon {
     pub fn set_update(&self, update: impl Into<String>) {
         if let Ok(mut state) = self.state.lock() {
             state.update = update.into();
+        }
+    }
+
+    /// Replace the demo library. The screenshot script and the palette tests
+    /// use the default set; an empty set exercises the first-sync message.
+    pub fn set_quotes(&self, quotes: Vec<LibraryHit>) {
+        if let Ok(mut state) = self.state.lock() {
+            state.quotes = quotes
+                .into_iter()
+                .map(|hit| FakeQuote {
+                    book_id: hit.book_title.clone(),
+                    topics: Vec::new(),
+                    hit,
+                })
+                .collect();
+        }
+    }
+
+    fn set_library_unavailable(&self, unavailable: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.library_unavailable = unavailable;
         }
     }
 
@@ -1167,11 +1260,54 @@ impl DaemonClient for FakeDaemon {
         &self,
         query: &str,
         filters: HashMap<String, String>,
-    ) -> Result<Vec<String>, DaemonError> {
-        if let Ok(mut state) = self.state.lock() {
-            state.search_filters.push((query.to_owned(), filters));
+    ) -> Result<Vec<LibraryHit>, DaemonError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| DaemonError::failed("fake lock"))?;
+        state
+            .search_filters
+            .push((query.to_owned(), filters.clone()));
+        if state.library_unavailable {
+            return Err(DaemonError::failed("Quotes need a Nostos account."));
         }
-        Err(DaemonError::failed("Quotes need a Nostos account."))
+        Ok(fake_search(&state.quotes, query, &filters))
+    }
+
+    fn library_filters(&self) -> Result<LibraryFilterOptions, DaemonError> {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| DaemonError::failed("fake lock"))?;
+        if state.library_unavailable {
+            return Err(DaemonError::failed("Quotes need a Nostos account."));
+        }
+        let mut books: Vec<LibraryBookOption> = Vec::new();
+        let mut authors = std::collections::BTreeSet::new();
+        let mut topics = std::collections::BTreeSet::new();
+        for quote in &state.quotes {
+            if !quote.hit.book_title.is_empty()
+                && !books.iter().any(|book| book.id == quote.book_id)
+            {
+                books.push(LibraryBookOption {
+                    id: quote.book_id.clone(),
+                    title: quote.hit.book_title.clone(),
+                    author: quote.hit.author.clone(),
+                });
+            }
+            if !quote.hit.author.trim().is_empty() {
+                authors.insert(quote.hit.author.clone());
+            }
+            for topic in &quote.topics {
+                topics.insert(topic.clone());
+            }
+        }
+        books.sort_by_key(|book| book.title.to_lowercase());
+        Ok(LibraryFilterOptions {
+            books,
+            authors: authors.into_iter().collect(),
+            topics: topics.into_iter().collect(),
+        })
     }
 
     fn subscribe(&self, listener: Box<dyn Fn(DaemonEvent) + Send + Sync + 'static>) {
@@ -1179,6 +1315,180 @@ impl DaemonClient for FakeDaemon {
             listeners.push(listener);
         }
     }
+}
+
+fn slug(title: &str) -> String {
+    let mut slug = String::new();
+    for character in title.chars() {
+        if character.is_alphanumeric() {
+            slug.extend(character.to_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_matches('-').to_string()
+}
+
+fn hit(
+    id: &str,
+    kind: &str,
+    text: &str,
+    book_title: &str,
+    author: &str,
+    location: &str,
+    topics: &[&str],
+) -> FakeQuote {
+    FakeQuote {
+        hit: LibraryHit {
+            id: id.into(),
+            kind: kind.into(),
+            text: text.into(),
+            book_title: book_title.into(),
+            author: author.into(),
+            location: location.into(),
+            citation_markdown: format!("[{book_title}, {location}](nostos:cite/{id})"),
+        },
+        book_id: slug(book_title),
+        topics: topics.iter().map(|topic| topic.to_string()).collect(),
+    }
+}
+
+/// Plausible quotes for the palette, the screenshots and the shell tests.
+fn demo_quotes() -> Vec<FakeQuote> {
+    vec![
+        hit(
+            "quiet-hours-41",
+            "highlight",
+            "A sentence is a small room. You walk in, close the door, and look around.",
+            "The Quiet Hours",
+            "Mara Ellison",
+            "p. 41",
+            &["writing", "attention"],
+        ),
+        hit(
+            "quiet-hours-88",
+            "highlight",
+            "Silence is not the absence of work; it is the room the work needs.",
+            "The Quiet Hours",
+            "Mara Ellison",
+            "p. 88",
+            &["attention", "silence"],
+        ),
+        hit(
+            "quiet-hours-63",
+            "note",
+            "Write before the house wakes; the morning is the only quiet editor.",
+            "The Quiet Hours",
+            "Mara Ellison",
+            "p. 63",
+            &["writing", "habits"],
+        ),
+        hit(
+            "on-attention-8",
+            "highlight",
+            "Attention is a door you can close.",
+            "On Attention",
+            "Iris Vale",
+            "p. 8",
+            &["attention"],
+        ),
+        hit(
+            "on-attention-12",
+            "passage",
+            "The first draft is you telling yourself the story.",
+            "On Attention",
+            "Iris Vale",
+            "p. 12",
+            &["writing"],
+        ),
+        hit(
+            "the-workshop-102",
+            "passage",
+            "We shape our tools and afterwards our tools shape us.",
+            "The Workshop",
+            "Nadia Brandt",
+            "p. 102",
+            &["tools"],
+        ),
+        hit(
+            "rooms-for-writing-7",
+            "highlight",
+            "A room of one's own is not a luxury; it is a sentence in the world.",
+            "Rooms for Writing",
+            "Clara Wren",
+            "p. 7",
+            &["writing", "place"],
+        ),
+    ]
+}
+
+fn fake_search(
+    quotes: &[FakeQuote],
+    query: &str,
+    filters: &HashMap<String, String>,
+) -> Vec<LibraryHit> {
+    let filter = |key: &str| {
+        filters
+            .get(key)
+            .map(|value| value.trim().to_lowercase())
+            .filter(|value| !value.is_empty())
+    };
+    let book = filter("book");
+    let author = filter("author");
+    let topic = filter("topic");
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for character in query.chars() {
+        if character.is_alphanumeric() {
+            current.extend(character.to_lowercase());
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    quotes
+        .iter()
+        .filter(|quote| {
+            if let Some(book) = &book {
+                if quote.book_id.to_lowercase() != *book
+                    && quote.hit.book_title.to_lowercase() != *book
+                {
+                    return false;
+                }
+            }
+            if let Some(author) = &author {
+                if quote.hit.author.to_lowercase() != *author {
+                    return false;
+                }
+            }
+            if let Some(topic) = &topic {
+                if !quote
+                    .topics
+                    .iter()
+                    .any(|value| value.to_lowercase() == *topic)
+                {
+                    return false;
+                }
+            }
+            if tokens.is_empty() {
+                return true;
+            }
+            let haystack = format!(
+                "{} {} {} {}",
+                quote.hit.text,
+                quote.hit.book_title,
+                quote.hit.author,
+                quote.topics.join(" ")
+            )
+            .to_lowercase();
+            tokens.iter().all(|token| haystack.contains(token))
+        })
+        .take(50)
+        .map(|quote| quote.hit.clone())
+        .collect()
 }
 
 fn now_unix() -> i64 {
@@ -1298,6 +1608,42 @@ mod tests {
             <PairingInfo as Type>::SIGNATURE,
             <stylosd::daemon::PairingInfo as Type>::SIGNATURE
         );
+        assert_eq!(
+            <LibraryHit as Type>::SIGNATURE,
+            <stylosd::library::LibraryHit as Type>::SIGNATURE
+        );
+        assert_eq!(
+            <LibraryFilterOptions as Type>::SIGNATURE,
+            <stylosd::library::LibraryFilterOptions as Type>::SIGNATURE
+        );
+    }
+
+    #[test]
+    fn the_fake_library_searches_filters_and_explains_absence() {
+        let fake = Arc::new(FakeDaemon::new());
+        let all = fake.search_library("", HashMap::new()).unwrap();
+        assert!(all.len() >= 5);
+        assert_eq!(all[0].kind, "highlight");
+
+        let hits = fake.search_library("attention", HashMap::new()).unwrap();
+        assert!(hits.iter().any(|hit| hit.id == "on-attention-8"));
+        assert!(hits.iter().any(|hit| hit.id == "quiet-hours-88"));
+
+        let mut filters = HashMap::new();
+        filters.insert("book".to_string(), "the-quiet-hours".to_string());
+        let hits = fake.search_library("", filters).unwrap();
+        assert_eq!(hits.len(), 3);
+        assert!(hits.iter().all(|hit| hit.book_title == "The Quiet Hours"));
+
+        let options = fake.library_filters().unwrap();
+        assert!(options.books.len() >= 4);
+        assert!(options.authors.contains(&"Iris Vale".to_string()));
+        assert!(options.topics.contains(&"attention".to_string()));
+
+        fake.set_library_unavailable(true);
+        let error = fake.search_library("sentence", HashMap::new()).unwrap_err();
+        assert_eq!(error.message, "Quotes need a Nostos account.");
+        assert!(fake.library_filters().is_err());
     }
 
     #[test]

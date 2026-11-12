@@ -12,6 +12,7 @@ pub mod export;
 pub mod gdrive;
 pub mod history;
 pub mod http;
+pub mod library;
 pub mod network;
 pub mod pairing;
 pub mod power;
@@ -28,6 +29,9 @@ pub use daemon::{
 pub use export::{PandocDocxConverter, UsbDrive};
 pub use gdrive::{GdriveConfig, GdriveReport, GdriveRunner, OAuthApp};
 pub use history::HistoryEntry;
+pub use library::{
+    LibraryBookOption, LibraryCache, LibraryFilterOptions, LibraryHit, LibraryReport,
+};
 pub use pairing::{generate_device_pubkey, PairCredential, PairingSession};
 pub use sync::{sync_once, SyncError, SyncOptions, SyncReport};
 pub use update::{UpdateState, Updater};

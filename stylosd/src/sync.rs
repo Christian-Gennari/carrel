@@ -41,6 +41,12 @@ pub struct SyncReport {
     pub skipped_local: usize,
     /// Cursor saved at the end of this sync.
     pub cursor: String,
+    /// Library items added or updated by this sync.
+    pub library_items: usize,
+    /// Library items removed because the server deleted them.
+    pub library_deleted: usize,
+    /// The server has no library endpoint (a self-hosted `stylos-server`).
+    pub library_unavailable: bool,
 }
 
 impl SyncReport {
@@ -51,7 +57,33 @@ impl SyncReport {
 
     /// True when the sync changed nothing at all.
     pub fn is_noop(&self) -> bool {
-        self.transferred() == 0 && self.conflicts == 0
+        self.transferred() == 0
+            && self.conflicts == 0
+            && self.library_items == 0
+            && self.library_deleted == 0
+    }
+
+    /// True when the library changed but no files did.
+    pub fn library_only(&self) -> bool {
+        self.transferred() == 0
+            && self.conflicts == 0
+            && (self.library_items > 0 || self.library_deleted > 0)
+    }
+
+    /// One short sentence about the library portion, `None` when it did not
+    /// change.
+    pub fn library_summary(&self) -> Option<String> {
+        if self.library_items == 0 && self.library_deleted == 0 {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if self.library_items > 0 {
+            parts.push(format!("{} quote(s) updated", self.library_items));
+        }
+        if self.library_deleted > 0 {
+            parts.push(format!("{} removed", self.library_deleted));
+        }
+        Some(format!("Library: {}.", parts.join(", ")))
     }
 }
 
@@ -100,6 +132,12 @@ pub async fn sync_once(
 
     run.pull().await?;
     run.push().await?;
+    // The library is part of the same network window. A 404 is not an error:
+    // self-hosted servers have no library and the palette says so.
+    let library = crate::library::sync_library(&run.client, state_dir).await?;
+    run.report.library_items = library.items;
+    run.report.library_deleted = library.deleted;
+    run.report.library_unavailable = library.unavailable;
     let cursor = run.state.cursor()?;
     run.report.cursor = cursor;
     Ok(run.report)

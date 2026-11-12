@@ -196,6 +196,11 @@ async fn run_sync(args: SyncArgs) -> Result<()> {
     let report = sync_once(&args.dir, &args.state, &SyncOptions::default()).await?;
     if report.is_noop() {
         println!("Sync complete: nothing to transfer.");
+    } else if report.library_only() {
+        println!(
+            "Sync complete: {} library item(s) updated, {} removed.",
+            report.library_items, report.library_deleted
+        );
     } else {
         println!(
             "Sync complete: {} pulled, {} pushed, {} deleted locally, \
@@ -206,6 +211,9 @@ async fn run_sync(args: SyncArgs) -> Result<()> {
             report.deleted_remote,
             report.conflicts
         );
+        if let Some(library) = report.library_summary() {
+            println!("{library}");
+        }
     }
     if report.skipped_local > 0 {
         println!(

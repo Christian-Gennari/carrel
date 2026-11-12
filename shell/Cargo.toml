@@ -27,3 +27,4 @@ zbus.workspace = true
 [dev-dependencies]
 tempfile = "3"
 stylosd = { path = "../stylosd" }
+stylos-protocol = { path = "../protocol" }

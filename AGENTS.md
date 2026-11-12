@@ -27,9 +27,15 @@ choose the smallest change that keeps the rules.
 
 ## Git
 
+- Remote: private GitHub repo `Christian-Gennari/stylos`. `main` changes only
+  through merged pull requests; never push to `main` or rewrite it.
 - Work on your own branch/worktree. Small commits, imperative messages.
-- Do not push, do not merge to `main`, do not rewrite `main`. The orchestrator
-  merges.
+- Every PR closes an issue. If your work package has no issue, create one
+  (`gh issue create`, with labels from `gh label list`).
+- When your gate passes: push your branch and open a PR to `main` with
+  `gh pr create` (title = work package, body = your final summary plus
+  `Closes #N`). Do not merge it; the orchestrator reviews and merges. Merged
+  PRs let T3 remove the worktree automatically.
 - Commit build outputs never (`out/`, `target/`, images are gitignored).
 
 ## Done

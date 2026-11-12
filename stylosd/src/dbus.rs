@@ -6,8 +6,10 @@
 //! into [`DaemonCore`] operations and [`DaemonEvent`]s into signals; the policy
 //! itself lives in [`crate::daemon`] so it is testable without a bus.
 //!
-//! `SearchLibrary` is deliberately a stub: it belongs to WP9 and returns a
-//! D-Bus `NotSupported` error that says so. Export and import use the
+//! `SearchLibrary` reads the SQLite FTS5 library cache and `LibraryFilters`
+//! lists the books, authors and topics the Quotes palette can filter by.
+//! `ApplyUpdate` stages an update that was downloaded and verified during a
+//! sync session and starts `stylos-update.service`. Export and import use the
 //! `stylos-export` crate and udisks2; the drive is mounted only for the call
 //! and powered off afterwards.
 
@@ -28,6 +30,7 @@ use crate::daemon::{
 use crate::export::{system_drives, UsbDrive};
 use crate::gdrive::DriveSyncRunner;
 use crate::history::HistoryEntry;
+use crate::library::{LibraryFilterOptions, LibraryHit};
 use crate::network::{NetworkManager, WifiNetwork};
 use crate::power::{BatteryStatus, LogindSession, UPowerPower};
 use crate::radio::{RadioManager, SysfsRfkill};
@@ -324,17 +327,34 @@ impl Daemon1 {
         self.core.apply_update().map_err(failed)
     }
 
-    // ----- stubs owned by later work packages ------------------------------
+    // ----- library (Quotes palette) ---------------------------------------
 
-    /// TODO(WP9): SQLite FTS5 library cache. Stub on purpose.
+    /// Ranked quotes, notes and passages from the cached Nostos library.
+    ///
+    /// `filters` accepts `book` (id or exact title), `author` and `topic`.
+    /// Without a server pairing, or after a self-hosted server answered `404`
+    /// for `/library`, this fails with "Quotes need a Nostos account.".
     #[zbus(name = "SearchLibrary")]
     async fn search_library(
         &self,
         query: String,
         filters: HashMap<String, String>,
-    ) -> fdo::Result<Vec<String>> {
-        let _ = (query, filters);
-        Err(not_implemented("SearchLibrary", "WP9 (quotes)"))
+    ) -> fdo::Result<Vec<LibraryHit>> {
+        let core = Arc::clone(&self.core);
+        tokio::task::spawn_blocking(move || core.search_library(&query, &filters))
+            .await
+            .map_err(|error| fdo::Error::Failed(format!("the library task stopped: {error}")))?
+            .map_err(failed)
+    }
+
+    /// Books, authors and topics for the palette's filter chips.
+    #[zbus(name = "LibraryFilters")]
+    async fn library_filters(&self) -> fdo::Result<LibraryFilterOptions> {
+        let core = Arc::clone(&self.core);
+        tokio::task::spawn_blocking(move || core.library_filters())
+            .await
+            .map_err(|error| fdo::Error::Failed(format!("the library task stopped: {error}")))?
+            .map_err(failed)
     }
 
     // ----- signals ---------------------------------------------------------
@@ -371,24 +391,9 @@ fn failed(error: anyhow::Error) -> fdo::Error {
     fdo::Error::Failed(format!("{error:#}"))
 }
 
-fn not_implemented(method: &str, package: &str) -> fdo::Error {
-    fdo::Error::NotSupported(format!(
-        "{method} is not implemented yet (arrives in {package})"
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn stubs_say_not_implemented_and_name_the_work_package() {
-        let (method, package) = ("SearchLibrary", "WP9");
-        let text = not_implemented(method, package).to_string();
-        assert!(text.contains("not implemented"), "{text}");
-        assert!(text.contains(method), "{text}");
-        assert!(text.contains(package), "{text}");
-    }
 
     #[test]
     fn api_constants_match_the_spec() {

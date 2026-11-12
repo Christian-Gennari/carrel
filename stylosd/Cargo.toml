@@ -36,6 +36,7 @@ webpki-roots.workspace = true
 zbus.workspace = true
 
 [dev-dependencies]
+rcgen.workspace = true
 axum.workspace = true
 base64.workspace = true
 stylos-server = { path = "../server" }

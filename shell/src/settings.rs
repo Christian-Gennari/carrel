@@ -53,20 +53,67 @@ impl FontChoice {
     /// Bundled faces first, then whatever the system has. The image will get
     /// Source Serif 4, Inter and JetBrains Mono later; DejaVu is today's
     /// fallback so a build always looks right.
-    pub fn css_family(self) -> &'static str {
+    pub fn families(self) -> &'static [&'static str] {
         match self {
-            Self::Serif => {
-                "\"Source Serif 4\", \"Source Serif Pro\", \"Charter\", \"DejaVu Serif\", serif"
-            }
-            Self::Sans => "\"Inter\", \"DejaVu Sans\", sans-serif",
-            Self::Mono => "\"JetBrains Mono\", \"DejaVu Sans Mono\", monospace",
+            Self::Serif => &[
+                "Source Serif 4",
+                "Source Serif Pro",
+                "Charter",
+                "DejaVu Serif",
+            ],
+            Self::Sans => &["Inter", "DejaVu Sans"],
+            Self::Mono => &["JetBrains Mono", "DejaVu Sans Mono"],
+        }
+    }
+
+    pub fn css_family(self) -> String {
+        let generic = match self {
+            Self::Serif => "serif",
+            Self::Sans => "sans-serif",
+            Self::Mono => "monospace",
+        };
+        let named: Vec<String> = self
+            .families()
+            .iter()
+            .map(|family| format!("\"{family}\""))
+            .collect();
+        format!("{}, {generic}", named.join(", "))
+    }
+}
+
+/// Body text is measured in pixels (spec/03-ui.md): 19 px by default, and
+/// Ctrl+= / Ctrl+- walk one pixel at a time from 16 to 24.
+pub const MIN_FONT_SIZE: u32 = 16;
+pub const MAX_FONT_SIZE: u32 = 24;
+pub const FONT_SIZE_STEP: u32 = 1;
+
+/// How the daily goal appears in the editor (spec/03-ui.md).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GoalDisplay {
+    /// Words today / goal on the bottom line.
+    #[default]
+    Numbers,
+    /// A 2 px accent line along the bottom window edge.
+    Hairline,
+}
+
+impl GoalDisplay {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Numbers => "Numbers",
+            Self::Hairline => "Hairline",
+        }
+    }
+
+    pub fn other(self) -> Self {
+        match self {
+            Self::Numbers => Self::Hairline,
+            Self::Hairline => Self::Numbers,
         }
     }
 }
 
-pub const MIN_FONT_SIZE: u32 = 12;
-pub const MAX_FONT_SIZE: u32 = 36;
-pub const FONT_SIZE_STEP: u32 = 2;
 pub const MIN_DAILY_GOAL: u32 = 100;
 pub const MAX_DAILY_GOAL: u32 = 2_000;
 pub const DAILY_GOAL_STEP: u32 = 100;
@@ -76,9 +123,13 @@ pub const DAILY_GOAL_STEP: u32 = 100;
 pub struct Settings {
     pub theme: Theme,
     pub font: FontChoice,
-    /// Points.
+    /// Body text size in CSS pixels.
     pub font_size: u32,
     pub daily_goal: u32,
+    /// How the daily goal is drawn: numbers or the hairline.
+    pub goal_display: GoalDisplay,
+    /// Dim every paragraph but the one with the cursor (F2).
+    pub focus_mode: bool,
     pub show_bottom_line: bool,
     pub typewriter_mode: bool,
     pub spellcheck: bool,
@@ -100,8 +151,10 @@ impl Default for Settings {
         Self {
             theme: Theme::Paper,
             font: FontChoice::Serif,
-            font_size: 18,
+            font_size: 19,
             daily_goal: 500,
+            goal_display: GoalDisplay::Numbers,
+            focus_mode: false,
             show_bottom_line: true,
             typewriter_mode: false,
             spellcheck: false,
@@ -183,8 +236,10 @@ mod tests {
         let settings = Settings::default();
         assert_eq!(settings.theme, Theme::Paper);
         assert_eq!(settings.font, FontChoice::Serif);
-        assert_eq!(settings.font_size, 18);
+        assert_eq!(settings.font_size, 19);
         assert_eq!(settings.daily_goal, 500);
+        assert_eq!(settings.goal_display, GoalDisplay::Numbers);
+        assert!(!settings.focus_mode);
         assert!(settings.show_bottom_line);
         assert!(!settings.typewriter_mode);
         assert!(!settings.spellcheck);
@@ -233,5 +288,45 @@ mod tests {
         }
         assert_eq!(settings.font_size, MIN_FONT_SIZE);
         assert!(!settings.smaller_font());
+        assert_eq!((MIN_FONT_SIZE, MAX_FONT_SIZE), (16, 24));
+    }
+
+    #[test]
+    fn focus_mode_and_goal_display_persist() {
+        let dir = tempdir().unwrap();
+        fs::create_dir_all(dir.path().join(".stylos")).unwrap();
+        let mut settings = Settings {
+            focus_mode: true,
+            goal_display: GoalDisplay::Hairline,
+            ..Settings::default()
+        };
+        settings.save(dir.path()).unwrap();
+        let loaded = Settings::load(dir.path());
+        assert!(loaded.focus_mode);
+        assert_eq!(loaded.goal_display, GoalDisplay::Hairline);
+        assert_eq!(loaded, settings);
+
+        // Old settings files predate both fields: the spec defaults apply.
+        fs::write(
+            settings_path(dir.path()),
+            br#"{"theme":"paper","focus_mode":false}"#,
+        )
+        .unwrap();
+        let old = Settings::load(dir.path());
+        assert_eq!(old.goal_display, GoalDisplay::Numbers);
+        assert!(!old.focus_mode);
+
+        settings.focus_mode = false;
+        settings.goal_display = GoalDisplay::Numbers;
+        settings.save(dir.path()).unwrap();
+        assert_eq!(Settings::load(dir.path()), settings);
+    }
+
+    #[test]
+    fn goal_display_labels_and_toggle() {
+        assert_eq!(GoalDisplay::Numbers.label(), "Numbers");
+        assert_eq!(GoalDisplay::Hairline.label(), "Hairline");
+        assert_eq!(GoalDisplay::Numbers.other(), GoalDisplay::Hairline);
+        assert_eq!(GoalDisplay::Hairline.other(), GoalDisplay::Numbers);
     }
 }
