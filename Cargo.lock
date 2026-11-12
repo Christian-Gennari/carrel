@@ -2309,6 +2309,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "stylos-export",
  "stylos-protocol",
  "stylos-server",
  "tempfile",
@@ -2322,6 +2323,7 @@ dependencies = [
  "uuid",
  "webpki-roots",
  "zbus",
+ "zip",
 ]
 
 [[package]]

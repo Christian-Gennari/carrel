@@ -6,9 +6,10 @@
 //! into [`DaemonCore`] operations and [`DaemonEvent`]s into signals; the policy
 //! itself lives in [`crate::daemon`] so it is testable without a bus.
 //!
-//! `SearchLibrary`, `Export`/`Import` and `ApplyUpdate` are deliberately
-//! stubs: they belong to WP9, WP6 and WP7. They return a D-Bus
-//! `NotSupported` error that says so.
+//! `SearchLibrary` and `ApplyUpdate` are deliberately stubs: they belong to
+//! WP9 and WP7. They return a D-Bus `NotSupported` error that says so. Export
+//! and import use the `stylos-export` crate and udisks2; the drive is mounted
+//! only for the call and powered off afterwards.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -21,9 +22,10 @@ use zbus::object_server::SignalEmitter;
 use zbus::Connection;
 
 use crate::daemon::{
-    DaemonCore, DaemonDeps, DaemonEvent, DaemonTasks, EventSink, HttpSyncRunner, PairingInfo,
-    SyncInfo,
+    DaemonCore, DaemonDeps, DaemonEvent, DaemonTasks, EventSink, ExportProgress, HttpSyncRunner,
+    PairingInfo, SyncInfo,
 };
+use crate::export::{system_drives, UsbDrive};
 use crate::gdrive::DriveSyncRunner;
 use crate::history::HistoryEntry;
 use crate::network::{NetworkManager, WifiNetwork};
@@ -53,6 +55,11 @@ pub async fn run(config: RunConfig) -> Result<()> {
     let (sender, mut receiver) = mpsc::unbounded_channel();
 
     let radio = Arc::new(RadioManager::new(Arc::new(SysfsRfkill::new())));
+    // The udisks2 backend uses zbus's blocking client, which starts its own
+    // executor; build it on a blocking thread, never on the runtime thread.
+    let drives = tokio::task::spawn_blocking(system_drives)
+        .await
+        .context("build the removable-drive backend")?;
     let core = Arc::new(DaemonCore::new(DaemonDeps {
         writing_dir: config.writing_dir,
         state_dir: config.state_dir,
@@ -61,7 +68,10 @@ pub async fn run(config: RunConfig) -> Result<()> {
         power: Arc::new(UPowerPower::new()),
         session: Arc::new(LogindSession::new()),
         runner: Arc::new(HttpSyncRunner),
-        gdrive: Some(Arc::new(DriveSyncRunner::new())),
+        drives,
+        gdrive: Some(Arc::new(DriveSyncRunner::with_converter(Arc::new(
+            crate::export::PandocDocxConverter,
+        )))),
         events: Arc::new(BusSink { sender }),
     })?);
 
@@ -169,6 +179,7 @@ async fn emit_event(emitter: &SignalEmitter<'static>, event: DaemonEvent) -> zbu
             code,
             message,
         } => Daemon1::pair_status(emitter, state, code, message).await,
+        DaemonEvent::ExportProgress(progress) => Daemon1::export_progress(emitter, progress).await,
     }
 }
 
@@ -269,6 +280,41 @@ impl Daemon1 {
         Ok("none".to_string())
     }
 
+    // ----- export and import ----------------------------------------------
+
+    /// Removable drives attached to this device, for the Export screen.
+    #[zbus(name = "ListDrives")]
+    async fn list_drives(&self) -> fdo::Result<Vec<UsbDrive>> {
+        let core = Arc::clone(&self.core);
+        let drives = tokio::task::spawn_blocking(move || core.list_drives())
+            .await
+            .map_err(|error| fdo::Error::Failed(format!("the drive list task stopped: {error}")))?;
+        drives.map_err(failed)
+    }
+
+    /// Export a selection (one file, one folder, or everything for an empty
+    /// list) to a USB drive. Returns the folder that received the files after
+    /// the drive has been unmounted and powered off.
+    #[zbus(name = "Export")]
+    async fn export(
+        &self,
+        selection: Vec<String>,
+        format: String,
+        drive_id: String,
+    ) -> fdo::Result<String> {
+        self.core
+            .export(selection, format, drive_id)
+            .await
+            .map_err(failed)
+    }
+
+    /// Copy files from a USB drive into `<writing>/Imported/`. An empty path
+    /// list imports everything on the drive. Returns the imported paths.
+    #[zbus(name = "Import")]
+    async fn import(&self, drive_id: String, paths: Vec<String>) -> fdo::Result<Vec<String>> {
+        self.core.import(drive_id, paths).await.map_err(failed)
+    }
+
     // ----- stubs owned by later work packages ------------------------------
 
     /// TODO(WP9): SQLite FTS5 library cache. Stub on purpose.
@@ -280,25 +326,6 @@ impl Daemon1 {
     ) -> fdo::Result<Vec<String>> {
         let _ = (query, filters);
         Err(not_implemented("SearchLibrary", "WP9 (quotes)"))
-    }
-
-    /// TODO(WP6): pandoc/typst export pipeline. Stub on purpose.
-    #[zbus(name = "Export")]
-    async fn export(
-        &self,
-        selection: Vec<String>,
-        format: String,
-        drive_id: String,
-    ) -> fdo::Result<String> {
-        let _ = (selection, format, drive_id);
-        Err(not_implemented("Export", "WP6 (export)"))
-    }
-
-    /// TODO(WP6): copy files from a USB drive. Stub on purpose.
-    #[zbus(name = "Import")]
-    async fn import(&self, drive_id: String, paths: Vec<String>) -> fdo::Result<Vec<String>> {
-        let _ = (drive_id, paths);
-        Err(not_implemented("Import", "WP6 (export)"))
     }
 
     /// TODO(WP7): signed sysupdate payloads. Stub on purpose.
@@ -328,6 +355,13 @@ impl Daemon1 {
         code: String,
         message: String,
     ) -> zbus::Result<()>;
+
+    /// An export started, wrote a file, finished or failed.
+    #[zbus(signal, name = "ExportProgress")]
+    async fn export_progress(
+        emitter: &SignalEmitter<'_>,
+        progress: ExportProgress,
+    ) -> zbus::Result<()>;
 }
 
 fn failed(error: anyhow::Error) -> fdo::Error {
@@ -346,12 +380,7 @@ mod tests {
 
     #[test]
     fn stubs_say_not_implemented_and_name_the_work_package() {
-        for (method, package) in [
-            ("SearchLibrary", "WP9"),
-            ("Export", "WP6"),
-            ("Import", "WP6"),
-            ("ApplyUpdate", "WP7"),
-        ] {
+        for (method, package) in [("SearchLibrary", "WP9"), ("ApplyUpdate", "WP7")] {
             let text = not_implemented(method, package).to_string();
             assert!(text.contains("not implemented"), "{text}");
             assert!(text.contains(method), "{text}");

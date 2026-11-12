@@ -13,10 +13,14 @@ use std::time::{Duration, SystemTime};
 use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
+use stylos_export::{Drives, ExportReport};
 use stylos_protocol::now_unix;
 use url::Url;
 
 use crate::config::{state_database, SyncConfig};
+use crate::export::{
+    import_sources, list_drives, parse_format, selection_from_request, MountedDrive, UsbDrive,
+};
 use crate::gdrive::{
     GdriveConfig, GdriveReport, GdriveRunner, OAuthApp, OAuthClient, OAuthEndpoints,
 };
@@ -71,6 +75,23 @@ pub struct PairingInfo {
     pub expires_at: i64,
 }
 
+/// The Export screen's progress line.
+///
+/// `state` is `"exporting"`, `"done"` or `"error"`. While a file is being
+/// written, `destination` is that file; when the export finished it is the
+/// folder the writer may unplug the drive after.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
+pub struct ExportProgress {
+    pub state: String,
+    pub message: String,
+    /// 1-based index of the file just written, 0 before the first one.
+    pub index: u32,
+    /// Number of files in this export, 0 until the plan is known.
+    pub total: u32,
+    /// File just written, or the export folder when the export is done.
+    pub destination: String,
+}
+
 /// Result of one sync across every configured backend, in run order.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SyncSummary {
@@ -93,6 +114,8 @@ pub enum DaemonEvent {
         code: String,
         message: String,
     },
+    /// An export started, wrote a file, finished or failed.
+    ExportProgress(ExportProgress),
 }
 
 /// Where events go. The daemon emits zbus signals; tests record them.
@@ -137,6 +160,8 @@ pub struct DaemonDeps {
     pub power: Arc<dyn Power>,
     pub session: Arc<dyn Session>,
     pub runner: Arc<dyn SyncRunner>,
+    /// Removable drives for the Export screen (udisks2, or the test fake).
+    pub drives: Arc<dyn Drives>,
     /// The Google Drive backend, when this build has one. `None` in tests
     /// that only exercise the server backend.
     pub gdrive: Option<Arc<dyn GdriveRunner>>,
@@ -151,6 +176,8 @@ struct CoreStatus {
     sync: SyncInfo,
     sync_running: bool,
     pairing_running: bool,
+    /// A USB export or import is in progress; mounting is one at a time.
+    drive_operation_running: bool,
 }
 
 /// The daemon's policy, independent of D-Bus and the kernel.
@@ -162,6 +189,7 @@ pub struct DaemonCore {
     power: Arc<dyn Power>,
     session: Arc<dyn Session>,
     runner: Arc<dyn SyncRunner>,
+    drives: Arc<dyn Drives>,
     gdrive: Option<Arc<dyn GdriveRunner>>,
     events: Arc<dyn EventSink>,
     history: Mutex<History>,
@@ -181,6 +209,7 @@ impl DaemonCore {
             power: deps.power,
             session: deps.session,
             runner: deps.runner,
+            drives: deps.drives,
             gdrive: deps.gdrive,
             events: deps.events,
             history: Mutex::new(history),
@@ -368,6 +397,143 @@ impl DaemonCore {
             (None, None) => tracing::info!("sync finished with no backends"),
         }
         Ok(summary)
+    }
+
+    // ----- export and import ----------------------------------------------
+
+    /// Removable drives attached to this device, for the Export screen.
+    pub fn list_drives(&self) -> Result<Vec<UsbDrive>> {
+        list_drives(self.drives.as_ref())
+    }
+
+    /// Export one selection to `drive_id`, then unmount and power the drive off.
+    ///
+    /// The filesystem and pandoc work runs on a blocking thread; progress
+    /// arrives through [`DaemonEvent::ExportProgress`]. The returned path is the
+    /// folder the writer may unplug the drive after ("Safe to remove").
+    pub async fn export(
+        self: &Arc<Self>,
+        selection: Vec<String>,
+        format: String,
+        drive_id: String,
+    ) -> Result<String> {
+        self.begin_drive_operation()?;
+        self.emit(DaemonEvent::ExportProgress(ExportProgress {
+            state: "exporting".into(),
+            message: "Exporting…".into(),
+            index: 0,
+            total: 0,
+            destination: String::new(),
+        }));
+        let core = Arc::clone(self);
+        let outcome = tokio::task::spawn_blocking(move || {
+            core.export_blocking(&selection, &format, &drive_id)
+        })
+        .await;
+        let result = match outcome {
+            Ok(result) => result,
+            Err(error) => Err(anyhow::anyhow!("the export task stopped: {error}")),
+        };
+        self.finish_export(&result);
+        self.end_drive_operation();
+        result.map(|report| report.destination.display().to_string())
+    }
+
+    fn export_blocking(
+        &self,
+        selection: &[String],
+        format: &str,
+        drive_id: &str,
+    ) -> Result<ExportReport> {
+        let selection = selection_from_request(selection, &self.writing_dir)?;
+        let format = parse_format(format)?;
+        let drive = MountedDrive::mount(Arc::clone(&self.drives), drive_id)?;
+        let report = stylos_export::export(
+            selection,
+            format,
+            &self.writing_dir,
+            drive.path(),
+            &stylos_export::MapCitations::new(),
+            |progress| {
+                self.emit(DaemonEvent::ExportProgress(ExportProgress {
+                    state: "exporting".into(),
+                    message: format!("Writing file {} of {}.", progress.index, progress.total),
+                    index: progress.index as u32,
+                    total: progress.total as u32,
+                    destination: progress.destination.display().to_string(),
+                }));
+            },
+        )
+        .context("export to the USB drive")?;
+        Ok(report)
+    }
+
+    fn finish_export(&self, result: &Result<ExportReport>) {
+        let progress = match result {
+            Ok(report) => ExportProgress {
+                state: "done".into(),
+                message: format!("Exported {} file(s). Safe to remove.", report.count()),
+                index: report.count() as u32,
+                total: report.count() as u32,
+                destination: report.destination.display().to_string(),
+            },
+            Err(error) => ExportProgress {
+                state: "error".into(),
+                message: format!("{error:#}"),
+                index: 0,
+                total: 0,
+                destination: String::new(),
+            },
+        };
+        self.emit(DaemonEvent::ExportProgress(progress));
+    }
+
+    /// Copy files from `drive_id` into `<writing>/Imported/`.
+    ///
+    /// No paths means everything on the drive. Like an export, the drive is
+    /// mounted only for this call and powered off afterwards.
+    pub async fn import(
+        self: &Arc<Self>,
+        drive_id: String,
+        paths: Vec<String>,
+    ) -> Result<Vec<String>> {
+        self.begin_drive_operation()?;
+        let core = Arc::clone(self);
+        let outcome =
+            tokio::task::spawn_blocking(move || core.import_blocking(&drive_id, &paths)).await;
+        self.end_drive_operation();
+        match outcome {
+            Ok(result) => result,
+            Err(error) => Err(anyhow::anyhow!("the import task stopped: {error}")),
+        }
+    }
+
+    fn import_blocking(&self, drive_id: &str, paths: &[String]) -> Result<Vec<String>> {
+        let drive = MountedDrive::mount(Arc::clone(&self.drives), drive_id)?;
+        let sources = import_sources(drive.path(), paths)?;
+        let report = stylos_export::import(&sources, &self.writing_dir)
+            .context("import from the USB drive")?;
+        Ok(report
+            .files
+            .into_iter()
+            .map(|file| file.destination.display().to_string())
+            .collect())
+    }
+
+    fn begin_drive_operation(&self) -> Result<()> {
+        let mut status = self.status.lock().expect("status lock poisoned");
+        if status.drive_operation_running {
+            bail!("an export or import is already running");
+        }
+        status.drive_operation_running = true;
+        Ok(())
+    }
+
+    fn end_drive_operation(&self) {
+        self.status
+            .lock()
+            .expect("status lock poisoned")
+            .drive_operation_running = false;
     }
 
     // ----- pairing ---------------------------------------------------------
@@ -836,6 +1002,7 @@ mod tests {
 
     use crate::power::SleepGuard;
     use crate::radio::{Rfkill, WIFI_WINDOW};
+    use stylos_export::{DriveCall, DriveInfo, FakeDrives};
 
     struct FakeRfkill {
         blocked: AtomicBool,
@@ -1071,6 +1238,7 @@ mod tests {
         power: Arc<FakePower>,
         session: Arc<FakeSession>,
         events: Arc<RecordingSink>,
+        drives: Arc<FakeDrives>,
     }
 
     impl Harness {
@@ -1100,6 +1268,15 @@ mod tests {
             let power = FakePower::new(battery);
             let session = Arc::new(FakeSession::default());
             let events = Arc::new(RecordingSink::default());
+            let drives = Arc::new(FakeDrives::new(
+                dir.path().join("drives"),
+                vec![DriveInfo {
+                    id: "usb-1".into(),
+                    name: "USB stick".into(),
+                    size: 16 * 1024 * 1024,
+                    mount_points: Vec::new(),
+                }],
+            ));
             let core = Arc::new(
                 DaemonCore::new(DaemonDeps {
                     writing_dir: writing.clone(),
@@ -1109,6 +1286,7 @@ mod tests {
                     power: power.clone(),
                     session: session.clone(),
                     runner: runner.clone(),
+                    drives: drives.clone(),
                     gdrive,
                     events: events.clone(),
                 })
@@ -1122,6 +1300,7 @@ mod tests {
                 power,
                 session,
                 events,
+                drives,
             }
         }
 
@@ -1129,6 +1308,11 @@ mod tests {
             let target = self.dir.path().join("writing").join(path);
             fs::create_dir_all(target.parent().unwrap()).unwrap();
             fs::write(target, text).unwrap();
+        }
+
+        /// Where [`FakeDrives`] mounts its first drive.
+        fn drive_mount(&self) -> PathBuf {
+            self.dir.path().join("drives/drive-0")
         }
     }
 
@@ -1146,6 +1330,183 @@ mod tests {
             percent,
             charging: false,
         }
+    }
+
+    #[test]
+    fn list_drives_never_mounts() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        let drives = harness.core.list_drives().unwrap();
+        assert_eq!(drives.len(), 1);
+        assert_eq!(drives[0].name, "USB stick");
+        assert_eq!(drives[0].size, 16 * 1024 * 1024);
+        assert!(!drives[0].mounted);
+        assert_eq!(harness.drives.calls(), [DriveCall::List]);
+    }
+
+    #[tokio::test]
+    async fn export_writes_to_the_drive_then_unmounts_and_powers_off() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        harness.write("draft.md", "# One\n");
+        harness.write("Notes/second.md", "two");
+
+        let destination = harness
+            .core
+            .export(vec![], "markdown".into(), "usb-1".into())
+            .await
+            .unwrap();
+        let destination = PathBuf::from(destination);
+        assert!(
+            destination.starts_with(harness.drive_mount()),
+            "{destination:?}"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("draft.md")).unwrap(),
+            "# One\n"
+        );
+        assert_eq!(
+            fs::read_to_string(destination.join("Notes/second.md")).unwrap(),
+            "two"
+        );
+        assert_eq!(
+            harness.drives.calls(),
+            [
+                DriveCall::Mount("usb-1".into()),
+                DriveCall::Unmount("usb-1".into()),
+                DriveCall::PowerOff("usb-1".into()),
+            ],
+            "the drive is mounted only for the export and powered off after"
+        );
+        assert!(!harness.drives.is_mounted("usb-1"));
+
+        let progress: Vec<(String, u32, u32)> = harness
+            .events
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                DaemonEvent::ExportProgress(progress) => {
+                    Some((progress.state, progress.index, progress.total))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(progress.first(), Some(&("exporting".into(), 0, 0)));
+        assert_eq!(
+            progress.last(),
+            Some(&("done".into(), 2, 2)),
+            "{progress:?}"
+        );
+        assert!(harness.events.events().iter().any(|event| matches!(
+            event,
+            DaemonEvent::ExportProgress(progress)
+                if progress.message.contains("Safe to remove")
+                    && progress.destination == destination.display().to_string()
+        )));
+    }
+
+    #[tokio::test]
+    async fn export_errors_release_the_lock_and_an_error_after_mount_powers_off() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+
+        // A bad format and a missing selection are rejected before mounting.
+        let error = harness
+            .core
+            .export(vec![], "rtf".into(), "usb-1".into())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("unknown export format"));
+        let error = harness
+            .core
+            .export(vec!["missing.md".into()], "markdown".into(), "usb-1".into())
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("missing.md"));
+        assert!(harness.drives.calls().is_empty());
+
+        // An empty writing root fails after the drive was mounted: the guard
+        // still unmounts and powers it off, and the lock is released.
+        let error = harness
+            .core
+            .export(vec![], "markdown".into(), "usb-1".into())
+            .await
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("nothing to export"),
+            "{error:#}"
+        );
+        assert_eq!(
+            harness.drives.calls(),
+            [
+                DriveCall::Mount("usb-1".into()),
+                DriveCall::Unmount("usb-1".into()),
+                DriveCall::PowerOff("usb-1".into()),
+            ]
+        );
+        assert!(harness.events.events().iter().any(|event| matches!(
+            event,
+            DaemonEvent::ExportProgress(progress) if progress.state == "error"
+        )));
+
+        harness.write("after.md", "still works");
+        harness
+            .core
+            .export(vec![], "markdown".into(), "usb-1".into())
+            .await
+            .expect("the failed export released the lock");
+    }
+
+    #[tokio::test]
+    async fn import_copies_text_files_into_imported_and_powers_off() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        let inbox = harness.drive_mount().join("Inbox");
+        fs::create_dir_all(&inbox).unwrap();
+        fs::write(inbox.join("letter.txt"), "from the stick").unwrap();
+        fs::write(inbox.join("cover.png"), b"png").unwrap();
+
+        let imported = harness
+            .core
+            .import("usb-1".into(), vec!["Inbox".into()])
+            .await
+            .unwrap();
+        assert_eq!(imported.len(), 1, "{imported:?}");
+        let path = PathBuf::from(&imported[0]);
+        assert_eq!(path.file_name().unwrap(), "letter.md");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "from the stick");
+        assert!(harness
+            .dir
+            .path()
+            .join("writing/Imported/letter.md")
+            .is_file());
+        assert_eq!(
+            harness.drives.calls(),
+            [
+                DriveCall::Mount("usb-1".into()),
+                DriveCall::Unmount("usb-1".into()),
+                DriveCall::PowerOff("usb-1".into()),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn import_rejects_a_path_outside_the_drive() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        fs::write(harness.dir.path().join("outside.md"), "no").unwrap();
+        let outside = harness.dir.path().join("outside.md").display().to_string();
+        let error = harness
+            .core
+            .import("usb-1".into(), vec![outside])
+            .await
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("outside the drive"));
+        assert!(!harness.dir.path().join("writing/Imported").exists());
+        // The drive was mounted for the attempt but still powered off.
+        assert_eq!(
+            harness.drives.calls(),
+            [
+                DriveCall::Mount("usb-1".into()),
+                DriveCall::Unmount("usb-1".into()),
+                DriveCall::PowerOff("usb-1".into()),
+            ]
+        );
     }
 
     #[test]
