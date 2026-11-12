@@ -6,6 +6,7 @@
 
 pub mod app;
 pub mod battery;
+pub mod daemon;
 pub mod editor;
 pub mod files;
 pub mod markdown;
