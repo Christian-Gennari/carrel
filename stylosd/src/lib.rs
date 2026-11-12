@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod daemon;
+pub mod dbus;
 pub mod history;
 pub mod http;
 pub mod network;
