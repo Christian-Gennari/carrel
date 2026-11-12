@@ -1,0 +1,13 @@
+[Unit]
+Description=Block Wi-Fi radios at boot
+After=systemd-modules-load.service
+Before=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# A machine without a Wi-Fi card has nothing to block; that is not an error.
+ExecStart=-/usr/sbin/rfkill block wifi
+
+[Install]
+WantedBy=multi-user.target

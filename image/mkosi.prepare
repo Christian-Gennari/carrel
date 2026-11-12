@@ -1,0 +1,28 @@
+#!/bin/sh
+# Download the pinned Typst release and install it into the image.
+#
+# Debian trixie has no typst CLI package, but spec/01-architecture.md requires
+# typst for PDF export (pandoc + typst, no LaTeX).  The upstream musl binary is
+# static, so this adds no runtime dependencies.  The version and checksum are
+# pinned; update both together.
+set -eu
+
+[ "${1:-}" = "final" ] || exit 0
+
+version=0.15.1
+sha256=a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c
+url="https://github.com/typst/typst/releases/download/v${version}/typst-x86_64-unknown-linux-musl.tar.xz"
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+curl -fsSL "$url" -o "$tmp/typst.tar.xz"
+echo "$sha256  $tmp/typst.tar.xz" | sha256sum -c -
+tar -xJf "$tmp/typst.tar.xz" -C "$tmp"
+
+install -D -m 0755 "$tmp/typst-x86_64-unknown-linux-musl/typst" \
+    "$BUILDROOT/usr/bin/typst"
+install -D -m 0644 "$tmp/typst-x86_64-unknown-linux-musl/LICENSE" \
+    "$BUILDROOT/usr/share/doc/typst/LICENSE"
+install -D -m 0644 "$tmp/typst-x86_64-unknown-linux-musl/NOTICE" \
+    "$BUILDROOT/usr/share/doc/typst/NOTICE"

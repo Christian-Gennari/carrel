@@ -1,0 +1,31 @@
+[Unit]
+Description=Stylos session (Cage + stylos-shell)
+After=systemd-user-sessions.service systemd-logind.service
+Wants=systemd-logind.service
+Conflicts=getty@tty1.service
+# If stylos-shell crashes, restart it immediately and do not let the start
+# rate limiter put the device into a dead state.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=writer
+Group=writer
+PAMName=login
+TTYPath=/dev/tty1
+StandardInput=tty
+StandardOutput=journal
+StandardError=journal
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=no
+# Cage is the only compositor and its default (without `-s`) keeps VT
+# switching disabled. `cage -s` would *allow* VT switching on cage 0.2, which
+# breaks rule 1, so it is deliberately not passed here. `-d` suppresses
+# client-side decorations so the single client owns the whole screen.
+ExecStart=/usr/bin/cage -d -- /usr/bin/stylos-shell
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=graphical.target
