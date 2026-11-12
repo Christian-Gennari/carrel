@@ -24,6 +24,8 @@ pub enum SettingRow {
     Font,
     Size,
     DailyGoal,
+    GoalProgress,
+    FocusMode,
     Typewriter,
     Spellcheck,
     Clock,
@@ -37,11 +39,13 @@ pub enum SettingRow {
     About,
 }
 
-pub const ROWS: [SettingRow; 15] = [
+pub const ROWS: [SettingRow; 17] = [
     SettingRow::Theme,
     SettingRow::Font,
     SettingRow::Size,
     SettingRow::DailyGoal,
+    SettingRow::GoalProgress,
+    SettingRow::FocusMode,
     SettingRow::Typewriter,
     SettingRow::Spellcheck,
     SettingRow::Clock,
@@ -165,6 +169,17 @@ impl SettingsState {
                 }
                 settings.daily_goal != previous
             }
+            SettingRow::GoalProgress => {
+                let previous = settings.goal_display;
+                if delta != 0 {
+                    settings.goal_display = settings.goal_display.other();
+                }
+                settings.goal_display != previous
+            }
+            SettingRow::FocusMode => {
+                settings.focus_mode = !settings.focus_mode;
+                true
+            }
             SettingRow::Typewriter => {
                 settings.typewriter_mode = !settings.typewriter_mode;
                 true
@@ -230,8 +245,10 @@ impl SettingsState {
         match row {
             SettingRow::Theme => settings.theme.label().to_owned(),
             SettingRow::Font => settings.font.label().to_owned(),
-            SettingRow::Size => format!("{} pt", settings.font_size),
+            SettingRow::Size => format!("{} px", settings.font_size),
             SettingRow::DailyGoal => format!("{} words", settings.daily_goal),
+            SettingRow::GoalProgress => settings.goal_display.label().to_owned(),
+            SettingRow::FocusMode => on_off(settings.focus_mode),
             SettingRow::Typewriter => on_off(settings.typewriter_mode),
             SettingRow::Spellcheck => on_off(settings.spellcheck),
             SettingRow::Clock => on_off(settings.clock),
@@ -257,6 +274,13 @@ impl SettingsState {
             SettingRow::Font => "The same three fonts everywhere, for calm reading.".to_owned(),
             SettingRow::Size => "Ctrl+= and Ctrl+- change this while writing.".to_owned(),
             SettingRow::DailyGoal => "Shown on the bottom line: words today / goal.".to_owned(),
+            SettingRow::GoalProgress => {
+                "Hairline draws today's progress along the bottom edge, in the accent.".to_owned()
+            }
+            SettingRow::FocusMode => {
+                "Everything but the paragraph with the cursor fades to 35 %. F2 toggles it."
+                    .to_owned()
+            }
             SettingRow::Typewriter => {
                 "Backspace and Delete do nothing, so the draft only moves forward.".to_owned()
             }
@@ -535,6 +559,8 @@ fn setting_name(row: SettingRow) -> &'static str {
         SettingRow::Font => "Font",
         SettingRow::Size => "Size",
         SettingRow::DailyGoal => "Daily goal",
+        SettingRow::GoalProgress => "Goal progress",
+        SettingRow::FocusMode => "Focus mode",
         SettingRow::Typewriter => "Typewriter mode",
         SettingRow::Spellcheck => "Spellcheck",
         SettingRow::Clock => "Clock",
@@ -552,7 +578,7 @@ fn setting_name(row: SettingRow) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::Theme;
+    use crate::settings::{GoalDisplay, Theme};
 
     #[test]
     fn every_setting_from_the_spec_has_one_row() {
@@ -564,6 +590,8 @@ mod tests {
                 "Font",
                 "Size",
                 "Daily goal",
+                "Goal progress",
+                "Focus mode",
                 "Typewriter mode",
                 "Spellcheck",
                 "Clock",
@@ -585,11 +613,31 @@ mod tests {
         let state = SettingsState::default();
         assert_eq!(state.value(SettingRow::Theme, &settings), "Paper");
         assert_eq!(state.value(SettingRow::Font, &settings), "Serif");
-        assert_eq!(state.value(SettingRow::Size, &settings), "18 pt");
+        assert_eq!(state.value(SettingRow::Size, &settings), "19 px");
         assert_eq!(state.value(SettingRow::DailyGoal, &settings), "500 words");
+        assert_eq!(state.value(SettingRow::GoalProgress, &settings), "Numbers");
+        assert_eq!(state.value(SettingRow::FocusMode, &settings), "Off");
         assert_eq!(state.value(SettingRow::Typewriter, &settings), "Off");
         assert_eq!(state.value(SettingRow::Keyboard, &settings), "US");
         assert_eq!(state.value(SettingRow::Update, &settings), "Up to date");
+    }
+
+    #[test]
+    fn goal_progress_and_focus_mode_change_and_persist_through_the_page() {
+        let mut settings = Settings::default();
+        let mut state = SettingsState::default();
+        let row = |row: SettingRow| ROWS.iter().position(|item| *item == row).unwrap();
+        state.select(row(SettingRow::GoalProgress));
+        assert!(state.change(&mut settings, 1));
+        assert_eq!(settings.goal_display, GoalDisplay::Hairline);
+        state.change(&mut settings, 1);
+        assert_eq!(settings.goal_display, GoalDisplay::Numbers);
+
+        state.select(row(SettingRow::FocusMode));
+        assert!(state.change(&mut settings, 0));
+        assert!(settings.focus_mode);
+        state.change(&mut settings, 0);
+        assert!(!settings.focus_mode);
     }
 
     #[test]

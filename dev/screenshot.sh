@@ -46,15 +46,21 @@ cat > "$root/.stylos/state.json" <<'EOF'
 {"last_file": "The quiet morning.md"}
 EOF
 
+# Today's words for the bottom line and the hairline: 312 / 500.
+printf '{"date": "%s", "words": 312}\n' "$(date +%F)" > "$root/.stylos/stats.json"
+
 write_settings() {
-    python3 - "$root" "$1" "$2" "$3" <<'PY'
+    python3 - "$root" "$1" "$2" "$3" \
+        "${STYLOS_SHOT_FOCUS:-false}" "${STYLOS_SHOT_GOAL:-numbers}" <<'PY'
 import json, sys
-root, theme, first_run, bottom_line = sys.argv[1:5]
+root, theme, first_run, bottom_line, focus, goal = sys.argv[1:7]
 settings = {
     "theme": theme,
     "font": "serif",
-    "font_size": 18,
+    "font_size": 19,
     "daily_goal": 500,
+    "goal_display": goal,
+    "focus_mode": focus == "true",
     "show_bottom_line": bottom_line == "true",
     "typewriter_mode": False,
     "spellcheck": False,
@@ -118,15 +124,18 @@ shoot() {
     app_pid=
 }
 
-# The editor, both themes.
+# The editor, both themes, then focus mode and the hairline goal line.
 shoot editor-paper paper true true editor "" 
 shoot editor-night night true true editor ""
+STYLOS_SHOT_FOCUS=true shoot editor-paper-focus paper true true editor ""
+STYLOS_SHOT_GOAL=hairline shoot editor-night-hairline night true true editor ""
 
 # History with a preview.
 shoot history-paper paper true true history ""
 
 # Quotes palette: search results in both themes, then the two empty states.
 shoot quotes-paper paper true true quotes "" STYLOS_QUOTE_QUERY=attention
+shoot quotes-paper-select paper true true quotes "" STYLOS_QUOTE_QUERY=attention STYLOS_QUOTE_SELECT=1
 shoot quotes-night night true true quotes "" STYLOS_QUOTE_QUERY=attention
 shoot quotes-empty-paper paper true true quotes "" STYLOS_FAKE_LIBRARY=empty
 shoot quotes-unavailable-paper paper true true quotes "" STYLOS_FAKE_LIBRARY=unavailable

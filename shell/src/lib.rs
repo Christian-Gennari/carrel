@@ -11,6 +11,8 @@ pub mod editor;
 pub mod export;
 pub mod files;
 pub mod first_run;
+pub mod focus;
+pub mod goal;
 pub mod history;
 pub mod locale;
 pub mod markdown;
