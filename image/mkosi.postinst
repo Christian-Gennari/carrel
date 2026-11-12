@@ -1,5 +1,6 @@
 #!/bin/sh
-# Final image customisation: the writer account and its data directory.
+# Final image customisation: the writer account, data directory and the
+# symlinks that presets cannot make.
 set -eu
 
 if ! mkosi-chroot getent passwd writer >/dev/null 2>&1; then
@@ -13,9 +14,10 @@ for group in video render input audio; do
     fi
 done
 
-# /data is a plain directory on the root filesystem in WP1.  WP7 moves it to
-# its own partition; keeping the path makes the shell code independent of that.
+# /data is the mountpoint of the data partition.  The directory on the root
+# image is only a placeholder for the (very short) time before data.mount.
 install -d -m 0755 -o 1000 -g 1000 "$BUILDROOT/data/writing"
+install -d -m 0755 "$BUILDROOT/usr/share/stylos"
 
 # Presets cannot mask units, so mask the getty templates directly.  A symlink
 # to /dev/null is exactly what `systemctl mask` creates.  This also stops the

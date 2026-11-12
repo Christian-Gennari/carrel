@@ -1,0 +1,18 @@
+# The root filesystem transfer.  Both root partitions are labelled
+# stylos-root-<version>; systemd-sysupdate compares their versions and writes
+# the older (inactive) one, then relabels it with the new version.  The
+# partition UUIDs never change, so the UKI command line can keep using
+# root=PARTUUID=.
+[Transfer]
+MinVersion=0.2.0
+
+[Source]
+Type=regular-file
+Path=/data/.stylos/update/payload
+MatchPattern=stylos-root-@v.raw
+
+[Target]
+Type=partition
+Path=auto
+MatchPartitionType=root-x86-64
+MatchPattern=stylos-root-@v

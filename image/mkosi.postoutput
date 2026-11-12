@@ -1,0 +1,7 @@
+#!/bin/sh
+# mkosi post-output hook: build the A/B and recovery UKIs, the BIOS GRUB menu
+# and the offline update fixture.  See image/assemble.py.
+set -eu
+
+exec python3 "$SRCDIR/image/assemble.py" \
+    "$OUTPUTDIR/stylos.img.raw" "$OUTPUTDIR"

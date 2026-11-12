@@ -1,15 +1,44 @@
 #!/bin/sh
-# Build the placeholder stylos-shell.
+# Install the real Stylos binaries into the image.
 #
-# WP2 replaces this with the real Rust + GTK4 shell. Until then the session
-# client is a tiny GTK4 window; it is not a terminal and does not talk to the
-# network.
+# The Makefile builds stylos-shell and stylosd with cargo in the dev container
+# (the same container that runs mkosi) and points STYLOS_BINARIES at the
+# release directory.  Building here instead would need a Rust toolchain and a
+# fresh crates.io download inside the mkosi build image on every build; the
+# binaries are build outputs and are never committed.
 set -eu
 
-install -d "$DESTDIR/usr/bin"
-cc -O2 -Wall -Wextra \
-    $(pkg-config --cflags gtk4) \
-    "$SRCDIR/placeholder/stylos-shell.c" \
-    -o "$DESTDIR/usr/bin/stylos-shell" \
-    $(pkg-config --libs gtk4)
-strip "$DESTDIR/usr/bin/stylos-shell" 2>/dev/null || true
+binaries="${STYLOS_BINARIES:-$SRCDIR/target/release}"
+
+for binary in stylos-shell stylosd; do
+    if [ ! -x "$binaries/$binary" ]; then
+        echo "mkosi.build: $binaries/$binary is missing" >&2
+        echo "mkosi.build: run 'cargo build --release -p stylos-shell -p stylosd' first" >&2
+        exit 1
+    fi
+    install -D -m 0755 "$binaries/$binary" "$DESTDIR/usr/bin/$binary"
+done
+
+# The daemon's unit, D-Bus policy and documentation come from the stylosd
+# crate so there is exactly one copy of each file.
+install -D -m 0644 "$SRCDIR/stylosd/systemd/stylosd.service" \
+    "$DESTDIR/usr/lib/systemd/system/stylosd.service"
+install -D -m 0644 "$SRCDIR/stylosd/dbus/org.stylos.Daemon1.conf" \
+    "$DESTDIR/usr/share/dbus-1/system.d/org.stylos.Daemon1.conf"
+
+# Optional build-time secret.  dev/run.sh mounts the host's copy read-only at
+# $SRCDIR/.stylos-oauth.toml and exports STYLOS_OAUTH_TOML; the file is never
+# committed.  A build without it is a valid self-build (Google Drive pairing
+# is simply unavailable).
+oauth="$SRCDIR/.stylos-oauth.toml"
+if [ ! -f "$oauth" ] && [ -f "$SRCDIR/image/.stylos-oauth.toml" ]; then
+    oauth="$SRCDIR/image/.stylos-oauth.toml"
+fi
+if [ ! -f "$oauth" ] && [ -n "${STYLOS_OAUTH_TOML:-}" ]; then
+    oauth="$STYLOS_OAUTH_TOML"
+fi
+if [ -f "$oauth" ]; then
+    install -D -m 0644 "$oauth" "$DESTDIR/usr/share/stylos/oauth.toml"
+else
+    echo "mkosi.build: no oauth.toml, building without Google Drive client IDs"
+fi
