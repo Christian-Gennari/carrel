@@ -1,6 +1,6 @@
-# /boot is the EFI system partition (systemd-boot, UKIs, sysupdate targets).
+# /boot is the EFI system partition (shim, systemd-boot, boot entries, sysupdate targets).
 # /data is the writable state partition: writing, /var and the /etc overlay.
 # Root itself is a read-only erofs slot and is mounted by the initrd, so it has
 # no fstab entry.
 PARTUUID=44444444-4444-4444-8444-444444444444 /boot vfat umask=0077,nofail,x-systemd.device-timeout=10s 0 2
-PARTUUID=33333333-3333-4333-8333-333333333333 /data ext4 defaults,nofail,x-systemd.device-timeout=10s 0 2
+PARTUUID=33333333-3333-4333-8333-333333333333 /data ext4 defaults,nofail,x-systemd.growfs,x-systemd.device-timeout=10s 0 2

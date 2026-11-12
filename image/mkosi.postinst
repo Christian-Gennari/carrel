@@ -32,3 +32,18 @@ done
 rm -f "$BUILDROOT/etc/systemd/system/getty.target.wants/getty@tty1.service"
 
 mkosi-chroot systemctl set-default graphical.target
+
+# Secure Boot chain (WP7c).  Stage Debian's signed binaries, unchanged, on the
+# ESP tree (/efi becomes the ESP partition).  image/assemble.py copies them to
+# the removable-media path once the disk image exists.
+#   shimx64.efi   Microsoft-signed shim, vendor certificate: Debian
+#   grubx64.efi   Debian-signed systemd-boot (shim's default second stage)
+#   mmx64.efi     MokManager, started by shim when a MOK enrolment is pending
+if [ "${1:-}" = "final" ]; then
+    esp="$BUILDROOT/efi/EFI/stylos"
+    install -d -m 0755 "$esp"
+    install -m 0644 "$BUILDROOT/usr/lib/shim/shimx64.efi.signed" "$esp/shimx64.efi"
+    install -m 0644 "$BUILDROOT/usr/lib/shim/mmx64.efi.signed" "$esp/mmx64.efi"
+    install -m 0644 "$BUILDROOT/usr/lib/systemd/boot/efi/systemd-bootx64.efi.signed" \
+        "$esp/grubx64.efi"
+fi

@@ -1,6 +1,6 @@
 # Root filesystem.  Both slots are labelled stylos-root-<version>; the version
 # is what systemd-sysupdate compares, and it always writes the older (inactive)
-# one.  The partition UUIDs never change, so the UKI/GRUB command line can keep
+# one.  The partition UUIDs never change, so the boot entry/GRUB command line can keep
 # naming the same verity devices.
 [Transfer]
 

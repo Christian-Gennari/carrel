@@ -20,14 +20,14 @@ case "$slot" in
 esac
 
 boot_previous() {
-    if [ ! -f "/boot/EFI/Linux/stylos-$other.efi" ]; then
+    if [ ! -f "/boot/loader/entries/stylos-$other.conf" ]; then
         whiptail --title "Stylos recovery" --msgbox \
             "The previous system (slot $other) is not installed." 9 60
         return
     fi
     if whiptail --title "Stylos recovery" --yesno \
         "Boot the previous system (slot $other) now?" 9 60; then
-        printf 'default stylos-%s.efi\ntimeout 2\n' "$other" >/boot/loader/loader.conf
+        printf 'default stylos-%s.conf\ntimeout 2\neditor no\n' "$other" >/boot/loader/loader.conf
         if [ -f /boot/grub/grubenv ]; then
             grub-editenv /boot/grub/grubenv set \
                 "stylos_default=$other" stylos_tries=good

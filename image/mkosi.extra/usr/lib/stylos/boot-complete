@@ -2,12 +2,12 @@
 # Mark the running slot good once boot-complete.target has been reached.
 #
 # Boot counting works like this:
-#   * a new UKI is installed as EFI/Linux/stylos-<slot>-<version>+3.efi
+#   * a new boot entry is installed as loader/entries/stylos-<slot>-<version>+3.conf
 #   * systemd-boot decrements the +N counter on every attempt
 #   * when this service runs and boot-complete.target is active, the counted
-#     file is renamed to stylos-<slot>.efi and becomes the persistent default
+#     file is renamed to stylos-<slot>.conf and becomes the persistent default
 #   * if boot never completes, after three attempts systemd-boot removes the
-#     counted entry and the previous slot (stylos-<other>.efi) boots
+#     counted entry and the previous slot (stylos-<other>.conf) boots
 #
 # GRUB (BIOS) has no EFI boot counter.  apply-update sets stylos_tries=3 and
 # grub.cfg decrements it with a string ladder before every boot, so a kernel or
@@ -22,18 +22,30 @@ log() {
 slot="$(sed -n 's/.*stylos\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
 [ -n "$slot" ] || exit 0
 
+# Report the firmware's Secure Boot state, for the QEMU gate and for support.
+# The SecureBoot variable is 4 attribute bytes followed by one value byte.
+sb_state=unknown
+if [ -d /sys/firmware/efi ] && ! mountpoint -q /sys/firmware/efi/efivars; then
+    mount -t efivarfs efivarfs /sys/firmware/efi/efivars 2>/dev/null || true
+fi
+for var in /sys/firmware/efi/efivars/SecureBoot-*; do
+    [ -r "$var" ] || continue
+    sb_state="$(od -An -tu1 -j4 -N1 "$var" 2>/dev/null | tr -d ' ')"
+done
+log "secureboot=$sb_state"
+
 if systemctl list-units --state=failed --no-legend --plain 2>/dev/null | grep -q .; then
     # A failed update that reached userspace still consumes a boot-counting
     # try.  systemd-boot 257 keeps selecting an exhausted +0- entry, so when
     # the counter reaches zero the OS itself removes it and switches the
     # default to the other slot.
-    counted="$(ls -1 /boot/EFI/Linux/stylos-$slot-*+*.efi 2>/dev/null | head -1 || true)"
+    counted="$(ls -1 /boot/loader/entries/stylos-$slot-*+*.conf 2>/dev/null | head -1 || true)"
     tries="$(basename "${counted:-}" | sed -n 's/.*+\([0-9][0-9]*\)-.*/\1/p')"
     other=$([ "$slot" = a ] && echo b || echo a)
-    good="/boot/EFI/Linux/stylos-$other.efi"
+    good="/boot/loader/entries/stylos-$other.conf"
     if [ -n "$counted" ] && [ "${tries:-1}" = "0" ] && [ -f "$good" ]; then
         rm -f "$counted"
-        printf 'default stylos-%s.efi\ntimeout 2\n' "$other" >/boot/loader/loader.conf
+        printf 'default stylos-%s.conf\ntimeout 2\neditor no\n' "$other" >/boot/loader/loader.conf
         if [ -f /boot/grub/grubenv ]; then
             grub-editenv /boot/grub/grubenv set \
                 "stylos_default=$other" stylos_tries=good
@@ -48,15 +60,15 @@ if systemctl list-units --state=failed --no-legend --plain 2>/dev/null | grep -q
     exit 0
 fi
 
-if [ -d /sys/firmware/efi ] && [ -d /boot/EFI/Linux ]; then
-    good="/boot/EFI/Linux/stylos-$slot.efi"
-    counted="$(ls -1 /boot/EFI/Linux/stylos-$slot-*+*.efi 2>/dev/null | tail -1 || true)"
+if [ -d /sys/firmware/efi ] && [ -d /boot/loader/entries ]; then
+    good="/boot/loader/entries/stylos-$slot.conf"
+    counted="$(ls -1 /boot/loader/entries/stylos-$slot-*+*.conf 2>/dev/null | tail -1 || true)"
     if [ -n "$counted" ]; then
         mv -f "$counted" "$good"
         log "renamed $(basename "$counted") to $(basename "$good")"
     fi
     if [ -f "$good" ]; then
-        printf 'default stylos-%s.efi\ntimeout 2\n' "$slot" >/boot/loader/loader.conf
+        printf 'default stylos-%s.conf\ntimeout 2\neditor no\n' "$slot" >/boot/loader/loader.conf
     fi
 fi
 
