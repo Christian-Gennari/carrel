@@ -90,8 +90,10 @@ impl UpdateState {
             "" | "none" => "Up to date".to_owned(),
             "applying" => "Installing…".to_owned(),
             other => match other.strip_prefix("ready:") {
-                Some(version) if !version.is_empty() => format!("Update ready ({version})"),
-                _ => "Update ready".to_owned(),
+                Some(version) if !version.is_empty() => {
+                    format!("Update ready ({version}) · Apply")
+                }
+                _ => "Update ready · Apply".to_owned(),
             },
         }
     }
@@ -662,7 +664,7 @@ mod tests {
         );
         assert_eq!(
             state.value(SettingRow::Update, &Settings::default()),
-            "Update ready (0.2.0)"
+            "Update ready (0.2.0) · Apply"
         );
         fake.set_update("none");
         state.update = UpdateState::from_wire(fake.update_status().unwrap());
@@ -693,7 +695,7 @@ mod tests {
         assert_eq!(state.activate(), SettingsEffect::None);
         state.update = UpdateState::from_wire("ready:1.0");
         assert!(state.update.ready());
-        assert_eq!(state.update.label(), "Update ready (1.0)");
+        assert_eq!(state.update.label(), "Update ready (1.0) · Apply");
         assert_eq!(state.activate(), SettingsEffect::ApplyUpdate);
     }
 }
