@@ -2,18 +2,28 @@
 """Finish the Stylos disk image after mkosi has assembled it.
 
 mkosi builds one unified kernel image with its own command line.  Stylos needs
-three (slot A, slot B and the recovery menu), each with a different root=, and
-the BIOS GRUB menu needs the same slots.  Doing this in a post-output script
-keeps the slot-specific values next to the partition definitions instead of
-spreading them through mkosi profiles.
+three (slot A, slot B and the recovery menu), each with a different root hash,
+and the BIOS GRUB menu needs the same slots.  Doing this in a post-output
+script keeps the slot-specific values next to the partition definitions instead
+of spreading them through mkosi profiles.
 
-The script also writes the offline update fixture used by tests/boot/:
-a copy of the root filesystem and a UKI for slot B whose command line masks
-the session, so boot never reaches boot-complete.target.
+The verity hash and signature partitions are created by systemd-repart (see
+image/mkosi.repart); this script reads the per-slot root hash from repart's
+JSON output, puts ``roothash=`` plus the fixed data/hash partition UUIDs into
+the UKI command lines and GRUB entries, and signs the UKIs with the release
+key when one is configured.
+
+The script also writes the offline update fixture used by tests/boot/: a copy
+of the root filesystem (with a failing unit), its verity hash/signature and a
+UKI for slot B whose command line masks the session, so boot never reaches
+boot-complete.target.
 """
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import json
 import os
 import re
 import shutil
@@ -28,6 +38,15 @@ ESP_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 ROOT_A_UUID = "11111111-1111-4111-8111-111111111111"
 ROOT_B_UUID = "22222222-2222-4222-8222-222222222222"
 DATA_UUID = "33333333-3333-4333-8333-333333333333"
+HASH_A_UUID = "55555555-5555-4555-8555-555555555555"
+HASH_B_UUID = "66666666-6666-4666-8666-666666666666"
+SIG_A_UUID = "77777777-7777-4777-8777-777777777777"
+SIG_B_UUID = "88888888-8888-4888-8888-888888888888"
+
+ROOT_UUID = {"a": ROOT_A_UUID, "b": ROOT_B_UUID}
+HASH_UUID = {"a": HASH_A_UUID, "b": HASH_B_UUID}
+SIG_UUID = {"a": SIG_A_UUID, "b": SIG_B_UUID}
+SLOT_BY_UUID = {ROOT_A_UUID: "a", ROOT_B_UUID: "b"}
 
 BASE_CMDLINE = (
     "console=tty0 console=ttyS0,115200 systemd.getty_auto=no "
@@ -38,6 +57,8 @@ UPDATE_VERSION = os.environ.get("STYLOS_UPDATE_VERSION", "0.2.0")
 
 UKIFY = "/usr/bin/ukify"
 STUB = "/usr/lib/systemd/boot/efi/linuxx64.efi.stub"
+SYSTEMD_REPART = "/usr/bin/systemd-repart"
+VERITYSETUP = "/usr/sbin/veritysetup"
 
 
 def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
@@ -61,12 +82,161 @@ def read_gpt(image: Path) -> list[dict]:
             entries.append(
                 {
                     "type": str(uuid.UUID(bytes_le=entry[:16])),
+                    "uuid": str(uuid.UUID(bytes_le=entry[16:32])),
                     "first": first,
                     "last": last,
+                    "size": (last - first + 1) * 512,
                     "name": entry[56:128].decode("utf-16le").rstrip("\0"),
                 }
             )
     return entries
+
+
+def verity_parameters(image: Path, hash_part: dict) -> dict:
+    """Read the verity superblock of a hash partition.
+
+    mkosi's post-output sandbox has no loop devices, so copy the (small) hash
+    partition to a temporary file before asking veritysetup about it.
+    """
+    with tempfile.NamedTemporaryFile(suffix=".verity") as copy:
+        with image.open("rb") as source:
+            source.seek(hash_part["first"] * 512)
+            remaining = hash_part["size"]
+            while remaining:
+                chunk = source.read(min(remaining, 8 * 1024 * 1024))
+                if not chunk:
+                    break
+                copy.write(chunk)
+                remaining -= len(chunk)
+        copy.flush()
+        result = subprocess.run(
+            [VERITYSETUP, "dump", copy.name], check=True, capture_output=True, text=True,
+        )
+    fields = {}
+    for line in result.stdout.splitlines():
+        key, _, value = line.partition(":")
+        fields[key.strip()] = value.strip()
+    try:
+        return {
+            "salt": bytes.fromhex(fields["Salt"]),
+            "data_blocks": int(fields["Data blocks"]),
+            "data_block_size": int(fields["Data block size"]),
+            "hash_block_size": int(fields["Hash block size"]),
+        }
+    except (KeyError, ValueError) as error:
+        raise SystemExit(f"could not parse the verity superblock: {error}")
+
+
+def data_root_hash(image: Path, data_part: dict, parameters: dict) -> str:
+    """Compute the dm-verity root hash from the data partition.
+
+    This is the same Merkle tree veritysetup builds: every data block is
+    salted and hashed, the hashes are packed into hash blocks (zero padded),
+    and each level is hashed again until one digest remains.  Computing it
+    here avoids loop devices and a 2 GiB temporary copy inside mkosi's
+    post-output sandbox.
+    """
+    salt = parameters["salt"]
+    block_size = parameters["data_block_size"]
+    hash_block_size = parameters["hash_block_size"]
+    data_blocks = parameters["data_blocks"]
+    digest_size = hashlib.sha256().digest_size
+    per_block = hash_block_size // digest_size
+    level: list[bytes] = []
+    with image.open("rb") as source:
+        source.seek(data_part["first"] * 512)
+        for _ in range(data_blocks):
+            block = source.read(block_size)
+            if len(block) != block_size:
+                raise SystemExit("data partition ended before its verity data blocks")
+            level.append(hashlib.sha256(salt + block).digest())
+    while len(level) > 1:
+        next_level = []
+        for index in range(0, len(level), per_block):
+            block = b"".join(level[index:index + per_block])
+            block = block.ljust(hash_block_size, b"\0")
+            next_level.append(hashlib.sha256(salt + block).digest())
+        level = next_level
+    return level[0].hex()
+
+
+def slot_root_hashes(image: Path, parts: list[dict]) -> dict[str, str]:
+    hashes: dict[str, str] = {}
+    for slot in ("a", "b"):
+        data_part = next(
+            (p for p in parts if p["uuid"] == ROOT_UUID[slot]),
+            None,
+        )
+        hash_part = next(
+            (p for p in parts if p["uuid"] == HASH_UUID[slot]),
+            None,
+        )
+        if data_part is None or hash_part is None:
+            raise SystemExit(f"slot {slot} has no verity data/hash partition")
+        hashes[slot] = data_root_hash(
+            image, data_part, verity_parameters(image, hash_part)
+        )
+    return hashes
+
+
+def signing_arguments() -> list[str]:
+    key = os.environ.get("STYLOS_VERITY_KEY")
+    cert = os.environ.get("STYLOS_VERITY_CERT")
+    if not key or not cert:
+        return []
+    return [
+        "--signtool=sbsign",
+        f"--secureboot-private-key={key}",
+        f"--secureboot-certificate={cert}",
+        "--sign-kernel",
+    ]
+
+
+def verity_format(root: Path, work: Path) -> tuple[Path, str]:
+    """Make a dm-verity hash tree for ``root`` and return (hash, root hash)."""
+    hash_file = work / (root.name + ".verity")
+    result = subprocess.run(
+        [VERITYSETUP, "format", "--hash=sha256", str(root), str(hash_file)],
+        check=True, capture_output=True, text=True,
+    )
+    match = re.search(r"Root hash:\s*([0-9a-fA-F]+)", result.stdout)
+    if not match:
+        raise SystemExit(f"veritysetup did not report a root hash: {result.stdout}")
+    return hash_file, match.group(1).lower()
+
+
+def sign_roothash(roothash: str, work: Path) -> str:
+    """Return the base64 PKCS#7 signature systemd-repart puts in sig partitions."""
+    key = os.environ.get("STYLOS_VERITY_KEY")
+    cert = os.environ.get("STYLOS_VERITY_CERT")
+    if not key or not cert:
+        raise SystemExit("STYLOS_VERITY_KEY/STYLOS_VERITY_CERT are required for signing")
+    raw = work / "roothash.bin"
+    raw.write_bytes(bytes.fromhex(roothash))
+    signature = work / "roothash.sig"
+    run(
+        "openssl", "cms", "-sign", "-binary", "-noattr", "-nocerts",
+        "-md", "sha256", "-signer", cert, "-inkey", key,
+        "-in", raw, "-outform", "DER", "-out", signature,
+    )
+    return base64.b64encode(signature.read_bytes()).decode()
+
+
+def certificate_fingerprint() -> str:
+    cert = os.environ.get("STYLOS_VERITY_CERT")
+    if not cert:
+        raise SystemExit("STYLOS_VERITY_CERT is required for signing")
+    der = subprocess.check_output(["openssl", "x509", "-in", cert, "-outform", "DER"])
+    return hashlib.sha256(der).hexdigest()
+
+
+def verity_signature(roothash: str, work: Path) -> bytes:
+    document = {
+        "rootHash": roothash,
+        "certificateFingerprint": certificate_fingerprint(),
+        "signature": sign_roothash(roothash, work),
+    }
+    return (json.dumps(document, separators=(",", ":")) + "\n").encode()
 
 
 class Esp:
@@ -148,20 +318,29 @@ def build_uki(
         f"--cmdline={cmdline}",
         f"--stub={STUB}",
         f"--output={output}",
+        *signing_arguments(),
         stdout=subprocess.DEVNULL,
     )
 
 
-def cmdline(slot: str, extra: str = "") -> str:
-    uuid = ROOT_A_UUID if slot == "a" else ROOT_B_UUID
-    line = f"root=PARTUUID={uuid} {BASE_CMDLINE} stylos.slot={slot}"
+def cmdline(slot: str, roothash: str, extra: str = "") -> str:
+    line = (
+        f"{BASE_CMDLINE} roothash={roothash} "
+        f"systemd.verity_root_data=PARTUUID={ROOT_UUID[slot]} "
+        f"systemd.verity_root_hash=PARTUUID={HASH_UUID[slot]} "
+        f"stylos.slot={slot}"
+    )
     return f"{line} {extra}".strip()
 
 
 def grub_cfg(kver: str) -> str:
     def entry(ident: str, title: str, slot: str, extra: str = "") -> str:
-        uuid = ROOT_A_UUID if slot == "a" else ROOT_B_UUID
-        cmd = f"root=PARTUUID={uuid} {BASE_CMDLINE} stylos.slot={slot} {extra}".strip()
+        cmd = (
+            f"roothash=${{stylos_{slot}_roothash}} {BASE_CMDLINE} "
+            f"systemd.verity_root_data=PARTUUID={ROOT_UUID[slot]} "
+            f"systemd.verity_root_hash=PARTUUID={HASH_UUID[slot]} "
+            f"stylos.slot={slot} {extra}"
+        ).strip()
         return (
             f'menuentry "{title}" --id {ident} {{\n'
             f"    linux /stylos/{kver}/vmlinuz {cmd}\n"
@@ -234,13 +413,19 @@ def build_update_payload(
     link.unlink(missing_ok=True)
     link.symlink_to("/usr/lib/systemd/system/stylos-broken.service")
 
+    root_image = payload / f"stylos-root-{UPDATE_VERSION}.raw"
     run(
         "mkfs.erofs", "-zlz4hc,9", "-L", "stylos-root-b",
-        payload / f"stylos-root-{UPDATE_VERSION}.raw", bad_root,
+        root_image, bad_root,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
+    hash_file, roothash = verity_format(root_image, work)
+    shutil.copyfile(hash_file, payload / f"stylos-verity-{UPDATE_VERSION}.raw")
+    (payload / f"stylos-verity-sig-{UPDATE_VERSION}.sig").write_bytes(
+        verity_signature(roothash, work)
+    )
 
-    broken = cmdline("b", "systemd.mask=stylos-session.service")
+    broken = cmdline("b", roothash, "systemd.mask=stylos-session.service")
     build_uki(work, payload / f"stylos-b-{UPDATE_VERSION}.efi", kver, broken)
 
     (out / "update" / "README").write_text(
@@ -279,6 +464,7 @@ def main() -> int:
     if len(roots) != 2:
         raise SystemExit(f"expected two root slots, found {len(roots)}")
     root_a = roots[0]
+    roothashes = slot_root_hashes(image, parts)
     esp = Esp(image, esp_part["first"] * 512)
     kver = kernel_versions(esp)
 
@@ -288,10 +474,10 @@ def main() -> int:
 
         uki_a = work / "stylos-a.efi"
         uki_recovery = work / "stylos-recovery.efi"
-        build_uki(work, uki_a, kver, cmdline("a"))
+        build_uki(work, uki_a, kver, cmdline("a", roothashes["a"]))
         build_uki(
             work, uki_recovery, kver,
-            cmdline("a", "systemd.unit=stylos-recovery.target"),
+            cmdline("a", roothashes["a"], "systemd.unit=stylos-recovery.target"),
         )
 
         # Drop mkosi's single-slot UKI and its loader entry; systemd-boot
@@ -322,12 +508,14 @@ def main() -> int:
         run(
             "grub-editenv", env, "set",
             "stylos_default=a", "stylos_a_tries=0", "stylos_b_tries=0",
+            f"stylos_a_roothash={roothashes['a']}",
+            f"stylos_b_roothash={roothashes['b']}",
         )
         esp.copy_in(env, "/grub/grubenv")
 
         build_update_payload(image, root_a, work, out, kver)
 
-    print(f"assemble: {image} has slots A/B, recovery and an update fixture")
+    print(f"assemble: {image} has slots A/B, verity, recovery and an update fixture")
     return 0
 
 

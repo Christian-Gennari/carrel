@@ -19,6 +19,7 @@ pub mod radio;
 pub mod state;
 pub mod sync;
 pub mod tls;
+pub mod update;
 
 pub use config::SyncConfig;
 pub use daemon::{
@@ -29,3 +30,4 @@ pub use gdrive::{GdriveConfig, GdriveReport, GdriveRunner, OAuthApp};
 pub use history::HistoryEntry;
 pub use pairing::{generate_device_pubkey, PairCredential, PairingSession};
 pub use sync::{sync_once, SyncError, SyncOptions, SyncReport};
+pub use update::{UpdateState, Updater};

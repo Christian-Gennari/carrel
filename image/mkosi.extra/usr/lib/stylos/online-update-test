@@ -1,0 +1,51 @@
+#!/bin/sh
+# Test hook: stage an online update from a URL, then apply it through the
+# daemon's D-Bus API.  The unit only runs when the test harness wrote
+# /data/.stylos/update/test-url, so a production device never opens the
+# network here.
+set -u
+
+log() {
+    echo "STYLOS-TEST-UPDATE: $*" >&2
+    echo "STYLOS-TEST-UPDATE: $*" >>/dev/ttyS0 2>/dev/null || true
+}
+
+url_file=/data/.stylos/update/test-url
+[ -f "$url_file" ] || exit 0
+url="$(cat "$url_file")"
+log "staging from $url"
+
+# NetworkManager needs a moment to configure QEMU's user-mode NIC.
+i=0
+while ! curl -fsS --max-time 2 "${url%/}/SHA256SUMS" -o /dev/null 2>/dev/null; do
+    i=$((i + 1))
+    [ "$i" -lt 30 ] || break
+    sleep 1
+done
+log "network window open"
+
+output="$(/usr/bin/stylosd update --url "$url" 2>&1)"
+result=$?
+if [ "$result" -ne 0 ]; then
+    log "rejected: $output"
+    exit 0
+fi
+case "$output" in
+    ready*)
+        log "$output"
+        # Do not run the hook again after the update reboots into the new slot.
+        rm -f "$url_file"
+        ;;
+    *)
+        log "not ready: $output"
+        exit 0
+        ;;
+esac
+
+if ! busctl call org.stylos.Daemon1 /org/stylos/Daemon1 \
+        org.stylos.Daemon1 ApplyUpdate >/dev/null 2>&1; then
+    log "apply failed"
+    exit 0
+fi
+log "applying"
+exit 0

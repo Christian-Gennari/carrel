@@ -1,10 +1,8 @@
-# The root filesystem transfer.  Both root partitions are labelled
-# stylos-root-<version>; systemd-sysupdate compares their versions and writes
-# the older (inactive) one, then relabels it with the new version.  The
-# partition UUIDs never change, so the UKI command line can keep using
-# root=PARTUUID=.
+# Root filesystem.  Both slots are labelled stylos-root-<version>; the version
+# is what systemd-sysupdate compares, and it always writes the older (inactive)
+# one.  The partition UUIDs never change, so the UKI/GRUB command line can keep
+# naming the same verity devices.
 [Transfer]
-MinVersion=0.2.0
 
 [Source]
 Type=regular-file

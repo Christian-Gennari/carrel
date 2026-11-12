@@ -78,8 +78,14 @@ impl UpdateState {
         }
     }
 
+    fn ready_version(&self) -> Option<&str> {
+        self.wire
+            .strip_prefix("ready:")
+            .or_else(|| self.wire.strip_prefix("ready "))
+    }
+
     pub fn ready(&self) -> bool {
-        self.wire != "none" && !self.wire.is_empty() && !self.applying
+        !self.applying && self.ready_version().is_some()
     }
 
     pub fn label(&self) -> String {
@@ -89,6 +95,12 @@ impl UpdateState {
         match self.wire.as_str() {
             "" | "none" => "Up to date".to_owned(),
             "applying" => "Installing…".to_owned(),
+            other if other.starts_with("downloading ") => "Downloading update…".to_owned(),
+            other if other.starts_with("available ") => "Update available · Sync".to_owned(),
+            other if other.starts_with("error ") => "Update check failed".to_owned(),
+            other if other.starts_with("ready ") => {
+                format!("Update ready ({}) · Apply", &other[6..])
+            }
             other => match other.strip_prefix("ready:") {
                 Some(version) if !version.is_empty() => {
                     format!("Update ready ({version}) · Apply")

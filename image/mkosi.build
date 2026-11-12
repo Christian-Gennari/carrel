@@ -26,6 +26,30 @@ install -D -m 0644 "$SRCDIR/stylosd/systemd/stylosd.service" \
 install -D -m 0644 "$SRCDIR/stylosd/dbus/org.stylos.Daemon1.conf" \
     "$DESTDIR/usr/share/dbus-1/system.d/org.stylos.Daemon1.conf"
 
+# Public release keys.  The private half never enters the image; systemd-
+# sysupdate verifies SHA256SUMS.gpg with the keyring installed here and the
+# verity/UKI certificate is kept for diagnostics and future Secure Boot work.
+# These are public and therefore live in the source tree.  Never point the
+# build script at the private key path from the host: mkosi's build sandbox
+# only mounts the source tree.
+update_pubkey="$SRCDIR/image/keys/update-pubring.gpg"
+verity_cert="$SRCDIR/image/keys/verity.crt"
+if [ ! -f "$update_pubkey" ]; then
+    echo "mkosi.build: $update_pubkey is missing; run 'make keys'" >&2
+    exit 1
+fi
+if [ ! -f "$verity_cert" ]; then
+    echo "mkosi.build: $verity_cert is missing; run 'make keys'" >&2
+    exit 1
+fi
+install -D -m 0644 "$update_pubkey" "$DESTDIR/usr/lib/systemd/import-pubring.gpg"
+install -D -m 0644 "$verity_cert" "$DESTDIR/usr/share/stylos/keys/verity.crt"
+
+# The release URL is fixed at build time.  A device checks it only during a
+# sync session (spec/02-sync-protocol.md, Updates).
+install -d -m 0755 "$DESTDIR/usr/lib/stylos"
+printf '%s\n' "${STYLOS_UPDATE_URL:-}" >"$DESTDIR/usr/lib/stylos/update-url"
+
 # Optional build-time secret.  dev/run.sh mounts the host's copy read-only at
 # $SRCDIR/.stylos-oauth.toml and exports STYLOS_OAUTH_TOML; the file is never
 # committed.  A build without it is a valid self-build (Google Drive pairing

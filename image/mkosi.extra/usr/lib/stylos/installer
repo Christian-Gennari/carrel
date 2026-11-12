@@ -18,7 +18,10 @@ log() {
 
 # The installer is only for USB boots.  Booting the installed disk skips it.
 root_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
-src_disk="$(lsblk -no PKNAME "$root_src" 2>/dev/null | head -1 || true)"
+# With dm-verity the root is /dev/mapper/root; follow the dependency chain
+# backwards to the physical disk (lsblk -s) instead of only looking at the
+# immediate parent.
+src_disk="$(lsblk -srno NAME "$root_src" 2>/dev/null | tail -1 | tr -d ' ' || true)"
 [ -n "$src_disk" ] || exit 0
 removable="$(cat "/sys/block/$src_disk/removable" 2>/dev/null || echo 0)"
 transport="$(lsblk -dno TRAN "/dev/$src_disk" 2>/dev/null | tr -d ' ' || true)"

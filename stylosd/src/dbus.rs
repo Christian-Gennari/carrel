@@ -6,10 +6,10 @@
 //! into [`DaemonCore`] operations and [`DaemonEvent`]s into signals; the policy
 //! itself lives in [`crate::daemon`] so it is testable without a bus.
 //!
-//! `SearchLibrary` and `ApplyUpdate` are deliberately stubs: they belong to
-//! WP9 and WP7. They return a D-Bus `NotSupported` error that says so. Export
-//! and import use the `stylos-export` crate and udisks2; the drive is mounted
-//! only for the call and powered off afterwards.
+//! `SearchLibrary` is deliberately a stub: it belongs to WP9 and returns a
+//! D-Bus `NotSupported` error that says so. Export and import use the
+//! `stylos-export` crate and udisks2; the drive is mounted only for the call
+//! and powered off afterwards.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -274,10 +274,12 @@ impl Daemon1 {
         self.core.battery().await.map_err(failed)
     }
 
-    /// Update state. WP7 brings sysupdate; until then there is never an update.
+    /// Update state: `none`, `available <version>`, `downloading <pct>`,
+    /// `ready <version>` or `error <text>`.  A sync session checks and
+    /// downloads; this method only reports the stored state.
     #[zbus(name = "UpdateStatus")]
     async fn update_status(&self) -> fdo::Result<String> {
-        Ok("none".to_string())
+        Ok(self.core.update_status())
     }
 
     // ----- export and import ----------------------------------------------
@@ -315,6 +317,13 @@ impl Daemon1 {
         self.core.import(drive_id, paths).await.map_err(failed)
     }
 
+    /// Stage an already downloaded and verified update and start
+    /// `stylos-update.service`.  Never opens the network.
+    #[zbus(name = "ApplyUpdate")]
+    async fn apply_update(&self) -> fdo::Result<()> {
+        self.core.apply_update().map_err(failed)
+    }
+
     // ----- stubs owned by later work packages ------------------------------
 
     /// TODO(WP9): SQLite FTS5 library cache. Stub on purpose.
@@ -326,12 +335,6 @@ impl Daemon1 {
     ) -> fdo::Result<Vec<String>> {
         let _ = (query, filters);
         Err(not_implemented("SearchLibrary", "WP9 (quotes)"))
-    }
-
-    /// TODO(WP7): signed sysupdate payloads. Stub on purpose.
-    #[zbus(name = "ApplyUpdate")]
-    async fn apply_update(&self) -> fdo::Result<()> {
-        Err(not_implemented("ApplyUpdate", "WP7 (image integration)"))
     }
 
     // ----- signals ---------------------------------------------------------
@@ -380,12 +383,11 @@ mod tests {
 
     #[test]
     fn stubs_say_not_implemented_and_name_the_work_package() {
-        for (method, package) in [("SearchLibrary", "WP9"), ("ApplyUpdate", "WP7")] {
-            let text = not_implemented(method, package).to_string();
-            assert!(text.contains("not implemented"), "{text}");
-            assert!(text.contains(method), "{text}");
-            assert!(text.contains(package), "{text}");
-        }
+        let (method, package) = ("SearchLibrary", "WP9");
+        let text = not_implemented(method, package).to_string();
+        assert!(text.contains("not implemented"), "{text}");
+        assert!(text.contains(method), "{text}");
+        assert!(text.contains(package), "{text}");
     }
 
     #[test]

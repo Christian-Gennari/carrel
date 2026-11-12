@@ -10,7 +10,13 @@ image="stylos-dev:$(cat "$root/dev/Dockerfile" "$root/dev/entrypoint.sh" | sha25
 if ! docker image inspect "$image" >/dev/null 2>&1; then
   docker build -t "$image" "$root/dev" >&2
 fi
+# Release keys live outside git but both `make keys` and `make image` run in
+# the container.  Mount the host's Stylos config directory so the private keys
+# are written back to (and read from) ~/.config/stylos/keys.
+stylos_config="${STYLOS_CONFIG_DIR:-${HOME:-/home/dev}/.config/stylos}"
+mkdir -p "$stylos_config"
 args=(--rm --init -v "$root:/work" -w /work
+      -v "$stylos_config:/stylos-config"
       -v stylos-cargo-registry:/opt/cargo/registry
       -v stylos-cargo-git:/opt/cargo/git
       # mkosi mounts an overlayfs over the image during build-package
@@ -18,6 +24,7 @@ args=(--rm --init -v "$root:/work" -w /work
       # upperdir, so give /var/tmp (mkosi's workspace) a real filesystem.
       -v stylos-dev-tmp:/var/tmp
       -e CARGO_TARGET_DIR=/work/target
+      -e STYLOS_KEY_DIR=/stylos-config/keys
       -e "STYLOS_UID=$(id -u)" -e "STYLOS_GID=$(id -g)")
 [ -e /dev/kvm ] && args+=(--device /dev/kvm)
 [ -t 0 ] && args+=(-it)

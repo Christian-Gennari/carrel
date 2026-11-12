@@ -14,8 +14,10 @@ use clap::{Args, Parser, Subcommand};
 use stylosd::dbus::RunConfig;
 use stylosd::export::PandocDocxConverter;
 use stylosd::gdrive::{DriveSyncRunner, GdriveConfig, OAuthApp, OAuthClient, OAuthEndpoints};
+use stylosd::radio::{RadioManager, SysfsRfkill};
 use stylosd::{
     generate_device_pubkey, sync_once, GdriveRunner, PairingSession, SyncConfig, SyncOptions,
+    Updater,
 };
 
 #[derive(Debug, Parser)]
@@ -41,6 +43,8 @@ enum Command {
     GdrivePair(GdrivePairArgs),
     /// Mirror the writing directory to Google Drive, once.
     GdriveSync(GdriveSyncArgs),
+    /// Check the release URL for a signed update and stage it.
+    Update(UpdateArgs),
 }
 
 #[derive(Debug, Args)]
@@ -128,6 +132,21 @@ struct GdriveSyncArgs {
     docx: bool,
 }
 
+#[derive(Debug, Args)]
+struct UpdateArgs {
+    /// State directory: update status and the staged payload.
+    #[arg(long, env = "STYLOS_STATE_DIR", default_value = "/data/.stylos")]
+    state: PathBuf,
+
+    /// Override the release URL configured in the image.
+    #[arg(long)]
+    url: Option<String>,
+
+    /// Apply the downloaded update (stage it and start stylos-update.service).
+    #[arg(long)]
+    apply: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -150,7 +169,24 @@ async fn main() -> Result<()> {
         Command::Pair(args) => run_pair(args).await,
         Command::GdrivePair(args) => run_gdrive_pair(args).await,
         Command::GdriveSync(args) => run_gdrive_sync(args).await,
+        Command::Update(args) => run_update(args),
     }
+}
+
+/// `stylosd update`: check/download a signed release inside a short radio
+/// window.  This is the manual equivalent of the update part of a sync
+/// session, used by tests and service technicians.
+fn run_update(args: UpdateArgs) -> Result<()> {
+    let radio = Arc::new(RadioManager::new(Arc::new(SysfsRfkill::new())));
+    let _guard = radio.hold("update")?;
+    let updater = Updater::new(&args.state).with_url(args.url);
+    let state = updater.check_and_stage()?;
+    println!("{}", state.wire());
+    if args.apply {
+        updater.apply()?;
+        println!("applying");
+    }
+    Ok(())
 }
 
 async fn run_sync(args: SyncArgs) -> Result<()> {

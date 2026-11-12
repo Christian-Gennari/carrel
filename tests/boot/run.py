@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import json
 import re
 import shutil
@@ -33,6 +34,8 @@ import time
 import uuid
 from pathlib import Path
 
+import pefile
+
 OVMF_CODE = "/usr/share/OVMF/OVMF_CODE_4M.fd"
 OVMF_VARS = "/usr/share/OVMF/OVMF_VARS_4M.fd"
 
@@ -40,6 +43,31 @@ ESP_GUID = "c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 BIOS_BOOT_GUID = "21686148-6449-6e6f-744e-656564454649"
 ROOT_GUID = "4f68bce3-e8cd-4db1-96e7-fbcaf984b709"
 LINUX_GUID = "0fc63daf-8483-4772-8e79-3d69d8477de4"
+VERITY_GUID = "2c7357ed-ebd2-46d9-aec1-23d437ec2bf5"
+VERITY_SIG_GUID = "41092b05-9fc8-4523-994f-2def0408b176"
+ROOT_A_UUID = "11111111-1111-4111-8111-111111111111"
+ROOT_B_UUID = "22222222-2222-4222-8222-222222222222"
+HASH_A_UUID = "55555555-5555-4555-8555-555555555555"
+HASH_B_UUID = "66666666-6666-4666-8666-666666666666"
+SIG_A_UUID = "77777777-7777-4777-8777-777777777777"
+SIG_B_UUID = "88888888-8888-4888-8888-888888888888"
+
+
+def tool(name: str) -> str:
+    """mkfs/sfdisk live in /usr/sbin, which is not always on PATH."""
+    return shutil.which(name) or f"/usr/sbin/{name}"
+
+
+def grubenv_get(path: Path, key: str) -> str:
+    listing = subprocess.run(
+        ["grub-editenv", path, "list"],
+        check=True, capture_output=True, text=True,
+    ).stdout
+    for line in listing.splitlines():
+        name, _, value = line.partition("=")
+        if name == key:
+            return value
+    return ""
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?!]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Za-z0-9]")
 
@@ -88,6 +116,7 @@ def read_gpt(image: Path) -> list[dict]:
             entries.append(
                 {
                     "type": str(uuid.UUID(bytes_le=entry[:16])),
+                    "uuid": str(uuid.UUID(bytes_le=entry[16:32])),
                     "first": first,
                     "last": last,
                     "size": (last - first + 1) * 512,
@@ -109,6 +138,13 @@ def part_typed(parts: list[dict], guid: str) -> dict:
         if part["type"] == guid:
             return part
     raise BootError(f"no partition of type {guid}")
+
+
+def part_by_uuid(parts: list[dict], uuid: str) -> dict:
+    for part in parts:
+        if part["uuid"] == uuid:
+            return part
+    raise BootError(f"no partition with UUID {uuid}")
 
 
 @contextlib.contextmanager
@@ -144,7 +180,11 @@ def mounted(image: Path, part: dict, fstype: str, *, writable: bool = False,
         try:
             yield mountpoint
         finally:
-            subprocess.run(["umount", mountpoint], check=False)
+            result = subprocess.run(["umount", mountpoint], check=False)
+            if result.returncode != 0:
+                # A library may still hold a mapping; detach it so the next
+                # loop device and mount are not poisoned.
+                subprocess.run(["umount", "-l", mountpoint], check=False)
             subprocess.run(["rmdir", str(mountpoint)], check=False)
 
 
@@ -156,6 +196,79 @@ def extract_erofs(image: Path, part: dict, destination: Path) -> None:
             "--preserve", dev,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
+
+
+def uki_section(uki: Path, section: str, work: Path) -> bytes:
+    output = work / f"{uki.name}.{section}"
+    run("objcopy", "--dump-section", f".{section}={output}", uki, work / "objcopy.tmp")
+    return output.read_bytes().rstrip(b"\0")
+
+
+def uki_cmdline(uki: Path, work: Path) -> str:
+    return uki_section(uki, "cmdline", work).decode(errors="replace")
+
+
+def uki_is_signed(uki: Path) -> bool:
+    pe = pefile.PE(str(uki), fast_load=True)
+    try:
+        # IMAGE_DIRECTORY_ENTRY_SECURITY (index 4) holds the Authenticode blob.
+        return pe.OPTIONAL_HEADER.DATA_DIRECTORY[4].VirtualAddress != 0
+    finally:
+        pe.close()
+
+
+def ocr(path: Path) -> str:
+    result = subprocess.run(
+        ["tesseract", str(path), "stdout"],
+        check=True, capture_output=True, text=True,
+    )
+    return result.stdout
+
+
+@contextlib.contextmanager
+def serve_directory(directory: Path):
+    """Serve a release directory on a free localhost port for QEMU's user net."""
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "http.server", str(port), "--bind", "127.0.0.1"],
+        cwd=directory,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            raise BootError(f"HTTP server for {directory} did not start")
+        yield port
+    finally:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+
+
+def make_usb_disk(path: Path, size: str = "512M") -> dict:
+    """A small raw disk with one ext4 partition, for the recovery copy test."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.unlink(missing_ok=True)
+    run("truncate", "-s", size, path)
+    run(
+        tool("sfdisk"), path,
+        input="label: dos\nstart=2048, size=1046528, type=83\n",
+        text=True,
+    )
+    run(tool("mkfs.ext4"), "-q", "-F", "-E", "offset=1048576", path)
+    return {"first": 2048, "size": 1046528 * 512}
 
 
 # --------------------------------------------------------------------------
@@ -217,12 +330,14 @@ class QMP:
 
 class Qemu:
     def __init__(self, name: str, out: Path, mode: str,
-                 disks: list[dict], *, usb: dict | None = None) -> None:
+                 disks: list[dict], *, usb: dict | None = None,
+                 network: bool = False) -> None:
         self.name = name
         self.out = out
         self.mode = mode
         self.disks = disks
         self.usb = usb
+        self.network = network
         self.dir = out / "test" / name
         self.dir.mkdir(parents=True, exist_ok=True)
         self.serial = self.dir / "serial.log"
@@ -243,12 +358,19 @@ class Qemu:
             "-display", "none",
             "-vga", "std",
             "-boot", "order=c,menu=off",
-            "-nic", "none",
             "-device", "virtio-rng-pci",
             "-serial", f"file:{self.serial}",
             "-monitor", "none",
             "-qmp", f"unix:{self.qmp_path},server=on,wait=off",
         ]
+        if self.network:
+            # 10.0.2.2 is the host from inside QEMU's user-mode network.
+            cmd += [
+                "-netdev", "user,id=net0",
+                "-device", "virtio-net-pci,netdev=net0",
+            ]
+        else:
+            cmd += ["-nic", "none"]
 
         if self.mode == "uefi":
             if not Path(OVMF_CODE).exists() or not Path(OVMF_VARS).exists():
@@ -426,17 +548,36 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
     )
     if len(roots) != 2:
         raise BootError(f"expected two root slots, found {len(roots)}")
-    root_a, root_b = roots
+    root_a = part_by_uuid(parts, ROOT_A_UUID)
+    root_b = part_by_uuid(parts, ROOT_B_UUID)
+    verity_a = part_by_uuid(parts, HASH_A_UUID)
+    verity_b = part_by_uuid(parts, HASH_B_UUID)
+    sig_a = part_by_uuid(parts, SIG_A_UUID)
+    sig_b = part_by_uuid(parts, SIG_B_UUID)
     data = part_named(parts, "stylos-data")
 
     expect(esp["type"] == ESP_GUID, "ESP type is wrong", failures)
     expect(bios["size"] >= 1024 * 1024, "BIOS boot partition is too small", failures)
     expect(root_a["size"] == 2 * 1024**3, "root-a is not 2 GiB", failures)
     expect(root_b["size"] == 2 * 1024**3, "root-b is not 2 GiB", failures)
+    expect(verity_a["type"] == VERITY_GUID, "root-a has no verity hash partition", failures)
+    expect(verity_b["type"] == VERITY_GUID, "root-b has no verity hash partition", failures)
+    expect(verity_a["size"] == 64 * 1024**2, "root-a verity hash is not 64 MiB", failures)
+    expect(verity_b["size"] == 64 * 1024**2, "root-b verity hash is not 64 MiB", failures)
+    expect(sig_a["type"] == VERITY_SIG_GUID, "root-a has no verity signature partition", failures)
+    expect(sig_b["type"] == VERITY_SIG_GUID, "root-b has no verity signature partition", failures)
+    expect(sig_a["size"] >= 4096, "root-a verity signature partition is too small", failures)
+    expect(sig_b["size"] >= 4096, "root-b verity signature partition is too small", failures)
     expect(data["type"] == LINUX_GUID, "data is not linux-generic", failures)
     expect(data["size"] >= 2 * 1024**3, "data partition is smaller than 2 GiB", failures)
-    expect(esp["first"] < bios["first"] < root_a["first"] < root_b["first"] < data["first"],
-           "partition order is not ESP, BIOS, root-a, root-b, data", failures)
+    expect(
+        esp["first"] < bios["first"] < root_a["first"] < verity_a["first"]
+        < sig_a["first"] < root_b["first"] < verity_b["first"] < sig_b["first"]
+        < data["first"],
+        "partition order is not ESP, BIOS, root-a, verity-a, sig-a, root-b, "
+        "verity-b, sig-b, data",
+        failures,
+    )
 
     # ESP: the bootloader, both slot UKIs and the recovery entry.
     with mounted(image, esp, "vfat", root=out / "test") as boot:
@@ -451,8 +592,33 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         expect("Stylos recovery" in grub, "GRUB menu has no recovery entry", failures)
         expect("save_env stylos_b_tries" in grub,
                "GRUB menu has no boot counter", failures)
+        expect("roothash=${stylos_a_roothash}" in grub,
+               "GRUB slot A has no verity root hash", failures)
+        expect("roothash=${stylos_b_roothash}" in grub,
+               "GRUB slot B has no verity root hash", failures)
         expect(any((boot / "stylos").glob("*/vmlinuz")),
                "ESP has no kernel for the BIOS path", failures)
+
+        work = out / "test" / "uki-check"
+        work.mkdir(parents=True, exist_ok=True)
+        cmdline = uki_cmdline(boot / "EFI/Linux/stylos-a.efi", work)
+        expect("roothash=" in cmdline, "slot A UKI has no roothash=", failures)
+        expect("systemd.verity_root_data=PARTUUID=11111111" in cmdline,
+               "slot A UKI does not name the verity data partition", failures)
+        expect("systemd.verity_root_hash=PARTUUID=55555555" in cmdline,
+               "slot A UKI does not name the verity hash partition", failures)
+        expect(uki_is_signed(boot / "EFI/Linux/stylos-a.efi"),
+               "slot A UKI is not signed", failures)
+        expect(uki_is_signed(boot / "EFI/Linux/stylos-0-recovery.efi"),
+               "recovery UKI is not signed", failures)
+        grubenv = work / "grubenv"
+        shutil.copyfile(boot / "grub/grubenv", grubenv)
+        env = subprocess.run(
+            ["grub-editenv", grubenv, "list"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        expect("stylos_a_roothash=" in env and "stylos_b_roothash=" in env,
+               "grubenv has no per-slot verity root hashes", failures)
 
     # Root-A: the real product.
     extracted = out / "test" / "image-check" / "root-a"
@@ -491,11 +657,22 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         "/usr/lib/stylos/data-init",
         "/usr/lib/stylos/grow-data",
         "/usr/lib/stylos/sysupdate/root.transfer",
+        "/usr/lib/stylos/sysupdate/verity.transfer",
+        "/usr/lib/stylos/sysupdate/sig.transfer",
         "/usr/lib/stylos/sysupdate/uki-a.transfer",
         "/usr/lib/stylos/sysupdate/uki-b.transfer",
         "/usr/lib/stylos/repart-grow/50-data.conf",
+        "/usr/lib/stylos/update-url",
+        "/usr/lib/systemd/import-pubring.gpg",
+        "/usr/share/stylos/keys/verity.crt",
+        "/usr/lib/systemd/system/stylos-online-update-test.service",
+        "/usr/lib/stylos/online-update-test",
     ):
         expect(root_file(path).exists(), f"missing {path}", failures)
+    update_url = root_file("/usr/lib/stylos/update-url").read_text().strip()
+    expect(update_url.startswith("http"), f"update URL is not a URL: {update_url!r}", failures)
+    expect(root_file("/usr/lib/systemd/import-pubring.gpg").stat().st_size > 100,
+           "the update public keyring is empty", failures)
 
     enabled = root_file("/etc/systemd/system/multi-user.target.wants/stylosd.service")
     expect(enabled.is_symlink() or enabled.exists(), "stylosd.service is not enabled", failures)
@@ -565,10 +742,44 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
 
     for name in (
         "payload/stylos-root-0.2.0.raw",
+        "payload/stylos-verity-0.2.0.raw",
+        "payload/stylos-verity-sig-0.2.0.sig",
         "payload/stylos-b-0.2.0.efi",
         "README",
     ):
         expect((update_dir / name).exists(), f"missing update fixture {name}", failures)
+    fixture_uki = update_dir / "payload/stylos-b-0.2.0.efi"
+    if fixture_uki.exists():
+        expect(uki_is_signed(fixture_uki), "the update fixture UKI is not signed", failures)
+
+    # Verify the actual verity tree, not just that the partitions exist.
+    work = out / "test" / "verity-check"
+    work.mkdir(parents=True, exist_ok=True)
+    with mounted(image, esp, "vfat", root=out / "test") as boot:
+        cmdline = uki_cmdline(boot / "EFI/Linux/stylos-a.efi", work)
+        root_b_hash = grubenv_get(boot / "grub/grubenv", "stylos_b_roothash")
+    match = re.search(r"roothash=([0-9a-f]{64})", cmdline)
+    if not match:
+        failures.append("cannot read the root hash from slot A UKI")
+    else:
+        with loop_device(image, root_a) as data_dev, loop_device(image, verity_a) as hash_dev:
+            result = subprocess.run(
+                [tool("veritysetup"), "verify", data_dev, hash_dev, match.group(1)],
+                capture_output=True, text=True,
+            )
+            expect(result.returncode == 0, "root-a verity verification failed", failures)
+        with loop_device(image, root_b) as data_dev, loop_device(image, verity_b) as hash_dev:
+            result = subprocess.run(
+                [tool("veritysetup"), "verify", data_dev, hash_dev, root_b_hash],
+                capture_output=True, text=True,
+            )
+            expect(result.returncode == 0, "root-b verity verification failed", failures)
+        for label, part in (("a", sig_a), ("b", sig_b)):
+            with loop_device(image, part) as dev:
+                with open(dev, "rb") as signature:
+                    text = signature.read(8192)
+            expect(b'"rootHash"' in text and b'"signature"' in text,
+                   f"verity signature partition {label} is not signed JSON", failures)
 
     shutil.rmtree(extracted, ignore_errors=True)
     if failures:
@@ -614,13 +825,20 @@ def runtime_check(qemu: Qemu) -> None:
         raise BootError("; ".join(failures))
 
 
-def boot_to_editor(qemu: Qemu, timeout: float) -> None:
+def boot_to_editor(qemu: Qemu, timeout: float, *, first_run: bool = False) -> None:
     qemu.wait(r"Started stylos-session\.service", timeout)
     # Mark-good is pulled in by graphical.target and ordered after the session,
     # so it logs before the target itself is reached.
     qemu.wait(r"STYLOS-BOOT: slot [ab] marked good", timeout)
     qemu.wait(r"Reached target graphical\.target", timeout)
-    time.sleep(5)  # let GTK draw the first frame
+    time.sleep(3)  # let GTK draw the first frame
+    if first_run:
+        # Language, keyboard, time zone, "Connect sync? Not now".
+        for _ in range(4):
+            qemu.key("ret")
+            time.sleep(0.8)
+        time.sleep(4)
+    time.sleep(2)
 
 
 # --------------------------------------------------------------------------
@@ -631,7 +849,7 @@ def qcow2_overlay(base: Path, path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.unlink(missing_ok=True)
     run("qemu-img", "create", "-q", "-f", "qcow2", "-F", "raw",
-        "-b", base, path)
+        "-b", base.resolve(), path.resolve())
     return path
 
 
@@ -639,14 +857,19 @@ def scenario_boot(mode: str, image: Path, out: Path, timeout: float) -> None:
     overlay = qcow2_overlay(image, out / "test" / f"boot-{mode}" / "disk.qcow2")
     with Qemu(f"boot-{mode}", out, mode,
               [{"path": overlay, "format": "qcow2"}]) as qemu:
-        boot_to_editor(qemu, timeout)
+        boot_to_editor(qemu, timeout, first_run=True)
         runtime_check(qemu)
         # Type one line so the screenshot shows the real editor (and proves
         # that QMP keyboard input reaches stylos-shell).
         qemu.type_text("The quiet morning")
         time.sleep(1.5)
-        qemu.screenshot(out / f"screenshot-{mode}.png")
-        print(f"{mode}: PASS", flush=True)
+        shot = qemu.screenshot(out / f"screenshot-{mode}.png")
+        # QEMU has no battery.  The old image showed a hard-coded 76 %; the
+        # real daemon path must show no percentage at all.
+        text = ocr(shot)
+        if re.search(r"\d+\s*%", text):
+            raise BootError(f"[{mode}] bottom line still shows a battery value:\n{text}")
+        print(f"{mode}: PASS (no battery percentage in screenshot)", flush=True)
 
 
 def wait_installer(qemu: Qemu, marker: str, timeout: float = 600.0) -> None:
@@ -684,7 +907,7 @@ def scenario_install(image: Path, out: Path, timeout: float) -> Path:
 
     # Boot the installed disk without the USB stick.
     with Qemu("installed", out, "uefi", [{"path": target, "format": "raw"}]) as qemu:
-        boot_to_editor(qemu, timeout)
+        boot_to_editor(qemu, timeout, first_run=True)
         runtime_check(qemu)
         qemu.type_text("The quiet morning")
         time.sleep(1.5)
@@ -697,23 +920,48 @@ def scenario_install(image: Path, out: Path, timeout: float) -> Path:
 def scenario_recovery(disk: Path, out: Path, timeout: float) -> None:
     parts = read_gpt(disk)
     esp = part_typed(parts, ESP_GUID)
+    data = part_named(parts, "stylos-data")
     loader_path = "loader/loader.conf"
+    note = "Recovery note\n\nThis must reach the USB drive.\n"
+    with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
+        writing = root / "writing"
+        writing.mkdir(parents=True, exist_ok=True)
+        (writing / "Recovery note.md").write_text(note)
+    usb = out / "test" / "recovery" / "usb.img"
+    usb_part = make_usb_disk(usb)
     with mounted(disk, esp, "vfat", writable=True, root=out / "test") as boot:
         loader = boot / loader_path
         original = loader.read_text()
         loader.write_text("default stylos-0-recovery.efi\ntimeout 2\n")
     try:
-        with Qemu("recovery", out, "uefi", [{"path": disk, "format": "raw"}]) as qemu:
+        with Qemu("recovery", out, "uefi", [{"path": disk, "format": "raw"}],
+                  usb={"path": usb, "format": "raw"}) as qemu:
             qemu.wait(r"STYLOS-RECOVERY: menu", timeout)
             time.sleep(3)  # whiptail draws over the last kernel console lines
             qemu.screenshot(out / "screenshot-recovery.png", light=False)
             if "Started stylos-session.service" in qemu.text():
                 raise BootError("the session started while booted into recovery")
+            # Menu: Boot previous, Copy writing, Reset settings, Power off.
+            qemu.key("down")
+            qemu.key("ret")
+            time.sleep(2)  # the disk menu is drawn by whiptail
+            qemu.key("ret")
+            qemu.wait(r"STYLOS-RECOVERY: copied to", 180)
+            time.sleep(1)
+            qemu.screenshot(out / "screenshot-recovery-copy.png", light=False)
             qemu.stop()
     finally:
         with mounted(disk, esp, "vfat", writable=True, root=out / "test") as boot:
             (boot / loader_path).write_text(original)
-    print("recovery: PASS", flush=True)
+
+    found = []
+    with mounted(usb, usb_part, "ext4", root=out / "test") as root:
+        for path in root.rglob("*"):
+            if path.is_file():
+                found.append(path.read_text(errors="replace"))
+    if not any("This must reach the USB drive." in text for text in found):
+        raise BootError("recovery copy did not put the writing on the USB drive")
+    print("recovery: PASS (writing copied to USB)", flush=True)
 
 
 def scenario_powercut(disk: Path, out: Path, timeout: float) -> None:
@@ -753,10 +1001,91 @@ def stage_update(disk: Path, update_dir: Path, out: Path) -> None:
             run("cp", "--sparse=always", source, destination)
 
 
-def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float) -> None:
-    stage_update(disk, update_dir, out)
+def clear_update(disk: Path, out: Path) -> None:
+    parts = read_gpt(disk)
+    data = part_named(parts, "stylos-data")
+    with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
+        shutil.rmtree(root / ".stylos" / "update", ignore_errors=True)
 
-    with Qemu("update", out, "uefi", [{"path": disk, "format": "raw"}]) as qemu:
+
+def prepare_online_update(disk: Path, url: str, out: Path) -> None:
+    parts = read_gpt(disk)
+    data = part_named(parts, "stylos-data")
+    with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
+        update = root / ".stylos" / "update"
+        shutil.rmtree(update, ignore_errors=True)
+        update.mkdir(parents=True)
+        (update / "test-url").write_text(url + "\n")
+
+
+def root_version(disk: Path, slot: str, out: Path) -> str:
+    parts = read_gpt(disk)
+    root_part = part_by_uuid(parts, ROOT_A_UUID if slot == "a" else ROOT_B_UUID)
+    destination = out / "test" / f"root-{slot}-version"
+    shutil.rmtree(destination, ignore_errors=True)
+    extract_erofs(disk, root_part, destination)
+    try:
+        release = (destination / "usr/lib/os-release").read_text()
+    finally:
+        shutil.rmtree(destination, ignore_errors=True)
+    match = re.search(r"^VERSION_ID=\"?([^\"\n]+)\"?$", release, re.MULTILINE)
+    return match.group(1) if match else ""
+
+
+def scenario_online_update(disk: Path, release_dir: Path, out: Path,
+                           timeout: float) -> None:
+    if not (release_dir / "SHA256SUMS.gpg").is_file():
+        raise BootError(f"no signed release in {release_dir}; run make release")
+
+    bad_release = out / "test" / "bad-release"
+    shutil.rmtree(bad_release, ignore_errors=True)
+    shutil.copytree(release_dir, bad_release)
+    signature = bad_release / "SHA256SUMS.gpg"
+    signature.write_bytes(b"this is not a valid signature\n")
+
+    with serve_directory(release_dir) as good_port:
+        with serve_directory(bad_release) as bad_port:
+            # Bad signature: the daemon must reject it and stay on slot A.
+            prepare_online_update(disk, f"http://10.0.2.2:{bad_port}/", out)
+            with Qemu("online-bad", out, "uefi",
+                      [{"path": disk, "format": "raw"}], network=True) as qemu:
+                qemu.wait(r"STYLOS-TEST-UPDATE: rejected", timeout)
+                qemu.wait(r"Started stylos-session\.service", timeout)
+                if "STYLOS-TEST-UPDATE: applying" in qemu.text():
+                    raise BootError("a bad update signature was applied")
+                if "stylos.slot=b" in qemu.text():
+                    raise BootError("a bad update signature switched the boot slot")
+                qemu.screenshot(out / "screenshot-online-bad-signature.png")
+                qemu.powerdown()
+
+            # Good signature: stage, ApplyUpdate through D-Bus, reboot into B.
+            prepare_online_update(disk, f"http://10.0.2.2:{good_port}/", out)
+            with Qemu("online-good", out, "uefi",
+                      [{"path": disk, "format": "raw"}], network=True) as qemu:
+                qemu.wait(r"STYLOS-TEST-UPDATE: ready", timeout)
+                qemu.wait(r"STYLOS-TEST-UPDATE: applying", timeout)
+                qemu.wait(r"stylos\.slot=b", timeout)
+                qemu.wait(r"Started stylos-session\.service", timeout)
+                qemu.wait(r"STYLOS-BOOT: slot b marked good", timeout)
+                time.sleep(5)
+                qemu.screenshot(out / "screenshot-online-update.png")
+                qemu.powerdown()
+
+    version = root_version(disk, "b", out)
+    if version != "0.2.0":
+        raise BootError(f"online update booted slot B but its version is {version!r}")
+    parts = read_gpt(disk)
+    label = part_by_uuid(parts, ROOT_B_UUID)["name"]
+    if "0.2.0" not in label:
+        raise BootError(f"online update did not relabel slot B: {label}")
+    print("online: PASS (bad signature rejected, good update booted 0.2.0)", flush=True)
+
+
+def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
+                    mode: str) -> None:
+    overlay = qcow2_overlay(disk, out / "test" / f"update-{mode}" / "disk.qcow2")
+    with Qemu(f"update-{mode}", out, mode,
+              [{"path": overlay, "format": "qcow2"}]) as qemu:
         qemu.wait(r"STYLOS-UPDATE: applying", timeout)
         qemu.wait(r"STYLOS-UPDATE: .*applied", timeout)
 
@@ -765,7 +1094,7 @@ def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float) -> 
         # boot the OS removes the exhausted entry and reboots into A.
         for attempt in range(1, 4):
             qemu.wait(r"stylos\.slot=b", timeout)
-            print(f"update: slot B attempt {attempt}", flush=True)
+            print(f"update-{mode}: slot B attempt {attempt}", flush=True)
             time.sleep(12)
             if attempt < 3:
                 qemu.reset()
@@ -774,9 +1103,9 @@ def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float) -> 
         qemu.wait(r"Started stylos-session\.service", timeout)
         qemu.wait(r"STYLOS-BOOT: slot a marked good", timeout)
         time.sleep(5)
-        qemu.screenshot(out / "screenshot-update-rollback.png")
+        qemu.screenshot(out / f"screenshot-update-rollback-{mode}.png")
         qemu.powerdown()
-    print("update: PASS", flush=True)
+    print(f"update-{mode}: PASS", flush=True)
 
 
 # --------------------------------------------------------------------------
@@ -789,9 +1118,11 @@ def main() -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--update-dir", type=Path,
                         help="directory with the offline update fixture")
+    parser.add_argument("--release-dir", type=Path,
+                        help="directory with the signed online release")
     parser.add_argument("--scenario", default="all",
                         choices=("all", "checks", "uefi", "bios", "install",
-                                 "recovery", "powercut", "update"))
+                                 "recovery", "powercut", "update", "online"))
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="seconds for one boot (default 300)")
     args = parser.parse_args()
@@ -803,7 +1134,10 @@ def main() -> int:
         return 2
     if args.update_dir is None:
         args.update_dir = args.image.parent / "update"
+    if args.release_dir is None:
+        args.release_dir = args.image.parent.parent / "release"
     args.update_dir = args.update_dir.resolve()
+    args.release_dir = args.release_dir.resolve()
 
     if args.scenario in ("all", "checks"):
         try:
@@ -821,7 +1155,8 @@ def main() -> int:
             scenario_boot("uefi", args.image, args.out, args.timeout)
         if args.scenario in ("all", "bios"):
             scenario_boot("bios", args.image, args.out, args.timeout)
-        if args.scenario in ("all", "install", "recovery", "powercut", "update"):
+        if args.scenario in ("all", "install", "recovery", "powercut", "update",
+                             "online"):
             reused = args.out / "test" / "install" / "disk.img"
             if args.scenario != "all" and reused.exists():
                 installed = reused
@@ -833,7 +1168,12 @@ def main() -> int:
         if args.scenario in ("all", "powercut"):
             scenario_powercut(installed, args.out, args.timeout)
         if args.scenario in ("all", "update"):
-            scenario_update(installed, args.update_dir, args.out, args.timeout)
+            stage_update(installed, args.update_dir, args.out)
+            scenario_update(installed, args.update_dir, args.out, args.timeout, "uefi")
+            scenario_update(installed, args.update_dir, args.out, args.timeout, "bios")
+            clear_update(installed, args.out)
+        if args.scenario in ("all", "online"):
+            scenario_online_update(installed, args.release_dir, args.out, args.timeout)
     except BootError as exc:
         errors.append(str(exc))
         print(f"FAILED: {exc}", file=sys.stderr)

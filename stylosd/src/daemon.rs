@@ -30,6 +30,7 @@ use crate::pairing::{generate_device_pubkey, PairingSession};
 use crate::power::{BatteryStatus, Power, Session, LOW_BATTERY_PERCENT};
 use crate::radio::{RadioGuard, RadioManager};
 use crate::sync::{sync_once, SyncOptions, SyncReport};
+use crate::update::Updater;
 
 /// History is committed after this long without a single changed file.
 pub const IDLE_COMMIT: Duration = Duration::from_secs(5 * 60);
@@ -193,6 +194,7 @@ pub struct DaemonCore {
     gdrive: Option<Arc<dyn GdriveRunner>>,
     events: Arc<dyn EventSink>,
     history: Mutex<History>,
+    update: Updater,
     status: Mutex<CoreStatus>,
 }
 
@@ -201,6 +203,7 @@ impl DaemonCore {
         fs::create_dir_all(&deps.state_dir)
             .with_context(|| format!("create state directory {}", deps.state_dir.display()))?;
         let history = History::open(&deps.writing_dir)?;
+        let update = Updater::new(&deps.state_dir);
         Ok(Self {
             writing_dir: deps.writing_dir,
             state_dir: deps.state_dir,
@@ -213,6 +216,7 @@ impl DaemonCore {
             gdrive: deps.gdrive,
             events: deps.events,
             history: Mutex::new(history),
+            update,
             status: Mutex::new(CoreStatus::default()),
         })
     }
@@ -396,6 +400,9 @@ impl DaemonCore {
             ),
             (None, None) => tracing::info!("sync finished with no backends"),
         }
+        // The radio guard is still alive here: updates are checked and
+        // downloaded only inside a sync session's window (rule 2).
+        self.check_updates().await;
         Ok(summary)
     }
 
@@ -809,6 +816,32 @@ impl DaemonCore {
             self.session.suspend().await?;
         }
         Ok(battery)
+    }
+
+    // ----- updates ---------------------------------------------------------
+
+    /// The update row's one-line state.
+    pub fn update_status(&self) -> String {
+        self.update.status().wire()
+    }
+
+    /// Apply an update that a sync session already downloaded and verified.
+    /// This never touches the network: it stages the payload and starts the
+    /// existing `stylos-update.service`, which applies it and reboots.
+    pub fn apply_update(&self) -> Result<()> {
+        self.update.apply()
+    }
+
+    /// Called at the end of a sync session, while the radio guard is still
+    /// held.  An update problem is logged and shown on the update row; it does
+    /// not turn a successful file sync into an error.
+    async fn check_updates(&self) {
+        let update = self.update.clone();
+        match tokio::task::spawn_blocking(move || update.check_and_stage()).await {
+            Ok(Ok(state)) => tracing::info!(status = %state.wire(), "update check finished"),
+            Ok(Err(error)) => tracing::warn!(%error, "update check failed"),
+            Err(error) => tracing::warn!(%error, "update check task stopped"),
+        }
     }
 
     /// Called when logind says the system is about to sleep.
