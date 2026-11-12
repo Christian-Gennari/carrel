@@ -1,0 +1,7 @@
+[Unit]
+Description=Stylos recovery
+Documentation=file:///usr/share/doc/stylos
+Requires=stylos-recovery.service
+After=stylos-recovery.service
+Conflicts=graphical.target
+AllowIsolate=yes

@@ -1,0 +1,15 @@
+[Transfer]
+MinVersion=0.2.0
+
+[Source]
+Type=regular-file
+Path=/data/.stylos/update/payload
+MatchPattern=stylos-a-@v.efi
+
+[Target]
+Type=regular-file
+Path=/EFI/Linux
+PathRelativeTo=esp
+# +3 is the systemd-boot boot-counting suffix: three attempts before the
+# entry is discarded and the previous slot boots.
+MatchPattern=stylos-a-@v+3.efi

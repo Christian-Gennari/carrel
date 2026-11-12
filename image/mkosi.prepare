@@ -26,3 +26,42 @@ install -D -m 0644 "$tmp/typst-x86_64-unknown-linux-musl/LICENSE" \
     "$BUILDROOT/usr/share/doc/typst/LICENSE"
 install -D -m 0644 "$tmp/typst-x86_64-unknown-linux-musl/NOTICE" \
     "$BUILDROOT/usr/share/doc/typst/NOTICE"
+
+# Source Serif 4 is not packaged in Debian trixie.  Fetch the pinned upstream
+# desktop release (OFL-1.1) and install the TTF family; version and checksum
+# are pinned like typst above.
+serif_version=4.005
+serif_sha256=549fdb8f9a682bd06944298621404969f6de77c2e422ff3b8244a1dcd6a0c425
+serif_url="https://github.com/adobe-fonts/source-serif/releases/download/4.005R/source-serif-${serif_version}_Desktop.zip"
+
+curl -fsSL "$serif_url" -o "$tmp/source-serif.zip"
+echo "$serif_sha256  $tmp/source-serif.zip" | sha256sum -c -
+
+SERIF_ZIP="$tmp/source-serif.zip" \
+SERIF_DEST="$BUILDROOT/usr/share/fonts/truetype/source-serif-4" \
+SERIF_DOC="$BUILDROOT/usr/share/doc/fonts-source-serif-4" \
+python3 - <<'PY'
+import os
+import zipfile
+
+archive = zipfile.ZipFile(os.environ["SERIF_ZIP"])
+dest = os.environ["SERIF_DEST"]
+os.makedirs(dest, exist_ok=True)
+prefix = "source-serif-4.005_Desktop/TTF/"
+count = 0
+for name in archive.namelist():
+    if not name.startswith(prefix) or not name.lower().endswith(".ttf"):
+        continue
+    with archive.open(name) as source, open(
+        os.path.join(dest, os.path.basename(name)), "wb"
+    ) as target:
+        target.write(source.read())
+    count += 1
+if count == 0:
+    raise SystemExit("source-serif archive contains no TTF files")
+with archive.open("source-serif-4.005_Desktop/LICENSE.md") as source:
+    licence = source.read()
+os.makedirs(os.environ["SERIF_DOC"], exist_ok=True)
+with open(os.path.join(os.environ["SERIF_DOC"], "LICENSE"), "wb") as target:
+    target.write(licence)
+PY

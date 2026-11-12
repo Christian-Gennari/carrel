@@ -1,0 +1,69 @@
+#!/bin/sh
+# Apply a staged update with systemd-sysupdate and reboot.
+#
+# The payload is staged on the data partition (during a sync, or by a service
+# technician from a USB stick) as:
+#
+#   /data/.stylos/update/payload/stylos-root-<slot>-<version>.raw
+#   /data/.stylos/update/payload/stylos-<slot>-<version>.efi
+#
+# Only the inactive slot is touched.  The transfer definitions live in
+# /usr/lib/stylos/sysupdate and are selected here, so a boot from slot B
+# writes slot A and vice versa.
+set -eu
+
+log() {
+    echo "STYLOS-UPDATE: $*" >&2
+    echo "STYLOS-UPDATE: $*" >>/dev/ttyS0 2>/dev/null || true
+}
+
+slot="$(sed -n 's/.*stylos\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
+case "$slot" in
+    a) other=b ;;
+    b) other=a ;;
+    *) log "cannot determine the running slot"; exit 1 ;;
+esac
+
+base=/data/.stylos/update
+[ -d "$base/payload" ] || exit 0
+
+defs=/run/stylos-update.d
+mkdir -p "$defs"
+rm -f "$defs"/*.transfer
+# root first, UKI last: the UKI is the entry point of the update.
+cp /usr/lib/stylos/sysupdate/root.transfer "$defs/10-root.transfer"
+cp "/usr/lib/stylos/sysupdate/uki-$other.transfer" "$defs/20-uki.transfer"
+
+log "applying an update to slot $other from $base"
+if ! /usr/lib/systemd/systemd-sysupdate --definitions="$defs" update \
+        >>/dev/ttyS0 2>&1; then
+    log "sysupdate failed; keeping slot $slot"
+    exit 1
+fi
+
+uki="$(ls -1t /boot/EFI/Linux/stylos-$other-*+*.efi 2>/dev/null | head -1 || true)"
+if [ -n "$uki" ]; then
+    # systemd-boot displays and matches the entry ID without the boot-count
+    # suffix (+3); the file keeps the suffix and is renamed as tries are
+    # consumed.  Strip the suffix for loader.conf.
+    id="$(basename "$uki")"
+    id="${id%%+*}.efi"
+    printf 'default %s\ntimeout 2\n' "$id" >/boot/loader/loader.conf
+    log "default is $id (boot counting)"
+fi
+
+# GRUB has no boot counter; the GRUB script decrements this value on each
+# boot and falls back to the other slot when it reaches zero.
+if [ -f /boot/grub/grubenv ]; then
+    grub-editenv /boot/grub/grubenv set \
+        "stylos_default=$other" "stylos_${other}_tries=3" 2>/dev/null || true
+fi
+
+# Consume the payload so the new slot does not apply it again (which would
+# ping-pong between the two slots).
+mv "$base" "$base.applied"
+rm -rf "$base.applied"
+sync
+
+log "update to slot $other applied; rebooting"
+systemctl reboot
