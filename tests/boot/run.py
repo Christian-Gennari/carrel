@@ -590,8 +590,9 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
                failures)
         grub = (boot / "grub/grub.cfg").read_text()
         expect("Stylos recovery" in grub, "GRUB menu has no recovery entry", failures)
-        expect("save_env stylos_b_tries" in grub,
+        expect("stylos_tries" in grub and "save_env --file /grub/grubenv" in grub,
                "GRUB menu has no boot counter", failures)
+        expect("$((" not in grub, "GRUB menu uses unsupported arithmetic", failures)
         expect("roothash=${stylos_a_roothash}" in grub,
                "GRUB slot A has no verity root hash", failures)
         expect("roothash=${stylos_b_roothash}" in grub,
@@ -1098,6 +1099,10 @@ def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
             time.sleep(12)
             if attempt < 3:
                 qemu.reset()
+        if mode == "bios":
+            # GRUB decrements to 0 on the third B attempt; the *next* boot
+            # sees 0 and selects A.
+            qemu.reset()
 
         qemu.wait(r"stylos\.slot=a", timeout)
         qemu.wait(r"Started stylos-session\.service", timeout)

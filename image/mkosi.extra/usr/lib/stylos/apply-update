@@ -77,13 +77,15 @@ if [ -f /boot/grub/grubenv ]; then
     fi
     if [ -n "${roothash:-}" ]; then
         grub-editenv /boot/grub/grubenv set \
-            "stylos_default=$other" "stylos_${other}_tries=3" \
-            "stylos_${other}_roothash=$roothash" 2>/dev/null || true
+            "stylos_default=$other" "stylos_tries=3" \
+            "stylos_${other}_roothash=$roothash"
+        log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
         log "slot $other roothash is $roothash"
     else
         log "could not read slot $other roothash; keeping the old value"
         grub-editenv /boot/grub/grubenv set \
-            "stylos_default=$other" "stylos_${other}_tries=3" 2>/dev/null || true
+            "stylos_default=$other" "stylos_tries=3"
+        log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
     fi
 fi
 

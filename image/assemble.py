@@ -348,29 +348,35 @@ def grub_cfg(kver: str) -> str:
             "}\n"
         )
 
+    # GRUB has no arithmetic and no EFI boot counter.  The counter is a
+    # string ladder over grubenv; apply-update sets tries=3 and boot-complete
+    # sets tries=good after a healthy boot.  GRUB decrements before it boots,
+    # so a kernel/initrd panic still consumes a try.
+    ladder = (
+        'if [ "${{stylos_default}}" = "{slot}" ]; then\n'
+        '    if [ "${{stylos_tries}}" = "3" ]; then set stylos_tries=2; '
+        'save_env --file /grub/grubenv stylos_tries; set default=stylos-{slot}\n'
+        '    elif [ "${{stylos_tries}}" = "2" ]; then set stylos_tries=1; '
+        'save_env --file /grub/grubenv stylos_tries; set default=stylos-{slot}\n'
+        '    elif [ "${{stylos_tries}}" = "1" ]; then set stylos_tries=0; '
+        'save_env --file /grub/grubenv stylos_tries; set default=stylos-{slot}\n'
+        '    elif [ "${{stylos_tries}}" = "good" ]; then set default=stylos-{slot}\n'
+        "    fi\n"
+        "fi\n"
+    )
     return (
         "set timeout=2\n"
+        "serial --unit=0 --speed=115200\n"
+        "terminal_output serial console\n"
+        'echo "GRUB root=$root prefix=$prefix"\n'
         "if [ -f /grub/grubenv ]; then\n"
-        "    load_env\n"
+        "    load_env --file /grub/grubenv stylos_default stylos_tries "
+        "stylos_a_roothash stylos_b_roothash\n"
         "fi\n"
-        # GRUB has no EFI boot counter.  The update service sets
-        # stylos_default=<slot> and stylos_<slot>_tries=3; each attempt
-        # decrements the counter and after three failed boots the other slot
-        # becomes the default.  boot-complete (BIOS path) resets the counter.
-        "if [ -z \"${stylos_b_tries}\" ]; then set stylos_b_tries=0; fi\n"
-        "if [ \"${stylos_default}\" = \"b\" ]; then\n"
-        "    if [ \"${stylos_b_tries}\" -gt 0 ]; then\n"
-        "        set stylos_b_tries=$((${stylos_b_tries} - 1))\n"
-        "        save_env stylos_b_tries\n"
-        "        set default=stylos-b\n"
-        "    else\n"
-        "        set default=stylos-a\n"
-        "        set stylos_default=a\n"
-        "    fi\n"
-        "else\n"
-        "    set default=stylos-a\n"
-        "fi\n"
-        "\n"
+        "set default=stylos-a\n"
+        + ladder.format(slot="b")
+        + ladder.format(slot="a")
+        + "\n"
         + entry("stylos-a", "Stylos", "a")
         + "\n"
         + entry("stylos-b", "Stylos (previous system)", "b")
@@ -421,8 +427,11 @@ def build_update_payload(
     )
     hash_file, roothash = verity_format(root_image, work)
     shutil.copyfile(hash_file, payload / f"stylos-verity-{UPDATE_VERSION}.raw")
+    # Deliberately wrong root hash in the *signature partition*: the BIOS
+    # rollback test needs a slot B that dies in the initrd (before userspace),
+    # while the UEFI path still uses the correct roothash embedded in its UKI.
     (payload / f"stylos-verity-sig-{UPDATE_VERSION}.sig").write_bytes(
-        verity_signature(roothash, work)
+        verity_signature("0" * 64, work)
     )
 
     broken = cmdline("b", roothash, "systemd.mask=stylos-session.service")

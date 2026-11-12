@@ -30,7 +30,8 @@ boot_previous() {
         printf 'default stylos-%s.efi\ntimeout 2\n' "$other" >/boot/loader/loader.conf
         if [ -f /boot/grub/grubenv ]; then
             grub-editenv /boot/grub/grubenv set \
-                "stylos_default=$other" stylos_a_tries=0 stylos_b_tries=0 2>/dev/null || true
+                "stylos_default=$other" stylos_tries=good
+            log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
         fi
         log "booting previous slot $other"
         sync
