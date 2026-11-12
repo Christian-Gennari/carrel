@@ -213,12 +213,23 @@ impl LibraryItemKind {
     }
 }
 
+/// Deserialize `null` as the type's default. Servers may send `null` for an
+/// optional library field (for example `"location": null` when the location is
+/// unknown); a missing field is handled by `#[serde(default)]`.
+fn null_as_default<'de, D, T>(deserializer: D) -> Result<T, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Default + Deserialize<'de>,
+{
+    Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
+}
+
 /// How to cite an item: ready-to-insert Markdown plus the canonical URL.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LibraryCitation {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub markdown: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub url: String,
 }
 
@@ -227,9 +238,9 @@ pub struct LibraryCitation {
 pub struct LibraryBook {
     pub id: String,
     pub title: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub author: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub topics: Vec<String>,
 }
 
@@ -239,13 +250,13 @@ pub struct LibraryItem {
     pub id: String,
     pub kind: LibraryItemKind,
     pub book_id: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub text: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub note: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub location: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub topics: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub citation: Option<LibraryCitation>,
@@ -258,14 +269,14 @@ pub struct LibraryItem {
 /// incremental position.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct LibraryPage {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub books: Vec<LibraryBook>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub items: Vec<LibraryItem>,
     /// Ids of items deleted since the requested cursor.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub deleted: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_default")]
     pub cursor: String,
 }
 
@@ -484,5 +495,27 @@ mod tests {
             assert_eq!(LibraryItemKind::parse(text), Some(kind));
         }
         assert_eq!(LibraryItemKind::parse("unknown"), None);
+    }
+
+    #[test]
+    fn library_accepts_null_optional_fields() {
+        // Shape sent by Nostos for a paper-book highlight without a location.
+        let page: LibraryPage = serde_json::from_value(json!({
+            "books": [{"id": "b1", "title": "Gilead", "author": null, "topics": null}],
+            "items": [{
+                "id": "n1", "kind": "highlight", "book_id": "b1",
+                "text": "ember", "note": null, "location": null, "topics": null,
+                "citation": {"markdown": "Marilynne Robinson, *Gilead*", "url": null}
+            }],
+            "deleted": null,
+            "cursor": "1"
+        }))
+        .unwrap();
+        assert_eq!(page.books[0].author, "");
+        assert_eq!(page.items[0].location, "");
+        assert_eq!(page.items[0].note, "");
+        assert!(page.items[0].topics.is_empty());
+        assert_eq!(page.items[0].citation.as_ref().unwrap().url, "");
+        assert!(page.deleted.is_empty());
     }
 }

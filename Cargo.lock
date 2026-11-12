@@ -2343,6 +2343,7 @@ dependencies = [
  "clap",
  "futures-util",
  "git2",
+ "rcgen",
  "reqwest",
  "ring",
  "rusqlite",
