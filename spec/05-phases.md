@@ -70,7 +70,7 @@ is committed on its branch. The orchestrator reviews and merges to `main`.
 
 - **WP8 · Nostos Cloud side** (in the Nostos repos, not here): implement the
   sync protocol on Nostos Cloud mapping files ↔ Writing Studio drafts, pairing
-  page `nostos.app/pair`, `/library` export.
+  page `app.nostos.page/pair`, `/library` export.
 - **WP9 · Quotes on the device** — library cache (SQLite FTS5), Quotes palette,
   citation insert. Gate: insert 5 quotes in a scripted test < copy-paste time.
 

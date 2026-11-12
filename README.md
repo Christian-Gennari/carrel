@@ -8,7 +8,9 @@ no desktop, no browser, no notifications and no other app. Text is saved all
 the time. One key sends your drafts to Nostos Cloud or to your own server, then
 the network goes off again.
 
-Stylos works best with [Nostos](https://nostos.app): drafts appear in the
+Project homepage: <https://stylos.nostos.page>.
+
+Stylos works best with [Nostos](https://nostos.page): drafts appear in the
 Nostos Writing Studio, and your highlights, notes and passages are searchable
 on the device, offline, and insert as live citations.
 

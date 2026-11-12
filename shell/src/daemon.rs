@@ -194,7 +194,7 @@ impl Backend {
     /// The pairing instruction line.
     pub fn pair_hint(self) -> &'static str {
         match self {
-            Self::Nostos => "Approve the code at nostos.app/pair.",
+            Self::Nostos => "Approve the code at app.nostos.page/pair.",
             Self::SelfHosted => "Approve the code on your server's page.",
             Self::GoogleDrive => "Enter the code at google.com/device.",
         }
@@ -1145,7 +1145,7 @@ impl DaemonClient for FakeDaemon {
             "nostos" => PairingInfo {
                 backend: backend.into(),
                 code: "K7Q-4MZ".into(),
-                approval_url: "https://nostos.app/pair".into(),
+                approval_url: "https://app.nostos.page/pair".into(),
                 expires_at: now_unix() + 600,
             },
             "self-hosted" => PairingInfo {

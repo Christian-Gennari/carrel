@@ -815,7 +815,7 @@ mod tests {
             topics: vec!["writing".into()],
             citation: Some(LibraryCitation {
                 markdown: format!("[The Quiet Hours, p. 41](nostos:cite/{id})"),
-                url: format!("https://nostos.app/library/{id}"),
+                url: format!("https://app.nostos.page/library/{book_id}"),
             }),
         }
     }

@@ -6,7 +6,7 @@ when the user starts a sync or pairing.
 
 ## Discovery
 
-- Nostos: base URL `https://api.nostos.app/stylos/v1` (configurable).
+- Nostos: base URL `https://app.nostos.page/stylos/v1` (configurable).
 - Self-hosted on LAN: mDNS service `_stylos._tcp`, TXT `v=1`, `name=<label>`.
 - Self-hosted via Tailscale or manual: the user enters a host name or URL.
 
@@ -15,7 +15,7 @@ when the user starts a sync or pairing.
 1. `POST /pair/start` `{ "device_name": "X250", "device_pubkey": "<ed25519>" }`
    → `{ "pair_id", "code": "K7Q-4MZ", "expires_at" }`.
 2. The device shows the code (and a QR with the approval URL).
-3. The user approves the code: on Nostos at `nostos.app/pair`, on
+3. The user approves the code: on Nostos at `app.nostos.page/pair`, on
    `stylos-server` at its web page (`/approve`).
 4. The device polls `GET /pair/{pair_id}` (every 2 s, max 10 min)
    → `{ "status": "pending" | "approved" | "expired", "token", "server_cert_sha256" }`.

@@ -88,12 +88,12 @@ mod tests {
         map.insert("a", Citation::new("Book, p. 1"));
         map.insert(
             "b",
-            Citation::new("Book, p. 2").with_url("https://nostos.app/q/2"),
+            Citation::new("Book, p. 2").with_url("https://nostos.example/q/2"),
         );
         assert_eq!(map.lookup("a"), Some(Citation::new("Book, p. 1")));
         assert_eq!(
             map.lookup("b").and_then(|c| c.url),
-            Some("https://nostos.app/q/2".to_string())
+            Some("https://nostos.example/q/2".to_string())
         );
         assert_eq!(map.lookup("missing"), None);
         assert_eq!(().lookup("a"), None);

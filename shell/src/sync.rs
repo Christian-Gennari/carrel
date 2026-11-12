@@ -768,7 +768,7 @@ mod tests {
         let mut state = SyncState::default();
         state.on_pair_info(info.clone());
         assert_eq!(state.code, "K7Q-4MZ");
-        assert!(state.qr_data().contains("nostos.app/pair"));
+        assert!(state.qr_data().contains("app.nostos.page/pair"));
         assert!(state.qr_data().contains("K7Q-4MZ"));
         assert_eq!(state.view, SyncView::Pairing);
 
