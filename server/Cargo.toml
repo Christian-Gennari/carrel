@@ -1,12 +1,12 @@
 [package]
-name = "stylos-server"
+name = "carrel-server"
 version.workspace = true
 edition.workspace = true
 license = "MIT"
-description = "Self-hosted Stylos sync server: plain Markdown, SQLite index, HTTPS, mDNS"
+description = "Self-hosted Carrel sync server: plain Markdown, SQLite index, HTTPS, mDNS"
 
 [[bin]]
-name = "stylos-server"
+name = "carrel-server"
 path = "src/main.rs"
 
 [dependencies]
@@ -22,7 +22,7 @@ rustls.workspace = true
 rustls-pemfile.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-stylos-protocol = { path = "../protocol" }
+carrel-protocol = { path = "../protocol" }
 tokio.workspace = true
 tokio-rustls.workspace = true
 tracing.workspace = true

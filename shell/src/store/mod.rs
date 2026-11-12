@@ -24,9 +24,9 @@ pub use text::EditOutOfRange;
 
 pub const DEFAULT_ROOT: &str = "/data/writing";
 
-/// The writing root: `STYLOS_WRITING_DIR`, else `/data/writing`.
+/// The writing root: `CARREL_WRITING_DIR`, else `/data/writing`.
 pub fn root_from_env() -> PathBuf {
-    std::env::var_os("STYLOS_WRITING_DIR")
+    std::env::var_os("CARREL_WRITING_DIR")
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
         .unwrap_or_else(|| PathBuf::from(DEFAULT_ROOT))
@@ -91,8 +91,8 @@ impl Store {
     pub fn open_with_policy(root: impl Into<PathBuf>, policy: SavePolicy) -> io::Result<Self> {
         let root = root.into();
         fs::create_dir_all(&root)?;
-        fs::create_dir_all(root.join(".stylos").join("journal"))?;
-        fs::create_dir_all(root.join(".stylos").join("trash"))?;
+        fs::create_dir_all(root.join(".carrel").join("journal"))?;
+        fs::create_dir_all(root.join(".carrel").join("trash"))?;
         Ok(Self {
             root: Arc::new(root),
             policy,
@@ -111,12 +111,12 @@ impl Store {
         self.policy
     }
 
-    pub fn stylos_dir(&self) -> PathBuf {
-        self.root.join(".stylos")
+    pub fn carrel_dir(&self) -> PathBuf {
+        self.root.join(".carrel")
     }
 
     pub fn journal_path(&self, rel: &Path) -> PathBuf {
-        self.stylos_dir()
+        self.carrel_dir()
             .join("journal")
             .join(document::journal_id(rel))
     }
@@ -249,7 +249,7 @@ impl Store {
         Ok(())
     }
 
-    /// Delete by moving into `.stylos/trash/`. Nothing is ever destroyed by
+    /// Delete by moving into `.carrel/trash/`. Nothing is ever destroyed by
     /// the shell, so a mistaken delete can still be recovered.
     pub fn delete(&self, rel: &Path) -> StoreResult<()> {
         let source = self.resolve(rel)?;
@@ -268,7 +268,7 @@ impl Store {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|duration| duration.as_millis().to_string())
             .unwrap_or_else(|_| "0".to_owned());
-        let trash_root = self.stylos_dir().join("trash");
+        let trash_root = self.carrel_dir().join("trash");
         let trash_dir = fsutil::unique_path(&trash_root, &stamp, "");
         fs::create_dir_all(&trash_dir)?;
 
@@ -343,18 +343,18 @@ impl Store {
             last_file: rel.map(|rel| rel.to_string_lossy().to_string()),
         };
         let json = serde_json::to_vec_pretty(&state).map_err(io::Error::other)?;
-        atomic_write(&self.stylos_dir().join("state.json"), &json)
+        atomic_write(&self.carrel_dir().join("state.json"), &json)
     }
 
     fn load_shell_state(&self) -> ShellState {
-        fs::read(self.stylos_dir().join("state.json"))
+        fs::read(self.carrel_dir().join("state.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()
     }
 
     pub fn load_stats(&self, today: &str) -> DailyStats {
-        let stats = fs::read(self.stylos_dir().join("stats.json"))
+        let stats = fs::read(self.carrel_dir().join("stats.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<DailyStats>(&bytes).ok())
             .unwrap_or_default();
@@ -370,7 +370,7 @@ impl Store {
 
     pub fn save_stats(&self, stats: &DailyStats) -> io::Result<()> {
         let json = serde_json::to_vec_pretty(stats).map_err(io::Error::other)?;
-        atomic_write(&self.stylos_dir().join("stats.json"), &json)
+        atomic_write(&self.carrel_dir().join("stats.json"), &json)
     }
 }
 
@@ -385,7 +385,7 @@ pub fn is_document_name(name: &str) -> bool {
 }
 
 /// Recursively list document paths under `dir`, with paths relative to the
-/// writing root. Hidden entries (including `.stylos`) are skipped.
+/// writing root. Hidden entries (including `.carrel`) are skipped.
 fn collect_files(dir: &Path, rel: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
     let read_dir = match fs::read_dir(dir) {
         Ok(read_dir) => read_dir,
@@ -438,7 +438,7 @@ mod tests {
     #[test]
     fn creates_expected_layout() {
         let (dir, store) = store();
-        assert!(dir.path().join(".stylos/journal").is_dir());
+        assert!(dir.path().join(".carrel/journal").is_dir());
         assert_eq!(store.root(), dir.path());
     }
 
@@ -447,7 +447,7 @@ mod tests {
         let (_dir, store) = store();
         assert!(store.resolve(Path::new("../x")).is_err());
         assert!(store.resolve(Path::new("/etc/passwd")).is_err());
-        assert!(store.resolve(Path::new(".stylos/journal/x")).is_err());
+        assert!(store.resolve(Path::new(".carrel/journal/x")).is_err());
         assert!(store.resolve(Path::new("chapter/../x")).is_err());
         assert!(store.resolve(Path::new("chapter/one.md")).is_ok());
     }
@@ -497,7 +497,7 @@ mod tests {
         assert!(!store.root().join("gone.md").exists());
         assert!(!store.journal_path(Path::new("gone.md")).exists());
 
-        let mut trash_entries = fs::read_dir(store.stylos_dir().join("trash"))
+        let mut trash_entries = fs::read_dir(store.carrel_dir().join("trash"))
             .unwrap()
             .map(|entry| entry.unwrap().path())
             .collect::<Vec<_>>();
@@ -536,7 +536,7 @@ mod tests {
         store.delete(Path::new("Novel")).unwrap();
         assert!(!store.root().join("Novel").exists());
         assert!(!journal.exists());
-        let trash = std::fs::read_dir(store.stylos_dir().join("trash"))
+        let trash = std::fs::read_dir(store.carrel_dir().join("trash"))
             .unwrap()
             .next()
             .unwrap()

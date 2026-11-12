@@ -1,10 +1,10 @@
-# Stylos rules
+# Carrel rules
 
 These ten rules decide every product question. A feature that breaks a rule
 does not ship.
 
 1. **One app owns the screen.** The compositor runs exactly one client:
-   `stylos-shell`. There is no desktop, launcher, browser, terminal or app
+   `carrel-shell`. There is no desktop, launcher, browser, terminal or app
    switching. VT switching is disabled.
 2. **The network is off unless the user starts a sync.** Wi-Fi radios are
    blocked (rfkill) at all other times. Nothing runs in the background on the
@@ -13,7 +13,7 @@ does not ship.
 3. **Nothing is lost.** No keystroke older than 1 second may be lost on a power
    cut, crash or kernel panic. Every past version is restorable.
 4. **Files are plain Markdown, and they can always leave.** User text lives as
-   `.md` files in normal folders. Any computer can read them without Stylos.
+   `.md` files in normal folders. Any computer can read them without Carrel.
    Export to a USB drive (Markdown, text, .docx, .odt, PDF, HTML, EPUB) works
    with no network and no account.
 5. **Fast to the cursor.** Under 2 s from lid open (resume). Under 10 s from
@@ -27,4 +27,4 @@ does not ship.
    boot opens a recovery menu. A writer never needs a shell.
 9. **No AI writes for the user.** The device never generates text.
 10. **If it needs a browser, it is not a feature.** Everything is done on the
-    device in `stylos-shell`, or on the other side (Nostos, the user's server).
+    device in `carrel-shell`, or on the other side (Nostos, the user's server).

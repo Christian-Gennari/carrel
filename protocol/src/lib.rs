@@ -1,4 +1,4 @@
-//! `stylos-protocol`: shared types and helpers for the Stylos sync protocol v1.
+//! `carrel-protocol`: shared types and helpers for the Carrel sync protocol v1.
 //!
 //! This crate is deliberately free of I/O, TLS, GTK and database code. It is
 //! licensed MIT so that other implementations (such as Nostos Cloud) can use it
@@ -25,7 +25,7 @@ pub use types::*;
 pub const PROTOCOL_VERSION: u32 = 1;
 
 /// mDNS service type announced by self-hosted servers.
-pub const MDNS_SERVICE_TYPE: &str = "_stylos._tcp.local.";
+pub const MDNS_SERVICE_TYPE: &str = "_carrel._tcp.local.";
 
 /// Largest file body accepted by a server, in bytes.
 ///

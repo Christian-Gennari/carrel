@@ -202,7 +202,10 @@ impl FirstRunPage {
         let intro = ui::hint("A quiet place to write. Four short answers, then the page.");
 
         let column = ui::column(640);
-        column.append(&ui::title("Stylos"));
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+        header.append(&ui::mark(34));
+        header.append(&ui::title("Carrel"));
+        column.append(&header);
         column.append(&intro);
         column.append(&step_title);
         column.append(&scroller);
@@ -327,7 +330,7 @@ impl FirstRunPage {
             state.choose(&mut settings)
         };
         if let Err(error) = self.settings.borrow().save(&self.root) {
-            eprintln!("stylos: could not save first-run settings: {error}");
+            eprintln!("carrel: could not save first-run settings: {error}");
         }
         match effect {
             FirstEffect::Redraw => self.refresh(),
@@ -341,7 +344,7 @@ impl FirstRunPage {
     fn finish(self: &Rc<Self>) {
         self.settings.borrow_mut().first_run_complete = true;
         if let Err(error) = self.settings.borrow().save(&self.root) {
-            eprintln!("stylos: could not save first-run settings: {error}");
+            eprintln!("carrel: could not save first-run settings: {error}");
         }
         self.nav.show_editor();
     }
@@ -349,7 +352,7 @@ impl FirstRunPage {
     fn finish_to_sync(self: &Rc<Self>, backend: Backend) {
         self.settings.borrow_mut().first_run_complete = true;
         if let Err(error) = self.settings.borrow().save(&self.root) {
-            eprintln!("stylos: could not save first-run settings: {error}");
+            eprintln!("carrel: could not save first-run settings: {error}");
         }
         self.sync.open_pairing(backend);
     }

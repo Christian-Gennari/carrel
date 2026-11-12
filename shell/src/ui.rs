@@ -7,7 +7,7 @@ use gtk::{glib, pango};
 /// The page itself: fills the window, carries the theme background.
 pub fn page() -> gtk::Box {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    page.add_css_class("stylos-page");
+    page.add_css_class("carrel-page");
     page.set_focusable(true);
     page
 }
@@ -29,6 +29,79 @@ pub fn title(text: &str) -> gtk::Label {
     label.set_xalign(0.0);
     label.add_css_class("screen-title");
     label
+}
+
+/// The Carrel mark ("c|": a round c and a text cursor), drawn with Cairo from
+/// the geometry in `brand/README.md`. It is one flat colour, the text colour
+/// of the theme (dark ink on Paper, soft white on Night), so it matches
+/// `brand/carrel-mark-monochrome-*.svg`. It is static: no animation.
+pub fn mark(height: i32) -> gtk::DrawingArea {
+    let width = (f64::from(height) * MARK_WIDTH / MARK_HEIGHT).round() as i32;
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(width);
+    area.set_content_height(height);
+    area.set_halign(gtk::Align::Start);
+    area.set_valign(gtk::Align::Center);
+    area.set_can_focus(false);
+    area.set_focusable(false);
+    area.set_accessible_role(gtk::AccessibleRole::Img);
+    area.update_property(&[gtk::accessible::Property::Label("Carrel mark")]);
+    area.set_draw_func(|area, context, width, height| {
+        let color = area.color();
+        context.set_source_rgba(
+            f64::from(color.red()),
+            f64::from(color.green()),
+            f64::from(color.blue()),
+            f64::from(color.alpha()),
+        );
+        draw_mark(context, f64::from(width), f64::from(height));
+    });
+    area
+}
+
+/// Size of the glyph without the tile, in the 1024 canvas of the SVG files.
+const MARK_WIDTH: f64 = 596.0;
+const MARK_HEIGHT: f64 = 480.0;
+
+/// Fill the mark so it fits in `width` x `height`, centred.
+fn draw_mark(context: &gtk::cairo::Context, width: f64, height: f64) {
+    let scale = (width / MARK_WIDTH).min(height / MARK_HEIGHT);
+    context.translate(
+        (width - MARK_WIDTH * scale) / 2.0,
+        (height - MARK_HEIGHT * scale) / 2.0,
+    );
+    context.scale(scale, scale);
+    // The glyph spans x 215..811 and y 276..756 on the canvas.
+    context.translate(-215.0, -276.0);
+
+    // The "c": outer circle (455, 516) r 240, counter (486, 484) r 142, with
+    // flat cuts at y 456 and y 576 on the right.
+    let outer = (455.0_f64, 516.0_f64, 240.0_f64);
+    let inner = (486.0_f64, 484.0_f64, 142.0_f64);
+    let angle = |circle: (f64, f64, f64), x: f64, y: f64| (y - circle.1).atan2(x - circle.0);
+    context.new_path();
+    context.move_to(687.38, 456.0);
+    context.arc_negative(
+        outer.0,
+        outer.1,
+        outer.2,
+        angle(outer, 687.38, 456.0),
+        angle(outer, 687.38, 576.0),
+    );
+    context.line_to(594.17, 576.0);
+    context.arc(
+        inner.0,
+        inner.1,
+        inner.2,
+        angle(inner, 594.17, 576.0),
+        angle(inner, 625.21, 456.0),
+    );
+    context.close_path();
+    let _ = context.fill();
+
+    // The cursor.
+    context.rectangle(745.0, 276.0, 66.0, 480.0);
+    let _ = context.fill();
 }
 
 pub fn hint(text: &str) -> gtk::Label {

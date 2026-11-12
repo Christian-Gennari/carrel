@@ -7,7 +7,7 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use stylos_shell::store::Store;
+use carrel_shell::store::Store;
 
 const ALPHABET: &[char] = &[
     'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's',
@@ -55,7 +55,7 @@ fn every_byte_acknowledged_one_second_before_sigkill_is_recovered() {
     let root = dir.path().join("writing");
     let store = Store::open(&root).unwrap();
     store.create_file(Path::new("crash.md")).unwrap();
-    let writer = env!("CARGO_BIN_EXE_stylos-crash-writer");
+    let writer = env!("CARGO_BIN_EXE_carrel-crash-writer");
 
     let mut random = 0x5e17_00d1_5eed_1234u64;
     let mut required_total = 0u64;

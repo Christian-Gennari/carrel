@@ -1,0 +1,56 @@
+#!/bin/sh
+# Prepare the data partition early in boot:
+#
+#   * /data/writing (owned by writer)
+#   * /var skeleton on first boot, then bind-mount /data/var over /var
+#   * overlayfs on /etc with the upper layer in /data/etc
+#
+# The root slots are read-only erofs, so anything systemd writes to /etc or
+# /var has to land on data.  Ordered before sysinit.target so journald and the
+# rest of the system see the persistent /var from their first write.
+set -eu
+
+log() {
+    echo "carrel-data-init: $*" >&2
+    echo "CARREL-DATA: $*" >>/dev/ttyS0 2>/dev/null || true
+}
+
+data=/data
+mkdir -p "$data/writing" "$data/var" "$data/etc" "$data/.etc-work" "$data/.carrel"
+chown 1000:1000 "$data/writing" 2>/dev/null || true
+chmod 0755 "$data/writing"
+# carreld runs as root and creates history.git; the shell runs as writer and
+# needs to write the journal, settings and stats next to it.  Create the
+# directory as writer before carreld starts, otherwise the daemon's root-owned
+# .carrel would lock the shell out.
+install -d -m 0755 -o 1000 -g 1000 "$data/writing/.carrel" \
+    "$data/writing/.carrel/journal" 2>/dev/null || true
+
+# First boot: copy the image's /var skeleton so dpkg, systemd and friends find
+# the directories they expect.  The copy happens before /var is covered.
+if [ -d /var ] && [ -z "$(ls -A "$data/var" 2>/dev/null || true)" ]; then
+    log "initialising /var on data"
+    cp -a /var/. "$data/var/" 2>/dev/null || true
+fi
+mkdir -p "$data/var/log/journal" "$data/var/lib/systemd" "$data/var/tmp"
+chmod 1777 "$data/var/tmp" 2>/dev/null || true
+
+if ! grep -qE '^[^ ]+ /var [^ ]+ ' /proc/mounts; then
+    if mount --bind "$data/var" /var; then
+        log "/var is on data"
+    else
+        log "could not bind /var, continuing with the read-only root"
+    fi
+fi
+
+if ! grep -q ' /etc overlay ' /proc/mounts; then
+    if mount -t overlay overlay \
+        -o "lowerdir=/etc,upperdir=$data/etc,workdir=$data/.etc-work" /etc
+    then
+        log "/etc overlay is on data"
+    else
+        log "could not mount the /etc overlay, continuing with the read-only root"
+    fi
+fi
+
+exit 0

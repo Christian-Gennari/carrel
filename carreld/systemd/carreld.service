@@ -1,0 +1,31 @@
+[Unit]
+Description=Carrel system daemon (history, sync, radio, battery)
+Documentation=file:///usr/share/doc/carrel
+# The writing tree lives on the data partition and must exist first.
+RequiresMountsFor=/data/writing
+ConditionPathExists=/data/writing
+After=dbus.service
+Wants=dbus.service
+
+[Service]
+Type=dbus
+BusName=page.nostos.Carrel.Daemon1
+ExecStart=/usr/bin/carreld run
+Restart=always
+RestartSec=2
+
+# carreld is the only process that writes the user's files.
+User=root
+Group=root
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+# /data holds writing, history and sync state; /run is used by logind.
+ReadWritePaths=/data /run
+# rfkill writes /sys/class/rfkill/*/soft, which needs CAP_NET_ADMIN.
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_CHOWN CAP_FOWNER
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target

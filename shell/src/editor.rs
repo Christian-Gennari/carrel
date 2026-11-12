@@ -91,7 +91,7 @@ impl EditorPage {
         view.set_auto_indent(false);
         view.set_tab_width(4);
         view.set_monospace(false);
-        view.add_css_class("stylos-editor");
+        view.add_css_class("carrel-editor");
 
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -145,7 +145,7 @@ impl EditorPage {
         }
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        widget.add_css_class("stylos-page");
+        widget.add_css_class("carrel-page");
         widget.append(&scroller);
         widget.append(&note);
         widget.append(&status);
@@ -205,7 +205,7 @@ impl EditorPage {
             let offset = location.offset().max(0) as usize;
             if let Some(doc) = page.doc.borrow().as_ref() {
                 if let Err(error) = doc.apply(offset, 0, text) {
-                    eprintln!("stylos: could not journal edit: {error}");
+                    eprintln!("carrel: could not journal edit: {error}");
                     page.save_error.set(true);
                 }
             }
@@ -224,7 +224,7 @@ impl EditorPage {
             let delete_len = (end.offset() - start.offset()).max(0) as usize;
             if let Some(doc) = page.doc.borrow().as_ref() {
                 if let Err(error) = doc.apply(offset, delete_len, "") {
-                    eprintln!("stylos: could not journal delete: {error}");
+                    eprintln!("carrel: could not journal delete: {error}");
                     page.save_error.set(true);
                 }
             }
@@ -309,7 +309,7 @@ impl EditorPage {
             }
             if key == gdk::Key::n {
                 if let Err(error) = self.create_new_file() {
-                    eprintln!("stylos: could not create file: {error}");
+                    eprintln!("carrel: could not create file: {error}");
                 }
                 return glib::Propagation::Stop;
             }
@@ -762,7 +762,7 @@ impl EditorPage {
 
         self.last_words.set(words);
         if let Err(error) = self.store.set_last_file(Some(rel)) {
-            eprintln!("stylos: could not remember last file: {error}");
+            eprintln!("carrel: could not remember last file: {error}");
         }
 
         let end = self.buffer.end_iter();
@@ -854,19 +854,19 @@ impl EditorPage {
         let target = match self.store.unique_rel_path(&dir, &title, "md") {
             Ok(target) => target,
             Err(error) => {
-                eprintln!("stylos: cannot name file: {error}");
+                eprintln!("carrel: cannot name file: {error}");
                 return;
             }
         };
 
         self.close_document();
         if let Err(error) = self.store.rename(&current, &target) {
-            eprintln!("stylos: cannot rename {}: {error}", current.display());
+            eprintln!("carrel: cannot rename {}: {error}", current.display());
             let _ = self.open_rel(&current);
             return;
         }
         if let Err(error) = self.open_rel(&target) {
-            eprintln!("stylos: cannot open {}: {error}", target.display());
+            eprintln!("carrel: cannot open {}: {error}", target.display());
         }
     }
 
@@ -874,7 +874,7 @@ impl EditorPage {
         if let Some(doc) = self.doc.borrow_mut().take() {
             if let Err(error) = doc.flush() {
                 eprintln!(
-                    "stylos: could not flush {}: {error}",
+                    "carrel: could not flush {}: {error}",
                     doc.rel_path().display()
                 );
             }
@@ -897,7 +897,7 @@ impl EditorPage {
     pub fn flush(&self) {
         if let Some(doc) = self.doc.borrow().as_ref() {
             if let Err(error) = doc.flush() {
-                eprintln!("stylos: flush failed: {error}");
+                eprintln!("carrel: flush failed: {error}");
                 self.save_error.set(true);
             }
         }
@@ -906,7 +906,7 @@ impl EditorPage {
 
     fn save_settings(&self) {
         if let Err(error) = self.settings.borrow().save(self.store.root()) {
-            eprintln!("stylos: could not save settings: {error}");
+            eprintln!("carrel: could not save settings: {error}");
         }
     }
 
@@ -920,7 +920,7 @@ impl EditorPage {
     pub fn save_stats(&self) {
         let stats = self.create_stats();
         if let Err(error) = self.store.save_stats(&stats) {
-            eprintln!("stylos: could not save word count: {error}");
+            eprintln!("carrel: could not save word count: {error}");
         }
         self.stats_saved_at.set(Instant::now());
     }
@@ -1102,40 +1102,40 @@ impl Tags {
             tag
         };
 
-        let bold = make("stylos-bold");
+        let bold = make("carrel-bold");
         bold.set_weight(700);
 
-        let italic = make("stylos-italic");
+        let italic = make("carrel-italic");
         italic.set_style(pango::Style::Italic);
 
-        let dim = make("stylos-dim");
+        let dim = make("carrel-dim");
         dim.set_foreground(Some(&palette.dim()));
 
-        let quote = make("stylos-quote");
+        let quote = make("carrel-quote");
         // A tag's left margin replaces the view's (32 px), so add the quote
         // indent to it; wrapped lines then line up with the first line.
         quote.set_left_margin(32 + 28);
 
-        let cite = make("stylos-cite");
+        let cite = make("carrel-cite");
         cite.set_scale(0.72);
         cite.set_rise(7);
         // Citation markers use the dim text colour, not the accent.
         cite.set_foreground(Some(&palette.dim()));
 
-        let cite_text = make("stylos-cite-text");
+        let cite_text = make("carrel-cite-text");
         cite_text.set_underline(pango::Underline::Single);
         cite_text.set_foreground(Some(&palette.dim()));
 
-        let hidden = make("stylos-cite-hidden");
+        let hidden = make("carrel-cite-hidden");
         hidden.set_invisible(true);
 
-        let focus = make("stylos-focus-dim");
+        let focus = make("carrel-focus-dim");
         focus.set_foreground_rgba(Some(&palette.focus_text()));
 
         let scales = [1.65, 1.45, 1.28, 1.18, 1.10, 1.05];
         let mut headings = Vec::new();
         for (index, scale) in scales.iter().enumerate() {
-            let tag = make(&format!("stylos-heading-{}", index + 1));
+            let tag = make(&format!("carrel-heading-{}", index + 1));
             tag.set_scale(*scale);
             tag.set_weight(700);
             tag.set_pixels_above_lines(if index < 2 { 18 } else { 12 });

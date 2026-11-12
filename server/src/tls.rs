@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
+use carrel_protocol::sha256_hex;
 use rcgen::{CertificateParams, DnType, KeyPair};
 use rustls::pki_types::PrivateKeyDer;
-use stylos_protocol::sha256_hex;
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
 
@@ -51,14 +51,14 @@ fn generate(dir: &Path, label: &str) -> Result<()> {
         names.push(hostname);
     }
     let dns_label = dns_label(label);
-    if dns_label != "stylos-server" && !names.contains(&dns_label) {
+    if dns_label != "carrel-server" && !names.contains(&dns_label) {
         names.push(dns_label);
     }
 
     let mut params = CertificateParams::new(names).context("build certificate parameters")?;
     params
         .distinguished_name
-        .push(DnType::CommonName, "Stylos Server");
+        .push(DnType::CommonName, "Carrel Server");
     params.is_ca = rcgen::IsCa::NoCa;
 
     let key_pair = KeyPair::generate().context("generate TLS key")?;
@@ -147,7 +147,7 @@ pub fn dns_label(label: &str) -> String {
     }
     let trimmed = out.trim_matches('-').to_string();
     if trimmed.is_empty() {
-        "stylos-server".to_string()
+        "carrel-server".to_string()
     } else {
         trimmed
     }
@@ -214,8 +214,8 @@ mod tests {
     #[test]
     fn dns_labels_are_safe() {
         assert_eq!(dns_label("My Study Server"), "my-study-server");
-        assert_eq!(dns_label("___"), "stylos-server");
-        assert_eq!(dns_label(""), "stylos-server");
+        assert_eq!(dns_label("___"), "carrel-server");
+        assert_eq!(dns_label(""), "carrel-server");
         assert_eq!(dns_label("a.b/c"), "abc");
     }
 }

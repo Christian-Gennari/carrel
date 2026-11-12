@@ -4,7 +4,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use stylos_export::{
+use carrel_export::{
     export, Citation, Error, ExportReport, ExportedFile, Format, MapCitations, Selection,
 };
 use tempfile::TempDir;
@@ -26,7 +26,7 @@ impl Fixture {
         let directory = tempfile::tempdir().unwrap();
         let writing = directory.path().join("writing");
         fs::create_dir_all(writing.join("Notes/Deep")).unwrap();
-        fs::create_dir_all(writing.join(".stylos")).unwrap();
+        fs::create_dir_all(writing.join(".carrel")).unwrap();
         fs::write(writing.join("Chapter one.md"), CHAPTER).unwrap();
         fs::write(
             writing.join("Notes/Reading list.md"),
@@ -35,7 +35,7 @@ impl Fixture {
         .unwrap();
         fs::write(writing.join("Notes/Deep").join(NESTED_FILE), CITATIONS).unwrap();
         fs::write(writing.join("Notes/cover.png"), b"png").unwrap();
-        fs::write(writing.join(".stylos/cache.md"), "not exported").unwrap();
+        fs::write(writing.join(".carrel/cache.md"), "not exported").unwrap();
         Self { directory, writing }
     }
 
@@ -75,7 +75,7 @@ fn assert_dated_folder(report: &ExportReport) {
         .and_then(OsStr::to_str)
         .expect("a dated folder name");
     let date = name
-        .strip_prefix("Stylos export ")
+        .strip_prefix("Carrel export ")
         .unwrap_or_else(|| panic!("unexpected export folder {name:?}"));
     assert_eq!(date.len(), 10, "{name:?}");
     let bytes = date.as_bytes();
@@ -129,7 +129,7 @@ fn exports_the_whole_tree_in_every_format() {
                 "{format}: wrong extension for {file:?}"
             );
             assert!(
-                !file.destination.to_string_lossy().contains(".stylos"),
+                !file.destination.to_string_lossy().contains(".carrel"),
                 "{format}: hidden state was exported"
             );
         }

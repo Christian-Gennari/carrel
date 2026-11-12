@@ -1,13 +1,13 @@
-# Stylos Sync Protocol v1
+# Carrel Sync Protocol v1
 
-HTTPS + JSON. Implemented by `stylos-server` and by Nostos Cloud. Types live
-in the `stylos-protocol` crate (MIT). A device is a client; it only ever talks
+HTTPS + JSON. Implemented by `carrel-server` and by Nostos Cloud. Types live
+in the `carrel-protocol` crate (MIT). A device is a client; it only ever talks
 when the user starts a sync or pairing.
 
 ## Discovery
 
-- Nostos: base URL `https://app.nostos.page/stylos/v1` (configurable).
-- Self-hosted on LAN: mDNS service `_stylos._tcp`, TXT `v=1`, `name=<label>`.
+- Nostos: base URL `https://app.nostos.page/carrel/v1` (configurable).
+- Self-hosted on LAN: mDNS service `_carrel._tcp`, TXT `v=1`, `name=<label>`.
 - Self-hosted via Tailscale or manual: the user enters a host name or URL.
 
 ## Pairing
@@ -16,10 +16,10 @@ when the user starts a sync or pairing.
    → `{ "pair_id", "code": "K7Q-4MZ", "expires_at" }`.
 2. The device shows the code (and a QR with the approval URL).
 3. The user approves the code: on Nostos at `app.nostos.page/pair`, on
-   `stylos-server` at its web page (`/approve`).
+   `carrel-server` at its web page (`/approve`).
 4. The device polls `GET /pair/{pair_id}` (every 2 s, max 10 min)
    → `{ "status": "pending" | "approved" | "expired", "token", "server_cert_sha256" }`.
-5. The device stores the token in `/data/.stylos/sync.toml` (mode 0600). For
+5. The device stores the token in `/data/.carrel/sync.toml` (mode 0600). For
    self-hosted servers it pins `server_cert_sha256` (self-signed is fine).
 
 All later requests: `Authorization: Bearer <token>`.
@@ -42,7 +42,7 @@ server) and has a `path` (relative, `/`-separated, `.md`). Content hash =
 
 ## Sync algorithm (client)
 
-1. `stylosd` commits local history.
+1. `carreld` commits local history.
 2. Pull: `GET /files?since=cursor`. For each remote change:
    - Local file unchanged since last sync → apply remote.
    - Local file also changed → conflict.
@@ -52,42 +52,42 @@ server) and has a `path` (relative, `/`-separated, `.md`). Content hash =
    version next to it as `name (conflict YYYY-MM-DD HHMM from <source>).md`,
    then push both. The Files screen marks conflict copies; the user deletes the
    one they do not want.
-5. Save the new cursor and per-file `rev` in `/data/.stylos/sync-state.sqlite`.
+5. Save the new cursor and per-file `rev` in `/data/.carrel/sync-state.sqlite`.
 
 ## Library (Nostos only)
 
 - `GET /library?since=<cursor>` → `{ "books": [...], "items": [ { id, kind:
   "highlight"|"note"|"passage", book_id, text, note, location, topics,
   citation: { markdown, url } } ], "deleted": [ids], "cursor" }`.
-- `stylos-server` returns `404` for `/library`; the device then shows "Quotes
+- `carrel-server` returns `404` for `/library`; the device then shows "Quotes
   need a Nostos account".
 
 ## Google Drive backend
 
 For users without Nostos or a server. Simplest safe model: a **one-way
 mirror**. The device is the source of truth; each sync uploads changed files
-to a `Stylos` folder in the user's Google Drive. Edits made in the Drive folder
+to a `Carrel` folder in the user's Google Drive. Edits made in the Drive folder
 do not come back (the Sync screen says so). Deleted files move to
-`Stylos/.deleted/` in the cloud, never hard-deleted.
+`Carrel/.deleted/` in the cloud, never hard-deleted.
 
 - Options: mirror Markdown (default), and optionally also a
   `.docx` copy of each file (made with the export pipeline), so the files open
   directly in Google Docs.
-- Implemented natively in `stylosd` (Rust, reqwest). No rclone, no browser on
+- Implemented natively in `carreld` (Rust, reqwest). No rclone, no browser on
   the device.
 - **Google Drive**: OAuth 2.0 **device authorization flow** ("TV and limited
   input devices" client). Scope `drive.file` only (the app sees only files it
   created; non-sensitive scope, no Google verification needed). The device
   shows a URL + short code + QR; the user approves on a phone. Upload with the
   Drive v3 API; keep a `path → file id` map in `sync-state.sqlite`.
-- OAuth client IDs come from `/usr/share/stylos/oauth.toml` (built into the
-  image; overridable in `/data/.stylos/oauth.toml` for self-builders).
+- OAuth client IDs come from `/usr/share/carrel/oauth.toml` (built into the
+  image; overridable in `/data/.carrel/oauth.toml` for self-builders).
 - More than one backend may be active (for example Nostos + Google Drive). Sync runs
   them in order in the same network session.
 
 ## Updates
 
-Not part of this protocol. sysupdate fetches signed payloads from the Stylos
+Not part of this protocol. sysupdate fetches signed payloads from the Carrel
 release URL during a sync session only.
 
 ## Error rules
@@ -96,15 +96,15 @@ release URL during a sync session only.
   on the Sync screen. No retries in the background.
 - Partial syncs are safe: every step is idempotent.
 
-### Google Cloud registration (done once, by the Stylos project)
+### Google Cloud registration (done once, by the Carrel project)
 
-- GCP project `stylos-514500`, Drive API enabled, consent screen "Stylos"
+- GCP project `carrel-514500`, Drive API enabled, consent screen "Carrel"
   (External), scope `drive.file`, OAuth client type "TVs and Limited Input
-  devices" named "Stylos device".
+  devices" named "Carrel device".
 - The client ID/secret are kept outside git, in
-  `~/.config/stylos/oauth.toml` on the build server. The image build copies
-  that file to `/usr/share/stylos/oauth.toml`.
-- Real-account test passed on 2026-11-12 (`stylosd gdrive-pair` + `gdrive-sync --docx`):
+  `~/.config/carrel/oauth.toml` on the build server. The image build copies
+  that file to `/usr/share/carrel/oauth.toml`.
+- Real-account test passed on 2026-11-12 (`carreld gdrive-pair` + `gdrive-sync --docx`):
   first mirror, no-op second sync, one edit, delete to `.deleted/`.
 - Status: **Testing** (owner account is a test user). Only listed test users can connect, and Google expires
   their refresh tokens after 7 days. Before a public release, publish the app

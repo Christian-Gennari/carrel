@@ -1,6 +1,6 @@
 use std::fs;
 
-use stylos_export::{import, Error};
+use carrel_export::{import, Error};
 
 #[test]
 fn imports_markdown_and_text_without_overwriting() {

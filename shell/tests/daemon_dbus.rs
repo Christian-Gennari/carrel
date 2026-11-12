@@ -1,12 +1,12 @@
-//! End-to-end test: the shell's zbus client talks to a real `stylosd` on a
+//! End-to-end test: the shell's zbus client talks to a real `carreld` on a
 //! private bus.
 //!
 //! The helper test at the bottom of this file is the daemon process. The main
-//! test re-executes this test binary with `STYLOS_TEST_DAEMON_HELPER=1` so the
+//! test re-executes this test binary with `CARREL_TEST_DAEMON_HELPER=1` so the
 //! child runs only that test, which calls the daemon's `run()` and stays
 //! alive; this is how a test can start the real service without a second
 //! binary. `dbus-daemon --session` acts as the system bus, exactly as in
-//! `stylosd/tests/daemon_dbus.rs`.
+//! `carreld/tests/daemon_dbus.rs`.
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
@@ -14,9 +14,9 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use stylos_protocol::{LibraryBook, LibraryItem, LibraryItemKind, LibraryPage};
-use stylos_shell::daemon::{DaemonClient, ZbusDaemon};
-use stylosd::library::LibraryCache;
+use carrel_protocol::{LibraryBook, LibraryItem, LibraryItemKind, LibraryPage};
+use carrel_shell::daemon::{DaemonClient, ZbusDaemon};
+use carreld::library::LibraryCache;
 
 struct KillOnDrop(Child);
 
@@ -69,18 +69,18 @@ fn start_daemon(writing: &Path, state: &Path, rfkill: &Path, address: &str) -> K
     let exe = std::env::current_exe().expect("the test binary");
     let child = Command::new(exe)
         .args(["--exact", "daemon_helper", "--nocapture"])
-        .env("STYLOS_TEST_DAEMON_HELPER", "1")
-        .env("STYLOS_WRITING_DIR", writing)
-        .env("STYLOS_STATE_DIR", state)
-        .env("STYLOS_DBUS_ADDRESS", address)
-        .env("STYLOS_DBUS_ANONYMOUS", "1")
+        .env("CARREL_TEST_DAEMON_HELPER", "1")
+        .env("CARREL_WRITING_DIR", writing)
+        .env("CARREL_STATE_DIR", state)
+        .env("CARREL_DBUS_ADDRESS", address)
+        .env("CARREL_DBUS_ANONYMOUS", "1")
         // No /sys in the test: an empty rfkill directory means "no radio".
-        .env("STYLOS_RFKILL_DIR", rfkill)
-        .env("RUST_LOG", "stylosd=warn")
+        .env("CARREL_RFKILL_DIR", rfkill)
+        .env("RUST_LOG", "carreld=warn")
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
         .spawn()
-        .expect("start the helper test as stylosd");
+        .expect("start the helper test as carreld");
     KillOnDrop(child)
 }
 
@@ -98,7 +98,7 @@ fn the_shell_client_commits_and_reads_history_through_the_real_daemon() {
 
     // A paired account with one synced quote, so the shell's client can read
     // the library through the real D-Bus interface.
-    stylosd::SyncConfig {
+    carreld::SyncConfig {
         server_url: "https://nostos.example/v1".into(),
         token: "token".into(),
         cert_sha256: None,
@@ -153,7 +153,7 @@ fn the_shell_client_commits_and_reads_history_through_the_real_daemon() {
     }
     assert!(
         committed,
-        "stylosd never accepted Commit on the private bus"
+        "carreld never accepted Commit on the private bus"
     );
 
     let versions = daemon.history("note.md").expect("History over D-Bus");
@@ -215,22 +215,22 @@ fn the_shell_client_commits_and_reads_history_through_the_real_daemon() {
 /// Runs only in the child process started by the test above.
 #[test]
 fn daemon_helper() {
-    if std::env::var_os("STYLOS_TEST_DAEMON_HELPER").is_none() {
+    if std::env::var_os("CARREL_TEST_DAEMON_HELPER").is_none() {
         return;
     }
-    let writing = std::env::var("STYLOS_WRITING_DIR").expect("STYLOS_WRITING_DIR");
-    let state = std::env::var("STYLOS_STATE_DIR").expect("STYLOS_STATE_DIR");
+    let writing = std::env::var("CARREL_WRITING_DIR").expect("CARREL_WRITING_DIR");
+    let state = std::env::var("CARREL_STATE_DIR").expect("CARREL_STATE_DIR");
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .expect("tokio runtime");
     runtime
         .block_on(async {
-            stylosd::dbus::run(stylosd::dbus::RunConfig {
+            carreld::dbus::run(carreld::dbus::RunConfig {
                 writing_dir: writing.into(),
                 state_dir: state.into(),
             })
             .await
         })
-        .expect("run stylosd");
+        .expect("run carreld");
 }

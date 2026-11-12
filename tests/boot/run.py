@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Boot and install the Stylos image in QEMU.
+"""Boot and install the Carrel image in QEMU.
 
 Scenarios (all run by `make test-boot`):
 
@@ -16,10 +16,10 @@ Scenarios (all run by `make test-boot`):
   secureboot boot the image, install it to a blank disk and boot the installed
              disk, all in QEMU with OVMF's Microsoft keys enrolled and Secure
              Boot enforcing (shim -> Debian systemd-boot -> Debian kernel);
-             assert the installer made Stylos the first UEFI boot entry
+             assert the installer made Carrel the first UEFI boot entry
   update-secureboot  update + forced rollback on the Secure Boot install
   release    flash the release .img.xz onto a fresh, larger virtual USB disk,
-             try Stylos from it on UEFI, UEFI Secure Boot and BIOS
+             try Carrel from it on UEFI, UEFI Secure Boot and BIOS
 
 Only the Python standard library and the tools in dev/Dockerfile are used.
 """
@@ -371,7 +371,7 @@ class Qemu:
     def _command(self) -> list[str]:
         cmd = [
             "qemu-system-x86_64",
-            "-name", f"stylos-{self.name}",
+            "-name", f"carrel-{self.name}",
             "-machine",
             "q35,accel=kvm:tcg" + (",smm=on" if self.secure else ""),
             "-m", "2048",
@@ -584,7 +584,7 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
     esp = part_typed(parts, ESP_GUID)
     bios = part_typed(parts, BIOS_BOOT_GUID)
     roots = sorted(
-        (p for p in parts if p["name"].startswith("stylos-root-")),
+        (p for p in parts if p["name"].startswith("carrel-root-")),
         key=lambda p: p["first"],
     )
     if len(roots) != 2:
@@ -595,7 +595,7 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
     verity_b = part_by_uuid(parts, HASH_B_UUID)
     sig_a = part_by_uuid(parts, SIG_A_UUID)
     sig_b = part_by_uuid(parts, SIG_B_UUID)
-    data = part_named(parts, "stylos-data")
+    data = part_named(parts, "carrel-data")
 
     expect(esp["type"] == ESP_GUID, "ESP type is wrong", failures)
     expect(bios["size"] >= 1024 * 1024, "BIOS boot partition is too small", failures)
@@ -625,52 +625,52 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         work = out / "test" / "esp-check"
         work.mkdir(parents=True, exist_ok=True)
         # Debian's signed binaries, unchanged.  shim is BOOTX64.EFI on
-        # removable media and under EFI/stylos for the firmware boot entry;
+        # removable media and under EFI/carrel for the firmware boot entry;
         # systemd-boot is shim's second stage (grubx64.efi).
-        for directory in ("EFI/BOOT", "EFI/stylos"):
+        for directory in ("EFI/BOOT", "EFI/carrel"):
             for name in ("grubx64.efi", "mmx64.efi"):
                 path = boot / directory / name
                 expect(path.is_file() and path.stat().st_size > 50 * 1024,
                        f"ESP is missing {directory}/{name}", failures)
                 expect(path.is_file() and pe_is_signed(path),
                        f"{directory}/{name} is not signed", failures)
-        shim = boot / "EFI/stylos/shimx64.efi"
+        shim = boot / "EFI/carrel/shimx64.efi"
         expect(shim.is_file() and shim.stat().st_size > 500 * 1024,
-               "ESP is missing EFI/stylos/shimx64.efi", failures)
+               "ESP is missing EFI/carrel/shimx64.efi", failures)
         expect(shim.is_file() and pe_is_signed(shim), "shim is not signed", failures)
         expect((boot / "EFI/BOOT/BOOTX64.EFI").is_file()
                and (boot / "EFI/BOOT/BOOTX64.EFI").read_bytes() == shim.read_bytes(),
                "EFI/BOOT/BOOTX64.EFI is not shim", failures)
         expect((boot / "EFI/BOOT/grubx64.efi").is_file()
                and (boot / "EFI/BOOT/grubx64.efi").read_bytes()
-               == (boot / "EFI/stylos/grubx64.efi").read_bytes(),
-               "the removable-media second stage differs from EFI/stylos", failures)
+               == (boot / "EFI/carrel/grubx64.efi").read_bytes(),
+               "the removable-media second stage differs from EFI/carrel", failures)
         expect(not any((boot / "EFI/Linux").glob("*.efi")) if (boot / "EFI/Linux").exists()
                else True, "the ESP still has self-signed UKIs", failures)
-        for name in ("stylos-a.conf", "stylos-recovery.conf"):
+        for name in ("carrel-a.conf", "carrel-recovery.conf"):
             expect((boot / "loader/entries" / name).is_file(),
                    f"ESP is missing the {name} boot entry", failures)
         loader = (boot / "loader/loader.conf").read_text()
-        expect("default stylos-a.conf" in loader, "loader.conf does not default to slot A",
+        expect("default carrel-a.conf" in loader, "loader.conf does not default to slot A",
                failures)
         expect("editor no" in loader, "loader.conf does not disable the editor", failures)
         grub = (boot / "grub/grub.cfg").read_text()
-        expect("Stylos recovery" in grub, "GRUB menu has no recovery entry", failures)
-        expect("stylos_tries" in grub and "save_env --file /grub/grubenv" in grub,
+        expect("Carrel recovery" in grub, "GRUB menu has no recovery entry", failures)
+        expect("carrel_tries" in grub and "save_env --file /grub/grubenv" in grub,
                "GRUB menu has no boot counter", failures)
         expect("$((" not in grub, "GRUB menu uses unsupported arithmetic", failures)
-        expect("roothash=${stylos_a_roothash}" in grub,
+        expect("roothash=${carrel_a_roothash}" in grub,
                "GRUB slot A has no verity root hash", failures)
-        expect("roothash=${stylos_b_roothash}" in grub,
+        expect("roothash=${carrel_b_roothash}" in grub,
                "GRUB slot B has no verity root hash", failures)
-        kernels = list((boot / "stylos").glob("*/vmlinuz"))
+        kernels = list((boot / "carrel").glob("*/vmlinuz"))
         expect(bool(kernels), "ESP has no kernel for the boot entries", failures)
         # The kernel is Debian's signed kernel: shim verifies it for
         # systemd-boot.
         expect(all(pe_is_signed(kernel) for kernel in kernels),
                "the kernel is not signed", failures)
 
-        entry = boot / "loader/entries/stylos-a.conf"
+        entry = boot / "loader/entries/carrel-a.conf"
         cmdline = entry_options(entry)
         expect("roothash=" in cmdline, "slot A entry has no roothash=", failures)
         expect("systemd.verity_root_data=PARTUUID=11111111" in cmdline,
@@ -685,7 +685,7 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
             ["grub-editenv", grubenv, "list"],
             check=True, capture_output=True, text=True,
         ).stdout
-        expect("stylos_a_roothash=" in env and "stylos_b_roothash=" in env,
+        expect("carrel_a_roothash=" in env and "carrel_b_roothash=" in env,
                "grubenv has no per-slot verity root hashes", failures)
 
     # Root-A: the real product.
@@ -699,8 +699,8 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         return extracted / path.lstrip("/")
 
     for binary, minimum in (
-        ("/usr/bin/stylos-shell", 500 * 1024),
-        ("/usr/bin/stylosd", 5 * 1024**2),
+        ("/usr/bin/carrel-shell", 500 * 1024),
+        ("/usr/bin/carreld", 5 * 1024**2),
         ("/usr/bin/pandoc", 1024),
         ("/usr/bin/typst", 1024),
         ("/usr/bin/cage", 1024),
@@ -712,50 +712,50 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
             expect(path.read_bytes()[:4] == b"\x7fELF", f"{binary} is not an ELF", failures)
 
     # The Rust shell links GtkSourceView 5, not the placeholder.
-    expect(b"libgtksourceview-5" in root_file("/usr/bin/stylos-shell").read_bytes(),
-           "stylos-shell does not link GtkSourceView 5", failures)
+    expect(b"libgtksourceview-5" in root_file("/usr/bin/carrel-shell").read_bytes(),
+           "carrel-shell does not link GtkSourceView 5", failures)
 
     for path in (
-        "/usr/lib/systemd/system/stylosd.service",
-        "/usr/share/dbus-1/system.d/org.stylos.Daemon1.conf",
-        "/usr/lib/stylos/installer",
-        "/usr/lib/stylos/recovery",
-        "/usr/lib/stylos/apply-update",
-        "/usr/lib/stylos/boot-complete",
-        "/usr/lib/stylos/data-init",
-        "/usr/lib/stylos/grow-data",
-        "/usr/lib/stylos/sysupdate/root.transfer",
-        "/usr/lib/stylos/sysupdate/verity.transfer",
-        "/usr/lib/stylos/sysupdate/sig.transfer",
-        "/usr/lib/stylos/sysupdate/entry-a.transfer",
-        "/usr/lib/stylos/sysupdate/entry-b.transfer",
-        "/usr/lib/stylos/repart-grow/50-data.conf",
-        "/usr/lib/stylos/update-url",
+        "/usr/lib/systemd/system/carreld.service",
+        "/usr/share/dbus-1/system.d/page.nostos.Carrel.Daemon1.conf",
+        "/usr/lib/carrel/installer",
+        "/usr/lib/carrel/recovery",
+        "/usr/lib/carrel/apply-update",
+        "/usr/lib/carrel/boot-complete",
+        "/usr/lib/carrel/data-init",
+        "/usr/lib/carrel/grow-data",
+        "/usr/lib/carrel/sysupdate/root.transfer",
+        "/usr/lib/carrel/sysupdate/verity.transfer",
+        "/usr/lib/carrel/sysupdate/sig.transfer",
+        "/usr/lib/carrel/sysupdate/entry-a.transfer",
+        "/usr/lib/carrel/sysupdate/entry-b.transfer",
+        "/usr/lib/carrel/repart-grow/50-data.conf",
+        "/usr/lib/carrel/update-url",
         "/usr/lib/systemd/import-pubring.gpg",
-        "/usr/share/stylos/keys/verity.crt",
-        "/usr/lib/systemd/system/stylos-online-update-test.service",
-        "/usr/lib/stylos/online-update-test",
+        "/usr/share/carrel/keys/verity.crt",
+        "/usr/lib/systemd/system/carrel-online-update-test.service",
+        "/usr/lib/carrel/online-update-test",
     ):
         expect(root_file(path).exists(), f"missing {path}", failures)
-    update_url = root_file("/usr/lib/stylos/update-url").read_text().strip()
+    update_url = root_file("/usr/lib/carrel/update-url").read_text().strip()
     expect(update_url.startswith("http"), f"update URL is not a URL: {update_url!r}", failures)
     expect(root_file("/usr/lib/systemd/import-pubring.gpg").stat().st_size > 100,
            "the update public keyring is empty", failures)
 
-    enabled = root_file("/etc/systemd/system/multi-user.target.wants/stylosd.service")
-    expect(enabled.is_symlink() or enabled.exists(), "stylosd.service is not enabled", failures)
+    enabled = root_file("/etc/systemd/system/multi-user.target.wants/carreld.service")
+    expect(enabled.is_symlink() or enabled.exists(), "carreld.service is not enabled", failures)
 
-    session = root_file("/etc/systemd/system/stylos-session.service").read_text()
+    session = root_file("/etc/systemd/system/carrel-session.service").read_text()
     exec_line = next(
         (line.strip() for line in session.splitlines() if line.startswith("ExecStart=")),
         "",
     )
     expect(
         re.fullmatch(
-            r"ExecStart=/usr/bin/cage(?: -[a-z]+)* -- /usr/bin/stylos-shell",
+            r"ExecStart=/usr/bin/cage(?: -[a-z]+)* -- /usr/bin/carrel-shell",
             exec_line,
         ) is not None,
-        f"session does not start cage with stylos-shell: {exec_line!r}",
+        f"session does not start cage with carrel-shell: {exec_line!r}",
         failures,
     )
     expect(" -s" not in exec_line, "session passes cage -s (VT switching)", failures)
@@ -795,7 +795,7 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
     writing = root_file("/data/writing")
     expect(writing.is_dir(), "/data/writing is missing", failures)
 
-    oauth = root_file("/usr/share/stylos/oauth.toml")
+    oauth = root_file("/usr/share/carrel/oauth.toml")
     if oauth.exists():
         print("image: oauth.toml present", flush=True)
     else:
@@ -809,10 +809,10 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         expect(result.returncode == 0, "root-b is not a valid erofs image", failures)
 
     for name in (
-        "payload/stylos-root-0.2.0.raw",
-        "payload/stylos-verity-0.2.0.raw",
-        "payload/stylos-verity-sig-0.2.0.sig",
-        "payload/stylos-b-0.2.0.conf",
+        "payload/carrel-root-0.2.0.raw",
+        "payload/carrel-verity-0.2.0.raw",
+        "payload/carrel-verity-sig-0.2.0.sig",
+        "payload/carrel-b-0.2.0.conf",
         "README",
     ):
         expect((update_dir / name).exists(), f"missing update fixture {name}", failures)
@@ -821,8 +821,8 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
     work = out / "test" / "verity-check"
     work.mkdir(parents=True, exist_ok=True)
     with mounted(image, esp, "vfat", root=out / "test") as boot:
-        cmdline = entry_options(boot / "loader/entries/stylos-a.conf")
-        root_b_hash = grubenv_get(boot / "grub/grubenv", "stylos_b_roothash")
+        cmdline = entry_options(boot / "loader/entries/carrel-a.conf")
+        root_b_hash = grubenv_get(boot / "grub/grubenv", "carrel_b_roothash")
     match = re.search(r"roothash=([0-9a-f]{64})", cmdline)
     if not match:
         failures.append("cannot read the root hash from the slot A entry")
@@ -864,10 +864,10 @@ def runtime_check(qemu: Qemu) -> None:
         # boot-complete reads the SecureBoot EFI variable the kernel exposes.
         # Without Secure Boot the firmware has no SecureBoot variable at all.
         if qemu.secure:
-            expect("STYLOS-BOOT: secureboot=1" in text,
+            expect("CARREL-BOOT: secureboot=1" in text,
                    "the firmware's Secure Boot state is not 1", failures)
         else:
-            expect("STYLOS-BOOT: secureboot=1" not in text,
+            expect("CARREL-BOOT: secureboot=1" not in text,
                    "Secure Boot is unexpectedly on", failures)
         if qemu.secure:
             expect("EFI stub: UEFI Secure Boot is enabled." in text,
@@ -888,35 +888,48 @@ def runtime_check(qemu: Qemu) -> None:
     expect("Started systemd-timesyncd.service" not in text,
            "systemd-timesyncd started", failures)
     expect("Kernel panic" not in text, "kernel panic", failures)
-    expect(text.count("Started stylos-session.service") == 1,
-           "stylos-session started more than once", failures)
+    expect(text.count("Started carrel-session.service") == 1,
+           "carrel-session started more than once", failures)
     expect("Reached target graphical.target" in text,
            "graphical.target was not reached", failures)
-    expect("Started stylosd.service" in text, "stylosd did not start", failures)
-    expect("Finished stylos-rfkill.service" in text, "stylos-rfkill did not run", failures)
-    expect("Finished stylos-grow-data.service" in text,
-           "stylos-grow-data did not finish", failures)
-    expect("STYLOS-DATA: /var is on data" in text, "/var is not on data", failures)
-    expect("STYLOS-DATA: /etc overlay is on data" in text,
+    expect("Started carreld.service" in text, "carreld did not start", failures)
+    expect("Finished carrel-rfkill.service" in text, "carrel-rfkill did not run", failures)
+    expect("Finished carrel-grow-data.service" in text,
+           "carrel-grow-data did not finish", failures)
+    expect("CARREL-DATA: /var is on data" in text, "/var is not on data", failures)
+    expect("CARREL-DATA: /etc overlay is on data" in text,
            "/etc overlay is not on data", failures)
-    expect(re.search(r"STYLOS-BOOT: slot [ab] marked good", text) is not None,
+    expect(re.search(r"CARREL-BOOT: slot [ab] marked good", text) is not None,
            "the running slot was not marked good (boot-complete failed)", failures)
     if failures:
         raise BootError("; ".join(failures))
 
 
 def boot_to_editor(qemu: Qemu, timeout: float, *, first_run: bool = False) -> None:
-    qemu.wait(r"Started stylos-session\.service", timeout)
+    qemu.wait(r"Started carrel-session\.service", timeout)
     # Mark-good is pulled in by graphical.target and ordered after the session,
     # so it logs before the target itself is reached.
-    qemu.wait(r"STYLOS-BOOT: slot [ab] marked good", timeout)
+    qemu.wait(r"CARREL-BOOT: slot [ab] marked good", timeout)
     qemu.wait(r"Reached target graphical\.target", timeout)
     time.sleep(3)  # let GTK draw the first frame
     if first_run:
-        # Language, keyboard, time zone, "Connect sync? Not now".
-        for _ in range(4):
-            qemu.key("ret")
-            time.sleep(0.8)
+        # Language, keyboard, time zone, "Connect sync? Not now": answer each
+        # step with Enter, but look at the screen first.  A key sent while the
+        # shell is still busy can be lost, and a blind count of four then
+        # leaves the device on a first-run step instead of the editor.
+        with tempfile.TemporaryDirectory(prefix="first-run-") as scratch:
+            shot = Path(scratch) / "screen.png"
+            for _ in range(12):
+                qemu.screenshot(shot)
+                text = ocr(shot)
+                if not re.search(
+                        r"short answers|Language|Keyboard|Time zone|Connect sync",
+                        text):
+                    break
+                qemu.key("ret")
+                time.sleep(1.5)
+            else:
+                raise BootError("first run did not finish after 12 answers")
         time.sleep(4)
     time.sleep(2)
 
@@ -942,7 +955,7 @@ def scenario_boot(mode: str, image: Path, out: Path, timeout: float,
         boot_to_editor(qemu, timeout, first_run=True)
         runtime_check(qemu)
         # Type one line so the screenshot shows the real editor (and proves
-        # that QMP keyboard input reaches stylos-shell).
+        # that QMP keyboard input reaches carrel-shell).
         qemu.type_text("The quiet morning")
         time.sleep(1.5)
         shot = qemu.screenshot(out / f"screenshot-{label}.png")
@@ -955,7 +968,7 @@ def scenario_boot(mode: str, image: Path, out: Path, timeout: float,
 
 
 def wait_installer(qemu: Qemu, marker: str, timeout: float = 600.0) -> None:
-    qemu.wait(rf"STYLOS-INSTALLER: {re.escape(marker)}", timeout)
+    qemu.wait(rf"CARREL-INSTALLER: {re.escape(marker)}", timeout)
 
 
 def scenario_install(image: Path, out: Path, timeout: float,
@@ -985,25 +998,25 @@ def scenario_install(image: Path, out: Path, timeout: float,
         installer_log = qemu.text()
         qemu.stop()
 
-    # The installer must have made Stylos the first UEFI boot entry.
-    match = re.search(r"UEFI boot entry Stylos is first \(Boot([0-9A-Fa-f]{4})\)",
+    # The installer must have made Carrel the first UEFI boot entry.
+    match = re.search(r"UEFI boot entry Carrel is first \(Boot([0-9A-Fa-f]{4})\)",
                       installer_log)
     if not match:
-        raise BootError("the installer did not register a Stylos UEFI boot entry")
+        raise BootError("the installer did not register a Carrel UEFI boot entry")
     entry = match.group(1).upper()
     if not re.search(rf"BootOrder: {entry}\b", installer_log):
-        raise BootError(f"Boot{entry} (Stylos) is not first in BootOrder")
-    if not re.search(rf"Boot{entry}\* Stylos.*\\EFI\\stylos\\shimx64\.efi",
+        raise BootError(f"Boot{entry} (Carrel) is not first in BootOrder")
+    if not re.search(rf"Boot{entry}\* Carrel.*\\EFI\\carrel\\shimx64\.efi",
                      installer_log, re.IGNORECASE):
-        raise BootError("the Stylos boot entry does not point at shim")
+        raise BootError("the Carrel boot entry does not point at shim")
 
     parts = read_gpt(target)
-    data = part_named(parts, "stylos-data")
+    data = part_named(parts, "carrel-data")
     if data["size"] < 10 * 1024**3:
         raise BootError(f"installer did not grow data: {data['size'] // 1024**3} GiB")
 
     # Boot the installed disk without the USB stick, with the firmware
-    # variables the installer wrote (so the Stylos entry is used).
+    # variables the installer wrote (so the Carrel entry is used).
     installed = "installed-secureboot" if secure else "installed"
     nvram = out / "test" / label / "OVMF_VARS.fd"
     with Qemu(installed, out, "uefi", [{"path": target, "format": "raw"}],
@@ -1022,7 +1035,7 @@ def scenario_install(image: Path, out: Path, timeout: float,
 def scenario_recovery(disk: Path, out: Path, timeout: float) -> None:
     parts = read_gpt(disk)
     esp = part_typed(parts, ESP_GUID)
-    data = part_named(parts, "stylos-data")
+    data = part_named(parts, "carrel-data")
     loader_path = "loader/loader.conf"
     note = "Recovery note\n\nThis must reach the USB drive.\n"
     with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
@@ -1034,21 +1047,21 @@ def scenario_recovery(disk: Path, out: Path, timeout: float) -> None:
     with mounted(disk, esp, "vfat", writable=True, root=out / "test") as boot:
         loader = boot / loader_path
         original = loader.read_text()
-        loader.write_text("default stylos-recovery.conf\ntimeout 2\neditor no\n")
+        loader.write_text("default carrel-recovery.conf\ntimeout 2\neditor no\n")
     try:
         with Qemu("recovery", out, "uefi", [{"path": disk, "format": "raw"}],
                   usb={"path": usb, "format": "raw"}) as qemu:
-            qemu.wait(r"STYLOS-RECOVERY: menu", timeout)
+            qemu.wait(r"CARREL-RECOVERY: menu", timeout)
             time.sleep(3)  # whiptail draws over the last kernel console lines
             qemu.screenshot(out / "screenshot-recovery.png", light=False)
-            if "Started stylos-session.service" in qemu.text():
+            if "Started carrel-session.service" in qemu.text():
                 raise BootError("the session started while booted into recovery")
             # Menu: Boot previous, Copy writing, Reset settings, Power off.
             qemu.key("down")
             qemu.key("ret")
             time.sleep(2)  # the disk menu is drawn by whiptail
             qemu.key("ret")
-            qemu.wait(r"STYLOS-RECOVERY: copied to", 180)
+            qemu.wait(r"CARREL-RECOVERY: copied to", 180)
             time.sleep(1)
             qemu.screenshot(out / "screenshot-recovery-copy.png", light=False)
             qemu.stop()
@@ -1072,14 +1085,14 @@ def scenario_powercut(disk: Path, out: Path, timeout: float) -> None:
         qemu.type_text("hello power cut")
         time.sleep(2.5)  # journal fdatasync is at most 1 s behind
         qemu.reset()
-        qemu.wait_fresh(r"stylos\.slot=a", timeout)
-        qemu.wait(r"Started stylos-session\.service", timeout)
+        qemu.wait_fresh(r"carrel\.slot=a", timeout)
+        qemu.wait(r"Started carrel-session\.service", timeout)
         time.sleep(8)  # replay the journal and autosave after 5 s idle
         qemu.screenshot(out / "screenshot-powercut-recovered.png")
         qemu.powerdown()
 
     parts = read_gpt(disk)
-    data = part_named(parts, "stylos-data")
+    data = part_named(parts, "carrel-data")
     found = []
     with mounted(disk, data, "ext4", root=out / "test") as root:
         for path in (root / "writing").rglob("*"):
@@ -1092,9 +1105,9 @@ def scenario_powercut(disk: Path, out: Path, timeout: float) -> None:
 
 def stage_update(disk: Path, update_dir: Path, out: Path) -> None:
     parts = read_gpt(disk)
-    data = part_named(parts, "stylos-data")
+    data = part_named(parts, "carrel-data")
     with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
-        payload = root / ".stylos" / "update" / "payload"
+        payload = root / ".carrel" / "update" / "payload"
         payload.mkdir(parents=True, exist_ok=True)
         for source in sorted((update_dir / "payload").iterdir()):
             destination = payload / source.name
@@ -1105,16 +1118,16 @@ def stage_update(disk: Path, update_dir: Path, out: Path) -> None:
 
 def clear_update(disk: Path, out: Path) -> None:
     parts = read_gpt(disk)
-    data = part_named(parts, "stylos-data")
+    data = part_named(parts, "carrel-data")
     with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
-        shutil.rmtree(root / ".stylos" / "update", ignore_errors=True)
+        shutil.rmtree(root / ".carrel" / "update", ignore_errors=True)
 
 
 def prepare_online_update(disk: Path, url: str, out: Path) -> None:
     parts = read_gpt(disk)
-    data = part_named(parts, "stylos-data")
+    data = part_named(parts, "carrel-data")
     with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
-        update = root / ".stylos" / "update"
+        update = root / ".carrel" / "update"
         shutil.rmtree(update, ignore_errors=True)
         update.mkdir(parents=True)
         (update / "test-url").write_text(url + "\n")
@@ -1151,11 +1164,11 @@ def scenario_online_update(disk: Path, release_dir: Path, out: Path,
             prepare_online_update(disk, f"http://10.0.2.2:{bad_port}/", out)
             with Qemu("online-bad", out, "uefi",
                       [{"path": disk, "format": "raw"}], network=True) as qemu:
-                qemu.wait(r"STYLOS-TEST-UPDATE: rejected", timeout)
-                qemu.wait(r"Started stylos-session\.service", timeout)
-                if "STYLOS-TEST-UPDATE: applying" in qemu.text():
+                qemu.wait(r"CARREL-TEST-UPDATE: rejected", timeout)
+                qemu.wait(r"Started carrel-session\.service", timeout)
+                if "CARREL-TEST-UPDATE: applying" in qemu.text():
                     raise BootError("a bad update signature was applied")
-                if "stylos.slot=b" in qemu.text():
+                if "carrel.slot=b" in qemu.text():
                     raise BootError("a bad update signature switched the boot slot")
                 time.sleep(5)
                 qemu.screenshot(out / "screenshot-online-bad-signature.png")
@@ -1165,11 +1178,11 @@ def scenario_online_update(disk: Path, release_dir: Path, out: Path,
             prepare_online_update(disk, f"http://10.0.2.2:{good_port}/", out)
             with Qemu("online-good", out, "uefi",
                       [{"path": disk, "format": "raw"}], network=True) as qemu:
-                qemu.wait(r"STYLOS-TEST-UPDATE: ready", timeout)
-                qemu.wait(r"STYLOS-TEST-UPDATE: applying", timeout)
-                qemu.wait(r"stylos\.slot=b", timeout)
-                qemu.wait(r"Started stylos-session\.service", timeout)
-                qemu.wait(r"STYLOS-BOOT: slot b marked good", timeout)
+                qemu.wait(r"CARREL-TEST-UPDATE: ready", timeout)
+                qemu.wait(r"CARREL-TEST-UPDATE: applying", timeout)
+                qemu.wait(r"carrel\.slot=b", timeout)
+                qemu.wait(r"Started carrel-session\.service", timeout)
+                qemu.wait(r"CARREL-BOOT: slot b marked good", timeout)
                 time.sleep(5)
                 qemu.screenshot(out / "screenshot-online-update.png")
                 qemu.powerdown()
@@ -1190,14 +1203,14 @@ def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
     overlay = qcow2_overlay(disk, out / "test" / f"update-{label}" / "disk.qcow2")
     with Qemu(f"update-{label}", out, mode,
               [{"path": overlay, "format": "qcow2"}], secure=secure) as qemu:
-        qemu.wait(r"STYLOS-UPDATE: applying", timeout)
-        qemu.wait(r"STYLOS-UPDATE: .*applied", timeout)
+        qemu.wait(r"CARREL-UPDATE: applying", timeout)
+        qemu.wait(r"CARREL-UPDATE: .*applied", timeout)
 
         # The update rebooted into slot B.  Slot B masks the session and has
         # a failing unit, so boot-complete is never reached.  After the third
         # boot the OS removes the exhausted entry and reboots into A.
         for attempt in range(1, 4):
-            qemu.wait(r"stylos\.slot=b", timeout)
+            qemu.wait(r"carrel\.slot=b", timeout)
             print(f"update-{label}: slot B attempt {attempt}", flush=True)
             time.sleep(12)
             if attempt < 3:
@@ -1207,13 +1220,13 @@ def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
             # sees 0 and selects A.
             qemu.reset()
 
-        qemu.wait(r"stylos\.slot=a", timeout)
-        qemu.wait(r"Started stylos-session\.service", timeout)
-        qemu.wait(r"STYLOS-BOOT: slot a marked good", timeout)
+        qemu.wait(r"carrel\.slot=a", timeout)
+        qemu.wait(r"Started carrel-session\.service", timeout)
+        qemu.wait(r"CARREL-BOOT: slot a marked good", timeout)
         time.sleep(5)
         qemu.screenshot(out / f"screenshot-update-rollback-{label}.png")
         if secure:
-            if "STYLOS-BOOT: secureboot=1" not in qemu.text():
+            if "CARREL-BOOT: secureboot=1" not in qemu.text():
                 raise BootError("the update/rollback boots did not run with Secure Boot")
             if "secureboot: Secure boot disabled" in qemu.text():
                 raise BootError("Secure Boot was off during the update/rollback boots")
@@ -1240,7 +1253,7 @@ def flash_release(archive: Path, out: Path) -> Path:
 
 
 def scenario_release(archive: Path, out: Path, timeout: float) -> None:
-    """Try Stylos from the flashed release image on UEFI, Secure Boot and BIOS."""
+    """Try Carrel from the flashed release image on UEFI, Secure Boot and BIOS."""
     for label, mode, secure in (
         ("uefi", "uefi", False), ("secureboot", "uefi", True), ("bios", "bios", False),
     ):
@@ -1250,25 +1263,25 @@ def scenario_release(archive: Path, out: Path, timeout: float) -> None:
                   usb={"path": usb, "format": "raw"}) as qemu:
             wait_installer(qemu, "main menu", timeout)
             time.sleep(2)
-            qemu.key("ret")  # Try Stylos (the default choice)
+            qemu.key("ret")  # Try Carrel (the default choice)
             wait_installer(qemu, "try selected", 60)
             boot_to_editor(qemu, timeout, first_run=True)
             runtime_check(qemu)
             qemu.type_text("The quiet morning")
             time.sleep(1.5)
             qemu.screenshot(out / f"screenshot-release-{label}.png")
-            # The first boot grows the data partition (stylos-grow-data) and its
+            # The first boot grows the data partition (carrel-grow-data) and its
             # file system (systemd-growfs) to the stick's size.
             if "Starting systemd-growfs@data.service" not in qemu.text():
                 raise BootError(f"[{name}] the data file system was not grown")
             qemu.powerdown()
-        data = part_named(read_gpt(usb), "stylos-data")
+        data = part_named(read_gpt(usb), "carrel-data")
         if data["size"] < 10 * 1024**3:
             raise BootError(
                 f"[{name}] data is {data['size'] // 1024**2} MiB after the first boot; "
                 "expected it to fill the 16 GiB stick"
             )
-        print(f"release-{label}: PASS (flashed image, try Stylos)", flush=True)
+        print(f"release-{label}: PASS (flashed image, try Carrel)", flush=True)
     usb.unlink(missing_ok=True)
 
 

@@ -57,7 +57,7 @@ pub fn run(application: &gtk::Application) {
 
     let window = gtk::ApplicationWindow::builder()
         .application(application)
-        .title("Stylos")
+        .title("Carrel")
         .default_width(1280)
         .default_height(800)
         .decorated(false)
@@ -68,7 +68,7 @@ pub fn run(application: &gtk::Application) {
         .transition_duration(150)
         .build();
 
-    let daemon: Arc<dyn DaemonClient> = if std::env::var("STYLOS_FAKE_DAEMON").as_deref() == Ok("1")
+    let daemon: Arc<dyn DaemonClient> = if std::env::var("CARREL_FAKE_DAEMON").as_deref() == Ok("1")
     {
         Arc::new(FakeDaemon::demo())
     } else {
@@ -251,14 +251,14 @@ pub fn run(application: &gtk::Application) {
     window.add_controller(key);
 
     if let Err(error) = editor.open_last_or_new() {
-        eprintln!("stylos: cannot open a document: {error}");
+        eprintln!("carrel: cannot open a document: {error}");
     }
     editor.reapply_style();
     editor.focus_editor();
 
     // The screenshot script and the UI tests start on a named screen. In
     // production the variable is unset and the editor is the first screen.
-    let start = std::env::var("STYLOS_START_SCREEN").unwrap_or_default();
+    let start = std::env::var("CARREL_START_SCREEN").unwrap_or_default();
     let first_run_needed = !settings.borrow().first_run_complete;
     if start == "first-run" || (start.is_empty() && first_run_needed) {
         first_run.start();
@@ -296,20 +296,20 @@ pub fn run(application: &gtk::Application) {
 fn present_root_error(application: &gtk::Application, root: &Path, error: &std::io::Error) {
     let window = gtk::ApplicationWindow::builder()
         .application(application)
-        .title("Stylos")
+        .title("Carrel")
         .default_width(900)
         .default_height(600)
         .decorated(false)
         .build();
     let label = gtk::Label::new(Some(&format!(
-        "Stylos could not open the writing folder.\n\n{}\n\n{}\n\nCreate the folder or set STYLOS_WRITING_DIR.",
+        "Carrel could not open the writing folder.\n\n{}\n\n{}\n\nCreate the folder or set CARREL_WRITING_DIR.",
         root.display(),
         error
     )));
     label.set_wrap(true);
     label.set_justify(gtk::Justification::Center);
     label.set_max_width_chars(48);
-    label.add_css_class("stylos-page");
+    label.add_css_class("carrel-page");
     window.set_child(Some(&label));
     window.present();
 }

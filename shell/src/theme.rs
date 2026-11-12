@@ -146,12 +146,12 @@ pub fn css(settings: &Settings) -> String {
 
     format!(
         r#"
-window, .stylos-page {{
+window, .carrel-page {{
     background-color: {background};
     color: {text};
     font-family: {family};
 }}
-.stylos-editor, .stylos-editor text {{
+.carrel-editor, .carrel-editor text {{
     background-color: {background};
     color: {text};
     font-family: {family};
@@ -162,7 +162,7 @@ window, .stylos-page {{
 }}
 /* One selection colour everywhere: no default GTK blue-grey in the editor,
    the Quotes search field or any list. */
-selection, entry selection, textview selection, .stylos-editor selection {{
+selection, entry selection, textview selection, .carrel-editor selection {{
     background-color: {text_selection};
     color: {text};
 }}

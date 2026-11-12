@@ -1,0 +1,14 @@
+# dm-verity hash tree for the root filesystem.  It must be installed with the
+# root it belongs to; the boot entry/GRUB roothash is what authenticates the pair.
+[Transfer]
+
+[Source]
+Type=regular-file
+Path=/data/.carrel/update/payload
+MatchPattern=carrel-verity-@v.raw
+
+[Target]
+Type=partition
+Path=auto
+MatchPartitionType=root-x86-64-verity
+MatchPattern=carrel-verity-@v

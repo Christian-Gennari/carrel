@@ -1,16 +1,16 @@
 [package]
-name = "stylos-shell"
+name = "carrel-shell"
 version = "0.1.0"
 edition = "2021"
 license = "GPL-3.0-or-later"
-description = "Stylos writing shell: a calm, keyboard-first Markdown editor"
+description = "Carrel writing shell: a calm, keyboard-first Markdown editor"
 
 [[bin]]
-name = "stylos-shell"
+name = "carrel-shell"
 path = "src/main.rs"
 
 [[bin]]
-name = "stylos-crash-writer"
+name = "carrel-crash-writer"
 path = "src/bin/crash-writer.rs"
 
 [dependencies]
@@ -26,5 +26,5 @@ zbus.workspace = true
 
 [dev-dependencies]
 tempfile = "3"
-stylosd = { path = "../stylosd" }
-stylos-protocol = { path = "../protocol" }
+carreld = { path = "../carreld" }
+carrel-protocol = { path = "../protocol" }

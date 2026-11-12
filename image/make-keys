@@ -2,11 +2,11 @@
 """Generate the development release keys used by the image and releases.
 
 The private keys live outside the repository, in
-``$STYLOS_KEY_DIR`` (default ``~/.config/stylos/keys``), mode 0600.  The
+``$CARREL_KEY_DIR`` (default ``~/.config/carrel/keys``), mode 0600.  The
 matching public certificate and GPG keyring are copied into ``image/keys/``
 so a build can install them and a release can be verified by the image.
 
-Run ``make keys``.  Existing keys are reused; set ``STYLOS_FORCE_KEYS=1`` to
+Run ``make keys``.  Existing keys are reused; set ``CARREL_FORCE_KEYS=1`` to
 replace them (then rebuild the image and commit the new public files).
 """
 
@@ -19,7 +19,7 @@ import tempfile
 from pathlib import Path
 
 IMAGE_KEYS = Path(__file__).resolve().parent / "keys"
-SUBJECT = "/CN=Stylos development release verity"
+SUBJECT = "/CN=Carrel release verity"
 
 
 def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
@@ -28,9 +28,9 @@ def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
 
 def main() -> int:
     key_dir = Path(
-        os.environ.get("STYLOS_KEY_DIR", Path.home() / ".config" / "stylos" / "keys")
+        os.environ.get("CARREL_KEY_DIR", Path.home() / ".config" / "carrel" / "keys")
     ).expanduser()
-    force = os.environ.get("STYLOS_FORCE_KEYS") == "1"
+    force = os.environ.get("CARREL_FORCE_KEYS") == "1"
     key_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(key_dir, 0o700)
     IMAGE_KEYS.mkdir(parents=True, exist_ok=True)
@@ -52,7 +52,7 @@ def main() -> int:
 
     secret = key_dir / "update-secret.gpg"
     fingerprint_file = key_dir / "update-fingerprint"
-    with tempfile.TemporaryDirectory(prefix="stylos-gpg-") as home:
+    with tempfile.TemporaryDirectory(prefix="carrel-gpg-") as home:
         os.chmod(home, 0o700)
         env = dict(os.environ, GNUPGHOME=home)
         if not force and secret.exists():
@@ -62,7 +62,7 @@ def main() -> int:
             run(
                 "gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
                 "--quick-generate-key",
-                "Stylos development update signing <stylos-dev@localhost>",
+                "Carrel release update signing <carrel-release@localhost>",
                 "rsa3072", "sign", "0",
                 env=env,
             )

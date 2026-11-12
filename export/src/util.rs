@@ -16,7 +16,7 @@ pub(crate) fn is_writing_file(path: &Path) -> bool {
 }
 
 /// All regular files below `root`, sorted, without following symlinks and
-/// without hidden entries (`.stylos/`, `.git/`, …).
+/// without hidden entries (`.carrel/`, `.git/`, …).
 pub(crate) fn collect_files(root: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     walk(root, &mut files)?;
@@ -115,9 +115,9 @@ mod tests {
     #[test]
     fn unique_path_handles_folders_and_dots() {
         let temp = tempfile::tempdir().unwrap();
-        fs::create_dir_all(temp.path().join("Stylos export 2026-11-12")).unwrap();
-        let next = unique_path(temp.path(), "Stylos export 2026-11-12", true);
-        assert_eq!(next, temp.path().join("Stylos export 2026-11-12 (2)"));
+        fs::create_dir_all(temp.path().join("Carrel export 2026-11-12")).unwrap();
+        let next = unique_path(temp.path(), "Carrel export 2026-11-12", true);
+        assert_eq!(next, temp.path().join("Carrel export 2026-11-12 (2)"));
 
         fs::write(temp.path().join("a.b.md"), "").unwrap();
         let next = unique_path(temp.path(), "a.b.md", false);
@@ -127,8 +127,8 @@ mod tests {
     #[test]
     fn collect_skips_hidden_and_symlinks() {
         let temp = tempfile::tempdir().unwrap();
-        fs::create_dir_all(temp.path().join(".stylos")).unwrap();
-        fs::write(temp.path().join(".stylos/cache.md"), "x").unwrap();
+        fs::create_dir_all(temp.path().join(".carrel")).unwrap();
+        fs::write(temp.path().join(".carrel/cache.md"), "x").unwrap();
         fs::create_dir_all(temp.path().join("Notes")).unwrap();
         fs::write(temp.path().join("Notes/a.md"), "x").unwrap();
         fs::write(temp.path().join("top.txt"), "x").unwrap();

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["protocol", "server", "stylosd", "shell", "export"]
+members = ["protocol", "server", "carreld", "shell", "export"]
 
 # The library search benchmark runs in the dev profile. SQLite's FTS5 ranking
 # is C code; an unoptimised build makes an honest 50,000-item query take about

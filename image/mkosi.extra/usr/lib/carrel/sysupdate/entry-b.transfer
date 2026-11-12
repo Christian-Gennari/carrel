@@ -1,0 +1,12 @@
+[Transfer]
+
+[Source]
+Type=regular-file
+Path=/data/.carrel/update/payload
+MatchPattern=carrel-b-@v.conf
+
+[Target]
+Type=regular-file
+Path=/loader/entries
+PathRelativeTo=esp
+MatchPattern=carrel-b-@v+3.conf

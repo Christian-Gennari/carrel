@@ -4,8 +4,8 @@ target/
 /mkosi.output/
 /mkosi.cache/
 /mkosi.workspace/
-.stylos-oauth.toml
-.stylos-keys/
+.carrel-oauth.toml
+.carrel-keys/
 *.img
 *.qcow2
 __pycache__/

@@ -1,0 +1,145 @@
+#!/bin/bash
+# Carrel recovery menu.
+#
+# Booted with systemd.unit=carrel-recovery.target from the boot menu.  There
+# is no shell: every action is one item in this menu.
+set -u
+
+export TERM=linux
+export NCURSES_NO_UTF8_ACS=1
+
+log() {
+    echo "CARREL-RECOVERY: $*" >>/dev/ttyS0 2>/dev/null || true
+}
+
+slot="$(sed -n 's/.*carrel\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
+case "$slot" in
+    a) other=b ;;
+    b) other=a ;;
+    *) other=b ;;
+esac
+
+boot_previous() {
+    if [ ! -f "/boot/loader/entries/carrel-$other.conf" ]; then
+        whiptail --title "Carrel recovery" --msgbox \
+            "The previous system (slot $other) is not installed." 9 60
+        return
+    fi
+    if whiptail --title "Carrel recovery" --yesno \
+        "Boot the previous system (slot $other) now?" 9 60; then
+        printf 'default carrel-%s.conf\ntimeout 2\neditor no\n' "$other" >/boot/loader/loader.conf
+        if [ -f /boot/grub/grubenv ]; then
+            grub-editenv /boot/grub/grubenv set \
+                "carrel_default=$other" carrel_tries=good
+            log "grubenv: $(grub-editenv /boot/grub/grubenv list | tr '\n' ' ')"
+        fi
+        log "booting previous slot $other"
+        sync
+        systemctl reboot
+    fi
+}
+
+disk_list() {
+    local name size model rm tran
+    while read -r line; do
+        eval "$line"
+        [ "$TYPE" = "disk" ] || continue
+        [ "$NAME" = "${src_disk:-}" ] && continue
+        rm="$(cat "/sys/block/$NAME/removable" 2>/dev/null || echo 0)"
+        tran="$(lsblk -dno TRAN "/dev/$NAME" 2>/dev/null | tr -d ' ' || true)"
+        [ "$rm" = "1" ] || [ "$tran" = "usb" ] || continue
+        printf '%s\t%s %s\n' "$NAME" "$SIZE" "$MODEL"
+    done < <(lsblk -b -d -n -P -o NAME,TYPE,SIZE,MODEL)
+}
+
+copy_writing() {
+    local args=() name size model line
+    while IFS=$'\t' read -r name rest; do
+        [ -n "$name" ] && args+=("$name" "$rest")
+    done < <(disk_list)
+    if [ "${#args[@]}" -eq 0 ]; then
+        whiptail --title "Copy writing" --msgbox \
+            "No USB drive was found. Plug one in and try again." 9 60
+        return
+    fi
+    local disk
+    disk="$(whiptail --title "Copy writing" --menu \
+        "Copy all writing to a USB drive. The drive must have a FAT or ext4 partition." \
+        18 70 8 "${args[@]}" 3>&1 1>&2 2>&3)" || return
+
+    local part
+    part="$(lsblk -ln -o NAME,TYPE "/dev/$disk" | awk '$2=="part"{print $1; exit}')"
+    log "copy selected /dev/$disk partition ${part:-none}"
+    if [ -z "$part" ]; then
+        whiptail --title "Copy writing" --msgbox \
+            "/dev/$disk has no partition. Format it first." 9 60
+        return
+    fi
+    mkdir -p /run/carrel-usb
+    log "mounting /dev/$part"
+    # -n: the recovery root is read-only and /etc/mtab is a /proc symlink;
+    # skipping the mtab update keeps util-linux from mounting and immediately
+    # undoing it when the update fails.
+    if ! mount_output="$(timeout 60 mount -n -t ext4 -o rw "/dev/$part" /run/carrel-usb 2>&1)"; then
+        log "could not mount /dev/$part: $mount_output"
+        whiptail --title "Copy writing" --msgbox \
+            "Could not mount /dev/$part. Use a FAT or ext4 partition." 9 70
+        rmdir /run/carrel-usb 2>/dev/null || true
+        return
+    fi
+    log "mounted /dev/$part"
+    local dest="/run/carrel-usb/carrel-writing-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "$dest"
+    log "copying /data/writing to $dest"
+    whiptail --title "Copy writing" --infobox \
+        "Copying /data/writing to $dest. Do not unplug the drive." 8 70
+    if timeout 300 cp -a /data/writing/. "$dest"/; then
+        log "copy finished"
+        sync
+        umount -n /run/carrel-usb
+        rmdir /run/carrel-usb 2>/dev/null || true
+        log "copied to $dest on /dev/$part"
+        whiptail --title "Copy writing" --msgbox \
+            "Writing copied to $dest on /dev/$part." 9 70
+    else
+        umount -n /run/carrel-usb 2>/dev/null || true
+        whiptail --title "Copy writing" --msgbox \
+            "The copy failed. The drive may be full." 9 60
+    fi
+}
+
+reset_settings() {
+    if ! whiptail --title "Reset settings" --yesno \
+        "Reset the appearance and writing-goal settings? Writing and history are kept." \
+        10 70; then
+        return
+    fi
+    rm -f /data/.carrel/settings.json /data/.carrel/stats.json
+    whiptail --title "Reset settings" --msgbox "Settings were reset." 8 60
+}
+
+src_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
+# The running root is a dm-verity mapper; lsblk -s walks back to the disk.
+src_disk="$(lsblk -srno NAME "$src_src" 2>/dev/null | tail -1 | tr -d ' ' || true)"
+
+log "menu"
+while true; do
+    choice="$(whiptail --title "Carrel recovery" --menu \
+        "Choose an action. There is no shell here." 18 70 6 \
+        "previous" "Boot previous system" \
+        "copy" "Copy all writing to USB drive" \
+        "reset" "Reset settings (keeps writing)" \
+        "poweroff" "Power off" \
+        3>&1 1>&2 2>&3)" || choice=poweroff
+
+    case "$choice" in
+        previous) boot_previous ;;
+        copy) copy_writing ;;
+        reset) reset_settings ;;
+        poweroff)
+            log "power off"
+            systemctl poweroff
+            exit 0
+            ;;
+    esac
+done

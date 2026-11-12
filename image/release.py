@@ -42,13 +42,13 @@ def write_os_release(root: Path, version: str) -> None:
     lines.append(f"VERSION_ID={version}")
     lines.append(f"IMAGE_VERSION={version}")
     release.write_text("\n".join(lines) + "\n")
-    marker = root / "usr/share/stylos/release-version"
+    marker = root / "usr/share/carrel/release-version"
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(version + "\n")
 
 
 def sign_manifest(manifest: Path, secret: Path) -> None:
-    with tempfile.TemporaryDirectory(prefix="stylos-release-gpg-") as home:
+    with tempfile.TemporaryDirectory(prefix="carrel-release-gpg-") as home:
         os.chmod(home, 0o700)
         env = dict(os.environ, GNUPGHOME=home)
         run("gpg", "--batch", "--import", secret, env=env)
@@ -60,7 +60,7 @@ def sign_manifest(manifest: Path, secret: Path) -> None:
 
 
 # The shipped image keeps a small data partition; the installed or flashed
-# system grows it to fill the disk on first boot (stylos-grow-data.service
+# system grows it to fill the disk on first boot (carrel-grow-data.service
 # runs systemd-repart, fstab's x-systemd.growfs grows the file system).
 DATA_SHIPPED_BYTES = 256 * 1024 * 1024
 GAP_BYTES = 1024 * 1024  # room for the backup GPT after the data partition
@@ -68,7 +68,7 @@ GAP_BYTES = 1024 * 1024  # room for the backup GPT after the data partition
 
 def sign_file(path: Path, secret: Path) -> Path:
     """Detached, ASCII-armoured signature ``<path>.asc`` by the release key."""
-    with tempfile.TemporaryDirectory(prefix="stylos-release-gpg-") as home:
+    with tempfile.TemporaryDirectory(prefix="carrel-release-gpg-") as home:
         os.chmod(home, 0o700)
         env = dict(os.environ, GNUPGHOME=home)
         run("gpg", "--batch", "--import", secret, env=env,
@@ -107,7 +107,7 @@ def shrink_image(image: Path, work: Path) -> None:
     run("truncate", "-s", total, work)
     run("sfdisk", "--no-reread", "--no-tell-kernel", work,
         input="\n".join(lines) + "\n", text=True, stdout=subprocess.DEVNULL)
-    run("mkfs.ext4", "-q", "-F", "-L", "stylos-data",
+    run("mkfs.ext4", "-q", "-F", "-L", "carrel-data",
         "-E", f"offset={data['first'] * 512}", work, f"{DATA_SHIPPED_BYTES // 1024}k")
     after = assemble.read_gpt(work)
     new_data = next(p for p in after if p["uuid"] == assemble.DATA_UUID)
@@ -116,14 +116,14 @@ def shrink_image(image: Path, work: Path) -> None:
 
 
 def build_dist(image: Path, dist: Path, version: str, secret: Path) -> Path:
-    """``stylos-<version>.img.xz`` + ``.sha256`` + ``.asc`` for users to flash."""
+    """``carrel-<version>.img.xz`` + ``.sha256`` + ``.asc`` for users to flash."""
     if dist.exists():
         shutil.rmtree(dist)
     dist.mkdir(parents=True)
-    raw = dist / f"stylos-{version}.img"
+    raw = dist / f"carrel-{version}.img"
     run("cp", "--sparse=always", image, raw)
     shrink_image(image, raw)
-    archive = dist / f"stylos-{version}.img.xz"
+    archive = dist / f"carrel-{version}.img.xz"
     with archive.open("wb") as target:
         run("xz", "-T4", "-6", "-c", raw, stdout=target)
     raw.unlink()
@@ -145,7 +145,7 @@ def main() -> int:
     parser.add_argument("--verity-cert", required=True, type=Path)
     parser.add_argument("--update-secret", required=True, type=Path)
     parser.add_argument("--dist", type=Path,
-                        help="also write stylos-<image-version>.img.xz, .sha256 and "
+                        help="also write carrel-<image-version>.img.xz, .sha256 and "
                              ".asc to this directory")
     parser.add_argument("--image-version", default=assemble.VERSION,
                         help="version of the built image (file name of the .img.xz)")
@@ -161,8 +161,8 @@ def main() -> int:
             print(f"missing key: {path}", file=sys.stderr)
             return 2
 
-    os.environ["STYLOS_VERITY_KEY"] = str(args.verity_key)
-    os.environ["STYLOS_VERITY_CERT"] = str(args.verity_cert)
+    os.environ["CARREL_VERITY_KEY"] = str(args.verity_key)
+    os.environ["CARREL_VERITY_CERT"] = str(args.verity_cert)
 
     if out.exists():
         shutil.rmtree(out)
@@ -183,22 +183,22 @@ def main() -> int:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         write_os_release(root, args.version)
-        root_image = work / "stylos-root.raw"
+        root_image = work / "carrel-root.raw"
         run(
-            "mkfs.erofs", "-zlz4hc,9", "-L", "stylos-root",
+            "mkfs.erofs", "-zlz4hc,9", "-L", "carrel-root",
             root_image, root,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
         hash_file, roothash = assemble.verity_format(root_image, work)
         signature = assemble.verity_signature(roothash, work)
 
-        shutil.copyfile(root_image, out / f"stylos-root-{args.version}.raw")
-        shutil.copyfile(hash_file, out / f"stylos-verity-{args.version}.raw")
-        (out / f"stylos-verity-sig-{args.version}.sig").write_bytes(signature)
+        shutil.copyfile(root_image, out / f"carrel-root-{args.version}.raw")
+        shutil.copyfile(hash_file, out / f"carrel-verity-{args.version}.raw")
+        (out / f"carrel-verity-sig-{args.version}.sig").write_bytes(signature)
         for slot in ("a", "b"):
-            (out / f"stylos-{slot}-{args.version}.conf").write_text(
+            (out / f"carrel-{slot}-{args.version}.conf").write_text(
                 assemble.entry_conf(
-                    slot, "Stylos", args.version, kver, roothash,
+                    slot, "Carrel", args.version, kver, roothash,
                     assemble.SORT_KEY[slot],
                 )
             )
@@ -216,19 +216,19 @@ def main() -> int:
     sign_manifest(manifest, args.update_secret)
 
     (out / "README").write_text(
-        f"""Stylos {args.version} online update
+        f"""Carrel {args.version} online update
 
-Serve this directory at the URL configured as STYLOS_UPDATE_URL when the
+Serve this directory at the URL configured as CARREL_UPDATE_URL when the
 image was built.  systemd-sysupdate reads SHA256SUMS, verifies
 SHA256SUMS.gpg against /usr/lib/systemd/import-pubring.gpg in the image, then
 downloads only the files for the inactive slot.
 
 Files:
-  stylos-root-{args.version}.raw          root filesystem
-  stylos-verity-{args.version}.raw        dm-verity hash tree
-  stylos-verity-sig-{args.version}.sig    signed verity root hash
-  stylos-a-{args.version}.conf             slot A boot entry
-  stylos-b-{args.version}.conf             slot B boot entry
+  carrel-root-{args.version}.raw          root filesystem
+  carrel-verity-{args.version}.raw        dm-verity hash tree
+  carrel-verity-sig-{args.version}.sig    signed verity root hash
+  carrel-a-{args.version}.conf             slot A boot entry
+  carrel-b-{args.version}.conf             slot B boot entry
 
 The root hash is {roothash}.
 """

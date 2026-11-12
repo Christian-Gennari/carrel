@@ -1,0 +1,16 @@
+# Root filesystem.  Both slots are labelled carrel-root-<version>; the version
+# is what systemd-sysupdate compares, and it always writes the older (inactive)
+# one.  The partition UUIDs never change, so the boot entry/GRUB command line can keep
+# naming the same verity devices.
+[Transfer]
+
+[Source]
+Type=regular-file
+Path=/data/.carrel/update/payload
+MatchPattern=carrel-root-@v.raw
+
+[Target]
+Type=partition
+Path=auto
+MatchPartitionType=root-x86-64
+MatchPattern=carrel-root-@v

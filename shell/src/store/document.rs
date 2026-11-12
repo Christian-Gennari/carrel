@@ -158,7 +158,7 @@ pub fn open(
     });
     let thread_inner = Arc::clone(&inner);
     let thread = thread::Builder::new()
-        .name("stylos-store".to_owned())
+        .name("carrel-store".to_owned())
         .spawn(move || writer_loop(thread_inner))
         .map_err(StoreError::Io)?;
 
@@ -355,7 +355,7 @@ fn writer_loop(inner: Arc<DocInner>) {
                 match state.journal.sync_data() {
                     Ok(()) => state.dirty_since = None,
                     Err(error) => {
-                        eprintln!("stylos: journal sync failed: {error}");
+                        eprintln!("carrel: journal sync failed: {error}");
                         // Don't spin; try again one interval later.
                         state.dirty_since = Some(now);
                     }
@@ -366,7 +366,7 @@ fn writer_loop(inner: Arc<DocInner>) {
             if let Some(last_edit) = state.last_edit {
                 if now >= last_edit + inner.cfg.idle_save {
                     if let Err(error) = save_locked(&inner, &mut state) {
-                        eprintln!("stylos: save failed: {error}");
+                        eprintln!("carrel: save failed: {error}");
                         // Retry after another idle period rather than
                         // hammering a full disk.
                         state.last_edit = Some(now);
@@ -378,7 +378,7 @@ fn writer_loop(inner: Arc<DocInner>) {
 }
 
 /// Stable id for a file's journal. The readable prefix helps when someone
-/// looks inside `.stylos/journal`; the hash makes it unique per path.
+/// looks inside `.carrel/journal`; the hash makes it unique per path.
 pub fn journal_id(rel: &Path) -> String {
     let stem: String = rel
         .file_stem()

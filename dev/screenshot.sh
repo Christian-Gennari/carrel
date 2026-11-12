@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 # Headless screenshots of every screen for the WP5 gate.
 #
-# Runs inside the dev container after `cargo build --release -p stylos-shell`:
+# Runs inside the dev container after `cargo build --release -p carrel-shell`:
 #   dev/run.sh bash dev/screenshot.sh
 #
 # Xvfb is already part of dev/Dockerfile; no GPU, compositor or display is
-# needed. The shell runs with STYLOS_FAKE_DAEMON=1, so every screen has
+# needed. The shell runs with CARREL_FAKE_DAEMON=1, so every screen has
 # deterministic data and the daemon is never required.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 out="$PWD/out"
 root="$out/screenshot-data"
-if [ ! -x target/release/stylos-shell ]; then
-    cargo build --release -p stylos-shell
+if [ ! -x target/release/carrel-shell ]; then
+    cargo build --release -p carrel-shell
 fi
 rm -rf "$root"
-mkdir -p "$root/.stylos" "$root/Novel"
+mkdir -p "$root/.carrel" "$root/Novel"
 
 cat > "$root/The quiet morning.md" <<'EOF'
 # The quiet morning
@@ -44,16 +44,16 @@ cat > "$root/Notes.md" <<'EOF'
 EOF
 
 # Open the sample essay, not whichever file was written last.
-cat > "$root/.stylos/state.json" <<'EOF'
+cat > "$root/.carrel/state.json" <<'EOF'
 {"last_file": "The quiet morning.md"}
 EOF
 
 # Today's words for the bottom line and the hairline: 312 / 500.
-printf '{"date": "%s", "words": 312}\n' "$(date +%F)" > "$root/.stylos/stats.json"
+printf '{"date": "%s", "words": 312}\n' "$(date +%F)" > "$root/.carrel/stats.json"
 
 write_settings() {
     python3 - "$root" "$1" "$2" "$3" \
-        "${STYLOS_SHOT_FOCUS:-false}" "${STYLOS_SHOT_GOAL:-numbers}" <<'PY'
+        "${CARREL_SHOT_FOCUS:-false}" "${CARREL_SHOT_GOAL:-numbers}" <<'PY'
 import json, sys
 root, theme, first_run, bottom_line, focus, goal = sys.argv[1:7]
 settings = {
@@ -73,12 +73,12 @@ settings = {
     "sync_at_shutdown": False,
     "first_run_complete": first_run == "true",
 }
-with open(f"{root}/.stylos/settings.json", "w", encoding="utf-8") as handle:
+with open(f"{root}/.carrel/settings.json", "w", encoding="utf-8") as handle:
     json.dump(settings, handle)
 PY
 }
 
-export XDG_RUNTIME_DIR=/tmp/stylos-xdg
+export XDG_RUNTIME_DIR=/tmp/carrel-xdg
 rm -rf "$XDG_RUNTIME_DIR"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
@@ -110,13 +110,13 @@ shoot() {
     battery=${6:-}
     shift 6 || true
     write_settings "$theme" "$first_run" "$bottom_line"
-    env STYLOS_WRITING_DIR="$root" DISPLAY=:99 \
-        STYLOS_FAKE_DAEMON=1 STYLOS_START_SCREEN="$start" STYLOS_BATTERY="$battery" \
-        "$@" ./target/release/stylos-shell >"$out/app-$name.log" 2>&1 &
+    env CARREL_WRITING_DIR="$root" DISPLAY=:99 \
+        CARREL_FAKE_DAEMON=1 CARREL_START_SCREEN="$start" CARREL_BATTERY="$battery" \
+        "$@" ./target/release/carrel-shell >"$out/app-$name.log" 2>&1 &
     app_pid=$!
     sleep 2.5
     if ! kill -0 "$app_pid" 2>/dev/null; then
-        echo "stylos-shell exited before $name; see out/app-$name.log" >&2
+        echo "carrel-shell exited before $name; see out/app-$name.log" >&2
         cat "$out/app-$name.log" >&2
         exit 1
     fi
@@ -129,18 +129,18 @@ shoot() {
 # The editor, both themes, then focus mode and the hairline goal line.
 shoot editor-paper paper true true editor "" 
 shoot editor-night night true true editor ""
-STYLOS_SHOT_FOCUS=true shoot editor-paper-focus paper true true editor ""
-STYLOS_SHOT_GOAL=hairline shoot editor-night-hairline night true true editor ""
+CARREL_SHOT_FOCUS=true shoot editor-paper-focus paper true true editor ""
+CARREL_SHOT_GOAL=hairline shoot editor-night-hairline night true true editor ""
 
 # History with a preview.
 shoot history-paper paper true true history ""
 
 # Quotes palette: search results in both themes, then the two empty states.
-shoot quotes-paper paper true true quotes "" STYLOS_QUOTE_QUERY=attention
-shoot quotes-paper-select paper true true quotes "" STYLOS_QUOTE_QUERY=attention STYLOS_QUOTE_SELECT=1
-shoot quotes-night night true true quotes "" STYLOS_QUOTE_QUERY=attention
-shoot quotes-empty-paper paper true true quotes "" STYLOS_FAKE_LIBRARY=empty
-shoot quotes-unavailable-paper paper true true quotes "" STYLOS_FAKE_LIBRARY=unavailable
+shoot quotes-paper paper true true quotes "" CARREL_QUOTE_QUERY=attention
+shoot quotes-paper-select paper true true quotes "" CARREL_QUOTE_QUERY=attention CARREL_QUOTE_SELECT=1
+shoot quotes-night night true true quotes "" CARREL_QUOTE_QUERY=attention
+shoot quotes-empty-paper paper true true quotes "" CARREL_FAKE_LIBRARY=empty
+shoot quotes-unavailable-paper paper true true quotes "" CARREL_FAKE_LIBRARY=unavailable
 
 # Sync: the overview, then each pairing flow.
 shoot sync-paper paper true true sync ""
@@ -153,7 +153,8 @@ shoot sync-pair-gdrive-paper paper true true pair-gdrive ""
 shoot settings-paper paper true true settings ""
 shoot settings-night night true true settings ""
 # The last rows (Update, About) must scroll into view at 800 px.
-shoot settings-last-paper paper true true settings "" STYLOS_SETTINGS_SELECT=99
+shoot settings-last-paper paper true true settings "" CARREL_SETTINGS_SELECT=99
+shoot settings-last-night night true true settings "" CARREL_SETTINGS_SELECT=99
 
 # Wi-Fi scan list.
 shoot wifi-paper paper true true wifi ""
@@ -161,10 +162,11 @@ shoot wifi-paper paper true true wifi ""
 # Export: with a drive, and with none.
 shoot export-paper paper true true export ""
 shoot export-drive-paper paper true true export-drive ""
-shoot export-empty-paper paper true true export-drive "" STYLOS_FAKE_NO_DRIVE=1
+shoot export-empty-paper paper true true export-drive "" CARREL_FAKE_NO_DRIVE=1
 
 # First run.
 shoot first-run-paper paper false true first-run ""
+shoot first-run-night night false true first-run ""
 
 # Battery: the bottom line charging, and the 5 s note with the line hidden.
 shoot battery-paper paper true true editor "18,charging"

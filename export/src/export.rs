@@ -109,7 +109,7 @@ pub struct ExportedFile {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportReport {
     /// Directory that received the files: for [`Selection::Everything`] this is
-    /// the dated `Stylos export YYYY-MM-DD/` folder.
+    /// the dated `Carrel export YYYY-MM-DD/` folder.
     pub destination: PathBuf,
     pub format: Format,
     pub files: Vec<ExportedFile>,
@@ -130,7 +130,7 @@ impl ExportReport {
 ///
 /// Existing files are never replaced: a second export of the same name gets
 /// ` (2)`, then ` (3)`. `Selection::Everything` writes a dated
-/// `Stylos export YYYY-MM-DD/` folder that keeps the folder structure.
+/// `Carrel export YYYY-MM-DD/` folder that keeps the folder structure.
 pub fn export(
     selection: Selection,
     format: Format,
@@ -236,7 +236,7 @@ fn plan(selection: &Selection, writing_root: &Path, destination: &Path) -> Resul
             if files.is_empty() {
                 return Err(Error::NothingToExport(writing_root.to_path_buf()));
             }
-            let name = format!("Stylos export {}", Local::now().format("%Y-%m-%d"));
+            let name = format!("Carrel export {}", Local::now().format("%Y-%m-%d"));
             let root = unique_path(destination, &name, true);
             create_dir_all(&root)?;
             Ok(Plan { root, files })

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Finish the Stylos disk image after mkosi has assembled it.
+"""Finish the Carrel disk image after mkosi has assembled it.
 
-mkosi builds one unified kernel image with its own command line.  Stylos needs
+mkosi builds one unified kernel image with its own command line.  Carrel needs
 three boot entries (slot A, slot B and the recovery menu), each with a
 different root hash, and the BIOS GRUB menu needs the same slots.  Doing this
 in a post-output script keeps the slot-specific values next to the partition
@@ -12,7 +12,7 @@ UEFI boots through Debian's chain of trust (WP7c): Microsoft-signed shim
 second-stage name ``grubx64.efi``) -> Debian-signed kernel.  The slot entries
 are Boot Loader Specification Type #1 files in ``/loader/entries``; the
 dm-verity root hash is on each entry's ``options`` line.  Nothing here is
-signed with a Stylos key: the shim, systemd-boot and kernel binaries are
+signed with a Carrel key: the shim, systemd-boot and kernel binaries are
 Debian's, taken unchanged from the packages in the image.
 
 The verity hash and signature partitions are created by systemd-repart (see
@@ -52,7 +52,7 @@ SIG_B_UUID = "88888888-8888-4888-8888-888888888888"
 
 # Boot menu order (systemd-boot sorts Type #1 entries by sort-key).  A is first
 # so a missing or exhausted slot B falls back to A, never to the recovery menu.
-SORT_KEY = {"a": "stylos-1-a", "b": "stylos-2-b", "recovery": "stylos-9-recovery"}
+SORT_KEY = {"a": "carrel-1-a", "b": "carrel-2-b", "recovery": "carrel-9-recovery"}
 
 # The Secure Boot files staged on the ESP by image/mkosi.postinst, straight
 # from Debian's shim-signed, shim-helpers-amd64-signed and
@@ -70,8 +70,8 @@ BASE_CMDLINE = (
     "console=tty0 console=ttyS0,115200 systemd.getty_auto=no "
     "ro rootfstype=erofs"
 )
-VERSION = os.environ.get("STYLOS_VERSION", "0.1.0")
-UPDATE_VERSION = os.environ.get("STYLOS_UPDATE_VERSION", "0.2.0")
+VERSION = os.environ.get("CARREL_VERSION", "0.1.0")
+UPDATE_VERSION = os.environ.get("CARREL_UPDATE_VERSION", "0.2.0")
 
 SYSTEMD_REPART = "/usr/bin/systemd-repart"
 VERITYSETUP = "/usr/sbin/veritysetup"
@@ -210,10 +210,10 @@ def verity_format(root: Path, work: Path) -> tuple[Path, str]:
 
 def sign_roothash(roothash: str, work: Path) -> str:
     """Return the base64 PKCS#7 signature systemd-repart puts in sig partitions."""
-    key = os.environ.get("STYLOS_VERITY_KEY")
-    cert = os.environ.get("STYLOS_VERITY_CERT")
+    key = os.environ.get("CARREL_VERITY_KEY")
+    cert = os.environ.get("CARREL_VERITY_CERT")
     if not key or not cert:
-        raise SystemExit("STYLOS_VERITY_KEY/STYLOS_VERITY_CERT are required for signing")
+        raise SystemExit("CARREL_VERITY_KEY/CARREL_VERITY_CERT are required for signing")
     raw = work / "roothash.bin"
     raw.write_bytes(bytes.fromhex(roothash))
     signature = work / "roothash.sig"
@@ -226,9 +226,9 @@ def sign_roothash(roothash: str, work: Path) -> str:
 
 
 def certificate_fingerprint() -> str:
-    cert = os.environ.get("STYLOS_VERITY_CERT")
+    cert = os.environ.get("CARREL_VERITY_CERT")
     if not cert:
-        raise SystemExit("STYLOS_VERITY_CERT is required for signing")
+        raise SystemExit("CARREL_VERITY_CERT is required for signing")
     der = subprocess.check_output(["openssl", "x509", "-in", cert, "-outform", "DER"])
     return hashlib.sha256(der).hexdigest()
 
@@ -273,7 +273,7 @@ class Esp:
 
 
 def kernel_versions(esp: Esp) -> str:
-    listing = esp.mdir("/stylos")
+    listing = esp.mdir("/carrel")
     for line in listing.splitlines():
         if not line.endswith("/"):
             continue
@@ -294,9 +294,9 @@ def entry_conf(
         f"title {title}\n"
         f"version {version}\n"
         f"sort-key {sort_key}\n"
-        f"linux /stylos/{kver}/vmlinuz\n"
-        "initrd /stylos/initrd\n"
-        f"initrd /stylos/{kver}/kernel-modules.initrd\n"
+        f"linux /carrel/{kver}/vmlinuz\n"
+        "initrd /carrel/initrd\n"
+        f"initrd /carrel/{kver}/kernel-modules.initrd\n"
         f"options {cmdline(slot, roothash, extra)}\n"
     )
 
@@ -306,7 +306,7 @@ def cmdline(slot: str, roothash: str, extra: str = "") -> str:
         f"{BASE_CMDLINE} roothash={roothash} "
         f"systemd.verity_root_data=PARTUUID={ROOT_UUID[slot]} "
         f"systemd.verity_root_hash=PARTUUID={HASH_UUID[slot]} "
-        f"stylos.slot={slot}"
+        f"carrel.slot={slot}"
     )
     return f"{line} {extra}".strip()
 
@@ -314,15 +314,15 @@ def cmdline(slot: str, roothash: str, extra: str = "") -> str:
 def grub_cfg(kver: str) -> str:
     def entry(ident: str, title: str, slot: str, extra: str = "") -> str:
         cmd = (
-            f"roothash=${{stylos_{slot}_roothash}} {BASE_CMDLINE} "
+            f"roothash=${{carrel_{slot}_roothash}} {BASE_CMDLINE} "
             f"systemd.verity_root_data=PARTUUID={ROOT_UUID[slot]} "
             f"systemd.verity_root_hash=PARTUUID={HASH_UUID[slot]} "
-            f"stylos.slot={slot} {extra}"
+            f"carrel.slot={slot} {extra}"
         ).strip()
         return (
             f'menuentry "{title}" --id {ident} {{\n'
-            f"    linux /stylos/{kver}/vmlinuz {cmd}\n"
-            f"    initrd /stylos/initrd /stylos/{kver}/kernel-modules.initrd\n"
+            f"    linux /carrel/{kver}/vmlinuz {cmd}\n"
+            f"    initrd /carrel/initrd /carrel/{kver}/kernel-modules.initrd\n"
             "}\n"
         )
 
@@ -331,14 +331,14 @@ def grub_cfg(kver: str) -> str:
     # sets tries=good after a healthy boot.  GRUB decrements before it boots,
     # so a kernel/initrd panic still consumes a try.
     ladder = (
-        'if [ "${{stylos_default}}" = "{slot}" ]; then\n'
-        '    if [ "${{stylos_tries}}" = "3" ]; then set stylos_tries=2; '
-        'save_env --file /grub/grubenv stylos_tries; set default=stylos-{slot}\n'
-        '    elif [ "${{stylos_tries}}" = "2" ]; then set stylos_tries=1; '
-        'save_env --file /grub/grubenv stylos_tries; set default=stylos-{slot}\n'
-        '    elif [ "${{stylos_tries}}" = "1" ]; then set stylos_tries=0; '
-        'save_env --file /grub/grubenv stylos_tries; set default=stylos-{slot}\n'
-        '    elif [ "${{stylos_tries}}" = "good" ]; then set default=stylos-{slot}\n'
+        'if [ "${{carrel_default}}" = "{slot}" ]; then\n'
+        '    if [ "${{carrel_tries}}" = "3" ]; then set carrel_tries=2; '
+        'save_env --file /grub/grubenv carrel_tries; set default=carrel-{slot}\n'
+        '    elif [ "${{carrel_tries}}" = "2" ]; then set carrel_tries=1; '
+        'save_env --file /grub/grubenv carrel_tries; set default=carrel-{slot}\n'
+        '    elif [ "${{carrel_tries}}" = "1" ]; then set carrel_tries=0; '
+        'save_env --file /grub/grubenv carrel_tries; set default=carrel-{slot}\n'
+        '    elif [ "${{carrel_tries}}" = "good" ]; then set default=carrel-{slot}\n'
         "    fi\n"
         "fi\n"
     )
@@ -347,20 +347,20 @@ def grub_cfg(kver: str) -> str:
         "serial --unit=0 --speed=115200\n"
         "terminal_output serial console\n"
         "if [ -f /grub/grubenv ]; then\n"
-        "    load_env --file /grub/grubenv stylos_default stylos_tries "
-        "stylos_a_roothash stylos_b_roothash\n"
+        "    load_env --file /grub/grubenv carrel_default carrel_tries "
+        "carrel_a_roothash carrel_b_roothash\n"
         "fi\n"
-        "set default=stylos-a\n"
+        "set default=carrel-a\n"
         + ladder.format(slot="b")
         + ladder.format(slot="a")
         + "\n"
-        + entry("stylos-a", "Stylos", "a")
+        + entry("carrel-a", "Carrel", "a")
         + "\n"
-        + entry("stylos-b", "Stylos (previous system)", "b")
+        + entry("carrel-b", "Carrel (previous system)", "b")
         + "\n"
         + entry(
-            "stylos-recovery", "Stylos recovery", "a",
-            "systemd.unit=stylos-recovery.target",
+            "carrel-recovery", "Carrel recovery", "a",
+            "systemd.unit=carrel-recovery.target",
         )
     )
 
@@ -383,7 +383,7 @@ def build_update_payload(
         f"--extract={bad_root}", "--overwrite", "--preserve", image,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    unit = bad_root / "usr/lib/systemd/system/stylos-broken.service"
+    unit = bad_root / "usr/lib/systemd/system/carrel-broken.service"
     unit.parent.mkdir(parents=True, exist_ok=True)
     unit.write_text(
         "[Unit]\nDescription=Broken update fixture\n\n"
@@ -392,41 +392,41 @@ def build_update_payload(
     )
     wants = bad_root / "etc/systemd/system/multi-user.target.wants"
     wants.mkdir(parents=True, exist_ok=True)
-    link = wants / "stylos-broken.service"
+    link = wants / "carrel-broken.service"
     link.unlink(missing_ok=True)
-    link.symlink_to("/usr/lib/systemd/system/stylos-broken.service")
+    link.symlink_to("/usr/lib/systemd/system/carrel-broken.service")
 
-    root_image = payload / f"stylos-root-{UPDATE_VERSION}.raw"
+    root_image = payload / f"carrel-root-{UPDATE_VERSION}.raw"
     run(
-        "mkfs.erofs", "-zlz4hc,9", "-L", "stylos-root-b",
+        "mkfs.erofs", "-zlz4hc,9", "-L", "carrel-root-b",
         root_image, bad_root,
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
     hash_file, roothash = verity_format(root_image, work)
-    shutil.copyfile(hash_file, payload / f"stylos-verity-{UPDATE_VERSION}.raw")
+    shutil.copyfile(hash_file, payload / f"carrel-verity-{UPDATE_VERSION}.raw")
     # Deliberately wrong root hash in the *signature partition*: the BIOS
     # rollback test needs a slot B that dies in the initrd (before userspace),
     # while the UEFI path still uses the correct roothash embedded in its UKI.
-    (payload / f"stylos-verity-sig-{UPDATE_VERSION}.sig").write_bytes(
+    (payload / f"carrel-verity-sig-{UPDATE_VERSION}.sig").write_bytes(
         verity_signature("0" * 64, work)
     )
 
-    (payload / f"stylos-b-{UPDATE_VERSION}.conf").write_text(
+    (payload / f"carrel-b-{UPDATE_VERSION}.conf").write_text(
         entry_conf(
-            "b", "Stylos (other system)", UPDATE_VERSION, kver, roothash,
-            SORT_KEY["b"], "systemd.mask=stylos-session.service",
+            "b", "Carrel (other system)", UPDATE_VERSION, kver, roothash,
+            SORT_KEY["b"], "systemd.mask=carrel-session.service",
         )
     )
 
     (out / "update" / "README").write_text(
-        f"""Stylos {UPDATE_VERSION} offline update fixture (built by image/assemble.py).
+        f"""Carrel {UPDATE_VERSION} offline update fixture (built by image/assemble.py).
 
-Copy payload/ to /data/.stylos/update/payload/ on a running Stylos and
-reboot.  stylos-update.service applies the inactive slot with
+Copy payload/ to /data/.carrel/update/payload/ on a running Carrel and
+reboot.  carrel-update.service applies the inactive slot with
 systemd-sysupdate, sets the boot-counting entry as the default and reboots.
 
 This particular payload is intentionally broken: its entry's kernel command line
-masks stylos-session.service, so boot-complete.target is never reached and
+masks carrel-session.service, so boot-complete.target is never reached and
 the boot counter falls back to the previous slot after three attempts.
 """
     )
@@ -445,7 +445,7 @@ def main() -> int:
     parts = read_gpt(image)
     esp_part = next(p for p in parts if p["type"] == ESP_GUID)
     roots = sorted(
-        (p for p in parts if p["name"].startswith("stylos-root-")),
+        (p for p in parts if p["name"].startswith("carrel-root-")),
         key=lambda p: p["first"],
     )
     if len(roots) != 2:
@@ -462,7 +462,7 @@ def main() -> int:
         # and its (unsigned) systemd-boot.  The Debian-signed chain replaces
         # them below.
         for line in esp.mdir("/EFI/Linux").splitlines():
-            if line.endswith(".efi") and "stylos-" in line:
+            if line.endswith(".efi") and "carrel-" in line:
                 esp.remove(f"/EFI/Linux/{line.rstrip('/').split('/')[-1]}")
         for line in esp.mdir("/loader/entries").splitlines():
             if line.endswith(".conf"):
@@ -470,34 +470,34 @@ def main() -> int:
         esp.remove("/EFI/systemd/systemd-bootx64.efi")
 
         # Secure Boot chain.  /EFI/BOOT is the removable-media (USB) path and
-        # /EFI/stylos the path the installer registers with efibootmgr.
+        # /EFI/carrel the path the installer registers with efibootmgr.
         for name in SECURE_BOOT_FILES:
             staged = work / name
-            esp.copy_out(f"/EFI/stylos/{name}", staged)
+            esp.copy_out(f"/EFI/carrel/{name}", staged)
             if staged.stat().st_size < 50 * 1024:
-                raise SystemExit(f"/EFI/stylos/{name} on the ESP is missing or empty")
+                raise SystemExit(f"/EFI/carrel/{name} on the ESP is missing or empty")
             # shim is BOOTX64.EFI on removable media; its second stage and
             # MokManager sit beside it under their own names.
             target = "BOOTX64.EFI" if name == "shimx64.efi" else name
             esp.copy_in(staged, f"/EFI/BOOT/{target}")
 
         # Slot A is the default.  Slot B has no entry until an update installs
-        # one: a stale good-looking stylos-b.conf would be selected after a
+        # one: a stale good-looking carrel-b.conf would be selected after a
         # failed counted B entry even though sysupdate has already replaced the
         # B root filesystem.
         esp.write(
-            entry_conf("a", "Stylos", VERSION, kver, roothashes["a"], SORT_KEY["a"]),
-            "/loader/entries/stylos-a.conf", work, "stylos-a.conf",
+            entry_conf("a", "Carrel", VERSION, kver, roothashes["a"], SORT_KEY["a"]),
+            "/loader/entries/carrel-a.conf", work, "carrel-a.conf",
         )
         esp.write(
             entry_conf(
-                "a", "Stylos recovery", VERSION, kver, roothashes["a"],
-                SORT_KEY["recovery"], "systemd.unit=stylos-recovery.target",
+                "a", "Carrel recovery", VERSION, kver, roothashes["a"],
+                SORT_KEY["recovery"], "systemd.unit=carrel-recovery.target",
             ),
-            "/loader/entries/stylos-recovery.conf", work, "stylos-recovery.conf",
+            "/loader/entries/carrel-recovery.conf", work, "carrel-recovery.conf",
         )
         esp.write(
-            "default stylos-a.conf\ntimeout 2\neditor no\n", "/loader/loader.conf",
+            "default carrel-a.conf\ntimeout 2\neditor no\n", "/loader/loader.conf",
             work, "loader.conf",
         )
 
@@ -506,9 +506,9 @@ def main() -> int:
         run("grub-editenv", env, "create")
         run(
             "grub-editenv", env, "set",
-            "stylos_default=a", "stylos_a_tries=0", "stylos_b_tries=0",
-            f"stylos_a_roothash={roothashes['a']}",
-            f"stylos_b_roothash={roothashes['b']}",
+            "carrel_default=a", "carrel_a_tries=0", "carrel_b_tries=0",
+            f"carrel_a_roothash={roothashes['a']}",
+            f"carrel_b_roothash={roothashes['b']}",
         )
         esp.copy_in(env, "/grub/grubenv")
 

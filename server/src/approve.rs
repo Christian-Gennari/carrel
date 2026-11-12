@@ -55,7 +55,7 @@ pub fn render_page(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Stylos server — pairing</title>
+<title>Carrel server — pairing</title>
 <style>
   :root {{ color-scheme: light dark; }}
   body {{ font-family: system-ui, sans-serif; margin: 0; padding: 2rem 1rem;
@@ -89,7 +89,7 @@ pub fn render_page(
 </head>
 <body>
 <main>
-  <h1>Stylos server</h1>
+  <h1>Carrel server</h1>
   <p class="muted">{label} · certificate {fingerprint}</p>
   {message}
   <h2>Waiting for approval</h2>
@@ -137,7 +137,7 @@ pub fn escape(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use stylos_protocol::{new_pair_id, PairStatus};
+    use carrel_protocol::{new_pair_id, PairStatus};
 
     #[test]
     fn escapes_html() {

@@ -1,4 +1,4 @@
-//! Wire types for every endpoint in Stylos Sync Protocol v1.
+//! Wire types for every endpoint in Carrel Sync Protocol v1.
 //!
 //! Serialization is plain JSON. Field names are exactly the names in
 //! `spec/02-sync-protocol.md` so other implementations can follow the document

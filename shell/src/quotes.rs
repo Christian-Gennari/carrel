@@ -181,7 +181,7 @@ impl QuotesState {
     }
 
     /// A daemon error. The spec's sentence gets its own calm state; anything
-    /// else (for example `stylosd` not running) is shown as an error line.
+    /// else (for example `carreld` not running) is shown as an error line.
     pub fn set_error(&mut self, message: String) {
         self.hits.clear();
         self.selected = 0;
@@ -351,12 +351,12 @@ impl QuotesPage {
         });
         page.install();
         // The screenshot script starts the palette with a search already typed.
-        if let Ok(query) = std::env::var("STYLOS_QUOTE_QUERY") {
+        if let Ok(query) = std::env::var("CARREL_QUOTE_QUERY") {
             if !query.trim().is_empty() {
                 page.entry.set_text(&query);
                 page.state.borrow_mut().query = query;
                 // And can select it, to check the accent text selection.
-                if std::env::var("STYLOS_QUOTE_SELECT").as_deref() == Ok("1") {
+                if std::env::var("CARREL_QUOTE_SELECT").as_deref() == Ok("1") {
                     page.entry.select_region(0, -1);
                 }
             }
@@ -395,7 +395,7 @@ impl QuotesPage {
         });
     }
 
-    /// Ctrl+] from any screen, or `STYLOS_START_SCREEN=quotes`.
+    /// Ctrl+] from any screen, or `CARREL_START_SCREEN=quotes`.
     pub fn open(self: &Rc<Self>) {
         self.nav.show("quotes");
         self.on_open();
@@ -796,9 +796,9 @@ mod tests {
         assert!(state.error.is_none());
 
         let mut state = QuotesState::default();
-        state.set_error("stylosd is not running.".into());
+        state.set_error("carreld is not running.".into());
         assert_eq!(state.status, QuotesStatus::Ready);
-        assert_eq!(state.error.as_deref(), Some("stylosd is not running."));
+        assert_eq!(state.error.as_deref(), Some("carreld is not running."));
 
         let mut state = QuotesState {
             query: "zzz".into(),
