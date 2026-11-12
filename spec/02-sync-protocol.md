@@ -62,17 +62,17 @@ server) and has a `path` (relative, `/`-separated, `.md`). Content hash =
 - `stylos-server` returns `404` for `/library`; the device then shows "Quotes
   need a Nostos account".
 
-## Cloud folder backends (Google Drive, Dropbox)
+## Google Drive backend
 
 For users without Nostos or a server. Simplest safe model: a **one-way
 mirror**. The device is the source of truth; each sync uploads changed files
-to a `Stylos` folder in the user's cloud drive. Edits made in the cloud folder
+to a `Stylos` folder in the user's Google Drive. Edits made in the Drive folder
 do not come back (the Sync screen says so). Deleted files move to
 `Stylos/.deleted/` in the cloud, never hard-deleted.
 
-- Options per backend: mirror Markdown (default), and optionally also a
+- Options: mirror Markdown (default), and optionally also a
   `.docx` copy of each file (made with the export pipeline), so the files open
-  directly in Google Docs / Word.
+  directly in Google Docs.
 - Implemented natively in `stylosd` (Rust, reqwest). No rclone, no browser on
   the device.
 - **Google Drive**: OAuth 2.0 **device authorization flow** ("TV and limited
@@ -80,14 +80,9 @@ do not come back (the Sync screen says so). Deleted files move to
   created; non-sensitive scope, no Google verification needed). The device
   shows a URL + short code + QR; the user approves on a phone. Upload with the
   Drive v3 API; keep a `path → file id` map in `sync-state.sqlite`.
-- **Dropbox**: "App folder" app (sees only `Apps/Stylos/`). OAuth 2.0 PKCE with
-  no redirect: the device shows a URL + QR, the user approves on a phone,
-  Dropbox shows a code, the user types it on the device. Refresh token
-  (`token_access_type=offline`). Upload with `/2/files/upload`; compare
-  `content_hash` to skip unchanged files.
 - OAuth client IDs come from `/usr/share/stylos/oauth.toml` (built into the
   image; overridable in `/data/.stylos/oauth.toml` for self-builders).
-- More than one backend may be active (for example Nostos + Dropbox). Sync runs
+- More than one backend may be active (for example Nostos + Google Drive). Sync runs
   them in order in the same network session.
 
 ## Updates

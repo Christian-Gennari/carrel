@@ -57,9 +57,9 @@ is committed on its branch. The orchestrator reviews and merges to `main`.
   wired to D-Bus. Gate: scripted UI tests + screenshots.
 - **WP6 · Export** — pandoc/typst pipeline + Lua citation filter, USB mount
   rules. Gate: export fixture docs to all formats; validate outputs.
-- **WP6b · Cloud folders** — Google Drive (device flow) and Dropbox (PKCE
-  code paste) one-way mirror in `stylosd`, per `spec/02-sync-protocol.md`.
-  Gate: tests against mocked APIs; one manual run against real accounts.
+- **WP6b · Google Drive** — Google Drive one-way mirror (device flow) in
+  `stylosd`, per `spec/02-sync-protocol.md`. Gate: tests against a mocked
+  Drive API; one manual run against a real account.
 - **WP7 · Image integration** — install real binaries into the image; A/B
   partitions, sysupdate, boot counting, recovery menu, installer with "type
   ERASE". Gate: QEMU tests: install from USB image to a blank disk, power-cut
