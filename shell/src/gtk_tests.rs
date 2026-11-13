@@ -58,6 +58,13 @@ fn gtk_scenarios() {
     opening_a_folder_starts_at_its_first_entry();
     new_file_from_files_lands_in_the_selected_folder();
     a_conflict_copy_offers_three_ways();
+    // --- UI round 5 (Editor, issue #32) ---
+    the_document_is_named_quietly_on_the_page();
+    the_bottom_line_dims_while_typing_and_comes_back();
+    the_editor_can_select_a_phrase();
+    markdown_markers_lists_quotes_and_citations_are_styled();
+    the_caret_line_holds_its_height();
+    // --- end UI round 5 (Editor, issue #32) ---
     keystroke_baseline();
     the_wifi_fix_returns_to_sync_and_syncs();
 }
@@ -800,6 +807,164 @@ fn mapped_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
     }
     None
 }
+
+// --- UI round 5 (Editor, issue #32) ---
+
+/// The open document's name is one quiet line on the page: no extension, the
+/// folder before it, and "Untitled" for a new document until its first line
+/// names it.
+fn the_document_is_named_quietly_on_the_page() {
+    let shell = TestShell::new(
+        &[
+            ("Alpha.md", "# Alpha\n"),
+            ("Novel/Chapter one.md", "# Chapter one\n"),
+        ],
+        "Alpha.md",
+    );
+    assert_eq!(shell.editor.document_name_text(), "Alpha");
+
+    shell
+        .editor
+        .open_rel(Path::new("Novel/Chapter one.md"))
+        .expect("open the nested document");
+    settle();
+    assert_eq!(
+        shell.editor.document_name_text(),
+        "Novel / Chapter one",
+        "the folder is quiet, the name is the name"
+    );
+
+    shell.press("Ctrl+N", gdk::Key::n, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert_eq!(shell.editor.document_name_text(), "Untitled");
+    assert!(shell.editor.start_hint_visible());
+}
+
+/// The bottom line is one line, and it steps back while the writer types:
+/// the class is on it during the keys and gone once they pause.
+fn the_bottom_line_dims_while_typing_and_comes_back() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    assert!(!shell.editor.chrome_dimmed(), "calm before the first key");
+    shell.type_text("more words");
+    assert!(
+        shell.editor.chrome_dimmed(),
+        "the bottom line dims while typing"
+    );
+    let line = shell.editor.bottom_line_text();
+    assert!(line.contains("words"), "{line:?}");
+    assert!(!line.contains('\n'), "the bottom line stays one line");
+    pump(|| !shell.editor.chrome_dimmed());
+    assert!(!shell.editor.chrome_dimmed(), "it comes back after a pause");
+}
+
+/// The editor can select a phrase (the screenshot state and the selection
+/// colour rely on it).
+fn the_editor_can_select_a_phrase() {
+    let shell = TestShell::new(
+        &[("Alpha.md", "# Alpha\n\nThe kettle clicks off at six.\n")],
+        "Alpha.md",
+    );
+    let buffer = shell.editor.buffer();
+    shell.editor.select_range(9, 29);
+    let (start, end) = buffer
+        .selection_bounds()
+        .expect("a selected range is on the buffer");
+    assert_eq!((start.offset(), end.offset()), (9, 38));
+    assert_eq!(
+        buffer.text(&start, &end, false).as_str(),
+        "The kettle clicks off at six.",
+        "the selection covers the phrase, not the Markdown around it"
+    );
+}
+
+/// Every Markdown marker is dimmed, list markers included; a quote is one
+/// indented, italic block; citations show the quiet marker, never the URL.
+fn markdown_markers_lists_quotes_and_citations_are_styled() {
+    let text = "# Title\n\nThe **bold** and _soft_ words.\n\n- an item\n\n> A small room.\n\nSee [^1](nostos:cite/notes-1) and nostos:cite/bare-2, too.\n";
+    let shell = TestShell::new(&[("Style.md", text)], "Style.md");
+    let buffer = shell.editor.buffer();
+    let has = |offset: usize, name: &str| {
+        buffer
+            .iter_at_offset(offset as i32)
+            .tags()
+            .iter()
+            .any(|tag| tag.name().as_deref() == Some(name))
+    };
+    let at = |needle: &str| text.find(needle).expect("fixture text");
+
+    assert!(has(at("#"), "carrel-dim"), "the heading marker");
+    assert!(has(at("Title"), "carrel-heading-1"), "the heading");
+    assert!(has(at("**"), "carrel-dim"), "the bold markers");
+    assert!(has(at("bold"), "carrel-bold"));
+    assert!(has(at("_soft_"), "carrel-dim"), "the italic marker");
+    assert!(has(at("soft"), "carrel-italic"));
+    assert!(has(at("- an"), "carrel-dim"), "the list marker");
+    assert!(has(at("> A"), "carrel-dim"), "the quote marker");
+    assert!(has(at("A small"), "carrel-quote"), "the quote block");
+
+    // A footnote link: the label is the marker, the syntax is hidden.
+    assert!(has(at("[^1]") + 2, "carrel-cite"));
+    assert!(has(at("[^1]"), "carrel-cite-hidden"));
+    assert!(
+        has(at("](nostos:cite/notes-1)"), "carrel-cite-hidden"),
+        "the target never shows as a URL"
+    );
+
+    // A bare target: the scheme is hidden and the id is the marker, while
+    // the buffer and the file still hold every character.
+    let bare = at("nostos:cite/bare-2");
+    assert!(has(bare, "carrel-cite-hidden"));
+    assert!(has(bare + "nostos:cite/".len(), "carrel-cite"));
+    assert_eq!(contents(&buffer), text, "the stored Markdown is untouched");
+}
+
+/// Typewriter scrolling: once the caret is past the middle, its line holds
+/// half the page while the text travels underneath, and typing one more line
+/// moves the page, not the line.
+fn the_caret_line_holds_its_height() {
+    // The application turns animations off; the scroll must land at once.
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_enable_animations(false);
+    }
+    let mut text = String::from("# Long\n\n");
+    for index in 1..=60 {
+        text.push_str(&format!(
+            "Paragraph {index}. The kettle clicks off at six and the house is still asleep while the first sentence arrives.\n\n"
+        ));
+    }
+    let shell = TestShell::new(&[("Long.md", &text)], "Long.md");
+    let middle = text.find("Paragraph 30.").expect("paragraph thirty") as i32;
+    shell.editor.select_range(middle, 0);
+    settle();
+
+    let view = shell.editor.view();
+    let buffer = shell.editor.buffer();
+    // The viewport origin is the adjustment value minus the top margin, so
+    // the line's height on the page includes that margin.
+    let caret_y = |view: &sourceview::View, buffer: &sourceview::Buffer| {
+        let iter = buffer.iter_at_mark(&buffer.get_insert());
+        let adjustment = view.vadjustment().expect("the scroller");
+        f64::from(view.iter_location(&iter).y()) + f64::from(view.top_margin()) - adjustment.value()
+    };
+    let adjustment = view.vadjustment().expect("the scroller");
+    assert!(adjustment.value() > 0.0, "the page follows a long document");
+    let height = f64::from(view.height());
+    let before = caret_y(&view, &buffer);
+    assert!(
+        (before - height / 2.0).abs() <= 40.0,
+        "the caret line rests at half the page (at {before}, page {height})"
+    );
+
+    shell.type_text("\nmore");
+    settle();
+    let after = caret_y(&view, &buffer);
+    assert!(
+        (after - before).abs() <= 2.0,
+        "the line stays put while the text moves ({before} -> {after})"
+    );
+}
+
+// --- end UI round 5 (Editor, issue #32) ---
 
 fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
     if !widget.is_visible() {
