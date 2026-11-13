@@ -222,6 +222,12 @@ impl WifiPage {
 
         let list = ui::list();
         let list_scroller = ui::scroller(&list);
+        // Keep the password field close to the list it belongs to: the list
+        // takes its natural height (up to a page's worth) instead of pushing
+        // the field to the bottom of the screen.
+        list_scroller.set_vexpand(false);
+        list_scroller.set_propagate_natural_height(true);
+        list_scroller.set_max_content_height(420);
         screen.content.append(&list_scroller);
 
         let entry_label = gtk::Label::new(Some("Password"));

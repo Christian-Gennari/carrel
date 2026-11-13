@@ -31,6 +31,7 @@ const IMPORT_HINTS: [(&str, &str); 4] = [
     ("Esc", "Back"),
 ];
 const DONE_HINTS: [(&str, &str); 2] = [("Enter", "Again"), ("Esc", "Back")];
+const RUNNING_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ExportFormat {
@@ -718,6 +719,7 @@ impl ExportPage {
                 self.screen.set_hints(&IMPORT_HINTS);
             }
             ExportStep::Drive => self.screen.set_hints(&DRIVE_HINTS),
+            ExportStep::Running => self.screen.set_hints(&RUNNING_HINTS),
             ExportStep::Done => self.screen.set_hints(&DONE_HINTS),
             _ => self.screen.set_hints(&HINTS),
         }
