@@ -10,6 +10,7 @@
 //! ```
 
 use std::cell::RefCell;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -20,9 +21,18 @@ use gtk::{gdk, glib};
 use crate::battery::SharedBattery;
 use crate::daemon::{Client, FakeDaemon};
 use crate::editor::{place_block, EditorPage};
+use crate::export::ExportPage;
+use crate::files::FilesPage;
+use crate::first_run::FirstRunPage;
+use crate::history::HistoryPage;
+use crate::keys::Keys;
+use crate::nav::Navigator;
 use crate::quotes::QuotePalette;
 use crate::settings::Settings;
+use crate::settings_page::SettingsPage;
 use crate::store::Store;
+use crate::sync::SyncPage;
+use crate::wifi::WifiPage;
 
 #[test]
 fn gtk_scenarios() {
@@ -33,6 +43,7 @@ fn gtk_scenarios() {
     sourceview::init();
     replacing_a_query_is_one_undoable_step();
     the_palette_follows_the_text_and_the_keys();
+    keystroke_baseline();
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.
@@ -230,4 +241,469 @@ fn pump_open(palette: &Rc<QuotePalette>, buffer: &sourceview::Buffer) {
     settle();
     assert!(palette.is_open(), "the caret came back to @room");
     pump(|| palette.result_count() >= 1);
+}
+
+// ---------------------------------------------------------------------------
+// Keystroke baseline.
+//
+// Each writer task runs against the real pages and the same window dispatcher
+// the application installs (`keys::Keys`). The count is the number of key
+// presses the writer makes: a chord is one press, every typed character is
+// one. A confirmation dialog counts the two keys it takes to confirm it
+// (`Right`, `Enter`); its button is then activated in the dialog, exactly the
+// widget those keys reach.
+//
+// The table is printed and written to `docs/ux-baseline.md`. The counts are
+// asserted, so a later UI round that needs more keys fails here and must
+// change the baseline deliberately.
+// ---------------------------------------------------------------------------
+
+const BASELINE: [(&str, usize); 7] = [
+    ("Open an existing file by name", 4),
+    ("Create a new file", 12),
+    ("Insert a quote with @", 7),
+    ("Start a sync", 1),
+    ("Export the current file to USB as .docx", 6),
+    ("Restore an earlier version", 5),
+    ("Change the theme", 2),
+];
+
+struct TestShell {
+    root: PathBuf,
+    stack: gtk::Stack,
+    window: gtk::Window,
+    editor: Rc<EditorPage>,
+    quotes: Rc<QuotePalette>,
+    keys: Rc<Keys>,
+    settings: Rc<RefCell<Settings>>,
+    daemon: Arc<FakeDaemon>,
+    sequence: RefCell<Vec<String>>,
+    // Dropped last: the writing folder outlives the pages that use it.
+    _temp: tempfile::TempDir,
+}
+
+impl TestShell {
+    /// A window with every screen, wired like `app::run`, on a fresh writing
+    /// folder. `open` is the document the editor starts on.
+    fn new(files: &[(&str, &str)], open: &str) -> Self {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let root = temp.path().to_path_buf();
+        for (relative, text) in files {
+            let path = root.join(relative);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent).expect("folder");
+            }
+            std::fs::write(path, text).expect("fixture file");
+        }
+        let store = Store::open(&root).expect("store");
+        let settings = Rc::new(RefCell::new(Settings {
+            first_run_complete: true,
+            ..Settings::default()
+        }));
+        let provider = gtk::CssProvider::new();
+        if let Some(display) = gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &provider,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+        crate::theme::apply(&provider, &settings.borrow());
+
+        let window = gtk::Window::builder()
+            .title("Carrel test")
+            .default_width(1280)
+            .default_height(800)
+            .decorated(false)
+            .build();
+        let stack = gtk::Stack::builder()
+            .transition_type(gtk::StackTransitionType::Crossfade)
+            .transition_duration(150)
+            .build();
+        let daemon = Arc::new(FakeDaemon::new());
+        let client = Client::new(daemon.clone());
+        let battery: Rc<dyn crate::battery::Battery> = Rc::new(SharedBattery::new());
+
+        let editor = EditorPage::new(
+            store.clone(),
+            Rc::clone(&settings),
+            stack.clone(),
+            provider,
+            battery,
+        );
+        let nav = Navigator::new(stack.clone());
+        nav.attach(&editor);
+        let files = FilesPage::new(store.clone(), Rc::clone(&editor), stack.clone());
+        let history = HistoryPage::new(client.clone(), Rc::clone(&nav), Rc::clone(&editor));
+        let quotes = QuotePalette::new(client.clone(), Rc::clone(&editor));
+        let sync = SyncPage::new(client.clone(), Rc::clone(&nav));
+        let wifi = WifiPage::new(client.clone(), Rc::clone(&nav));
+        let settings_page = SettingsPage::new(
+            client.clone(),
+            Rc::clone(&nav),
+            Rc::clone(&settings),
+            root.clone(),
+            Rc::new(|| {}),
+        );
+        let export = ExportPage::new(
+            client.clone(),
+            Rc::clone(&nav),
+            Rc::clone(&editor),
+            store.clone(),
+        );
+        let first_run = FirstRunPage::new(
+            Rc::clone(&settings),
+            root.clone(),
+            Rc::clone(&nav),
+            Rc::clone(&sync),
+        );
+
+        stack.add_named(&editor.widget, Some("editor"));
+        stack.add_named(&files.widget, Some("files"));
+        stack.add_named(&history.widget, Some("history"));
+        stack.add_named(&sync.widget, Some("sync"));
+        stack.add_named(&settings_page.widget, Some("settings"));
+        stack.add_named(&wifi.widget, Some("wifi"));
+        stack.add_named(&export.widget, Some("export"));
+        stack.add_named(&first_run.widget, Some("first_run"));
+        stack.set_visible_child_name("editor");
+        window.set_child(Some(&stack));
+        editor.open_rel(Path::new(open)).expect("open fixture");
+        window.present();
+        settle();
+
+        let keys = Keys::new(
+            stack.clone(),
+            nav,
+            Rc::clone(&editor),
+            files,
+            history,
+            Rc::clone(&quotes),
+            sync,
+            settings_page,
+            wifi,
+            export,
+            first_run,
+        );
+
+        Self {
+            root,
+            stack,
+            window,
+            editor,
+            quotes,
+            keys,
+            settings,
+            daemon,
+            sequence: RefCell::new(Vec::new()),
+            _temp: temp,
+        }
+    }
+
+    /// One key press, recorded and dispatched through the window's dispatcher.
+    fn press(&self, label: &str, key: gdk::Key, modifiers: gdk::ModifierType) {
+        self.sequence.borrow_mut().push(label.to_owned());
+        self.keys.handle(key, modifiers);
+    }
+
+    /// Type text as GTK delivers it: the key goes through the dispatcher
+    /// first, then the character reaches the focused text view.
+    fn type_text(&self, text: &str) {
+        for character in text.chars() {
+            let name = character.to_string();
+            let (label, key) = match character {
+                '\n' => ("Enter".to_owned(), gdk::Key::Return),
+                ' ' => ("Space".to_owned(), gdk::Key::space),
+                '@' => ("@".to_owned(), gdk::Key::at),
+                other => (
+                    other.to_string(),
+                    gdk::Key::from_name(&name)
+                        .or_else(|| gdk::Key::from_name(name.to_ascii_lowercase()))
+                        .unwrap_or(gdk::Key::a),
+                ),
+            };
+            self.press(&label, key, gdk::ModifierType::empty());
+            self.editor
+                .buffer()
+                .insert_at_cursor(&character.to_string());
+        }
+        settle();
+    }
+
+    fn take_sequence(&self) -> Vec<String> {
+        let mut sequence = self.sequence.borrow_mut();
+        std::mem::take(&mut *sequence)
+    }
+
+    fn visible(&self) -> String {
+        self.stack
+            .visible_child_name()
+            .map(|name| name.to_string())
+            .unwrap_or_default()
+    }
+}
+
+impl Drop for TestShell {
+    fn drop(&mut self) {
+        self.window.destroy();
+    }
+}
+
+fn keystroke_baseline() {
+    let mut measured: Vec<(&'static str, Vec<String>)> = Vec::new();
+
+    // Open an existing file by name: the Files screen lists folders first,
+    // then names alphabetically. Zebra.md is the third row.
+    {
+        let shell = TestShell::new(
+            &[
+                ("Novel/Chapter one.md", "# Chapter one\n"),
+                ("Alpha.md", "# Alpha\n"),
+                ("Zebra.md", "# Zebra\n"),
+            ],
+            "Alpha.md",
+        );
+        shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        for _ in 0..2 {
+            shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+        }
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Zebra.md")),
+            "the third Files row opened"
+        );
+        assert!(contents(&shell.editor.buffer()).contains("# Zebra"));
+        measured.push(("Open an existing file by name", shell.take_sequence()));
+    }
+
+    // Create a new file and name it with its first line.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.press("Ctrl+N", gdk::Key::n, gdk::ModifierType::CONTROL_MASK);
+        assert_eq!(
+            shell
+                .editor
+                .current_rel()
+                .and_then(|path| path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned()))
+                .as_deref(),
+            Some("Untitled.md")
+        );
+        shell.type_text("Chapter two");
+        pump(|| shell.editor.current_rel().as_deref() == Some(Path::new("Chapter two.md")));
+        assert!(
+            shell.root.join("Chapter two.md").is_file(),
+            "the new file was named from its first line"
+        );
+        measured.push(("Create a new file", shell.take_sequence()));
+    }
+
+    // Insert a quote with `@`: type the trigger and the query, pick the
+    // second match with Down, insert with Enter.
+    {
+        let shell = TestShell::new(&[("Room.md", "Intro\n\n")], "Room.md");
+        shell.type_text("@room");
+        assert!(shell.quotes.is_open(), "the @ trigger opened the palette");
+        pump(|| shell.quotes.result_count() >= 2);
+        shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        assert!(!shell.quotes.is_open());
+        let text = contents(&shell.editor.buffer());
+        assert!(!text.contains("@room"), "{text:?}");
+        assert!(
+            text.contains("> Silence is not the absence of work"),
+            "{text:?}"
+        );
+        assert!(text.contains("(nostos:cite/"), "{text:?}");
+        measured.push(("Insert a quote with @", shell.take_sequence()));
+    }
+
+    // Start a sync from the editor.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.press(
+            "Ctrl+Shift+S",
+            gdk::Key::s,
+            gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+        );
+        pump(|| shell.daemon.synced() == 1);
+        assert_eq!(shell.visible(), "sync", "the Sync screen shows progress");
+        measured.push(("Start a sync", shell.take_sequence()));
+    }
+
+    // Export the current file to the USB drive as .docx.
+    {
+        let shell = TestShell::new(
+            &[("The quiet morning.md", "# The quiet morning\n")],
+            "The quiet morning.md",
+        );
+        shell.press("Ctrl+E", gdk::Key::e, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        for _ in 0..2 {
+            shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+        }
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        settle();
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        pump(|| !shell.daemon.exported().is_empty());
+        let exported = shell.daemon.exported();
+        assert_eq!(exported[0].1, "docx");
+        assert_eq!(
+            exported[0].0,
+            vec!["current:The quiet morning.md".to_owned()]
+        );
+        measured.push((
+            "Export the current file to USB as .docx",
+            shell.take_sequence(),
+        ));
+    }
+
+    // Restore an earlier version: open History, go to the second version,
+    // Enter, then confirm the dialog with Right and Enter.
+    {
+        let shell = TestShell::new(
+            &[("The quiet morning.md", "# The quiet morning\n")],
+            "The quiet morning.md",
+        );
+        shell.press("Ctrl+H", gdk::Key::h, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+        settle();
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        wait_for_dialog_button("Restore");
+        // The dialog's Cancel is the default: Right, Enter reaches Restore.
+        shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        assert!(
+            activate_dialog_button("Restore"),
+            "the Restore button is a real widget in the dialog"
+        );
+        pump(|| contents(&shell.editor.buffer()).contains("The kettle clicks off at six"));
+        measured.push(("Restore an earlier version", shell.take_sequence()));
+    }
+
+    // Change the theme: Settings opens on its first row, Right changes it.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        let before = shell.settings.borrow().theme;
+        shell.press("Ctrl+,", gdk::Key::comma, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+        assert_ne!(shell.settings.borrow().theme, before, "the theme changed");
+        measured.push(("Change the theme", shell.take_sequence()));
+    }
+
+    finish_baseline(&measured);
+}
+
+/// Print and write the table; fail when a count moved away from the baseline.
+fn finish_baseline(measured: &[(&str, Vec<String>)]) {
+    assert_eq!(measured.len(), BASELINE.len());
+    let mut table = String::new();
+    table.push_str("# UX baseline — keystrokes per writer task\n\n");
+    table.push_str(
+        "Measured by `shell/src/gtk_tests.rs` through the real pages and the \
+         window's key dispatcher. A later UI round must not need more key \
+         presses for the same task; the test asserts these counts.\n\n",
+    );
+    table.push_str("A chord counts once. Every typed character counts once. ");
+    table.push_str("A confirmation dialog counts the keys that reach its button.\n\n");
+    table.push_str("| Task | Keys pressed | Key sequence |\n");
+    table.push_str("|---|---:|---|\n");
+
+    println!("\nKeystroke baseline (a chord counts once):\n");
+    println!("{:<44} {:>4}  Sequence", "Task", "Keys");
+    for (index, (task, sequence)) in measured.iter().enumerate() {
+        let expected = BASELINE[index].1;
+        assert_eq!(
+            sequence.len(),
+            expected,
+            "{task} needs {} keys, baseline is {expected}; update docs/ux-baseline.md and BASELINE deliberately",
+            sequence.len()
+        );
+        println!("{:<44} {:>4}  {}", task, sequence.len(), sequence.join(" "));
+        table.push_str(&format!(
+            "| {task} | {} | {} |\n",
+            sequence.len(),
+            sequence.join(" ")
+        ));
+    }
+    println!();
+
+    let docs = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("docs")
+        .join("ux-baseline.md");
+    if std::fs::read_to_string(&docs).ok().as_deref() != Some(&table) {
+        std::fs::write(&docs, table).expect("write docs/ux-baseline.md");
+    }
+}
+
+fn widget_has_button(widget: &gtk::Widget, label: &str) -> bool {
+    if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+        if button.label().as_deref() == Some(label) {
+            return true;
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if widget_has_button(&widget, label) {
+            return true;
+        }
+        child = widget.next_sibling();
+    }
+    false
+}
+
+fn has_dialog_button(label: &str) -> bool {
+    gtk::Window::list_toplevels()
+        .iter()
+        .filter(|window| window.is_visible())
+        .any(|window| widget_has_button(window.upcast_ref(), label))
+}
+
+fn wait_for_dialog_button(label: &str) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !has_dialog_button(label) {
+        assert!(
+            Instant::now() < deadline,
+            "the dialog with {label:?} did not appear"
+        );
+        glib::MainContext::default().iteration(false);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn activate_dialog_button(label: &str) -> bool {
+    for window in gtk::Window::list_toplevels() {
+        if !window.is_visible() {
+            continue;
+        }
+        if let Some(button) = find_button(window.upcast_ref(), label) {
+            button.activate();
+            return true;
+        }
+    }
+    false
+}
+
+fn find_button(widget: &gtk::Widget, label: &str) -> Option<gtk::Button> {
+    if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+        if button.label().as_deref() == Some(label) {
+            return Some(button.clone());
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = find_button(&widget, label) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
 }

@@ -815,6 +815,7 @@ struct FakeState {
     pending_pair: Option<PairingInfo>,
     committed: usize,
     unpaired: usize,
+    synced: usize,
     exported: Vec<(Vec<String>, String, String)>,
     imported: Vec<(String, Vec<String>)>,
     quotes: Vec<FakeQuote>,
@@ -919,6 +920,7 @@ impl FakeDaemon {
                 pending_pair: None,
                 committed: 0,
                 unpaired: 0,
+                synced: 0,
                 exported: Vec::new(),
                 imported: Vec::new(),
                 quotes: demo_quotes(),
@@ -931,7 +933,9 @@ impl FakeDaemon {
 
     /// The screenshot daemon: same data, adjusted by environment variables.
     /// `CARREL_BATTERY=10` or `CARREL_BATTERY=18,charging` changes the battery;
-    /// `CARREL_FAKE_NO_DRIVE=1` removes the USB stick.
+    /// `CARREL_FAKE_NO_DRIVE=1` removes the USB stick; `CARREL_FAKE_SYNC` is
+    /// `unpaired`, `syncing` or `error`; `CARREL_FAKE_SLOW_EXPORT=1` keeps the
+    /// exporting step on screen.
     pub fn demo() -> Self {
         let fake = Self::new();
         if let Ok(value) = std::env::var("CARREL_BATTERY") {
@@ -957,6 +961,40 @@ impl FakeDaemon {
                     last_sync: 0,
                 };
             }
+        }
+        // A state the faster-than-the-camera fake cannot hold on its own: the
+        // progress line while a sync runs, or its failure. Values match the
+        // `SyncInfo.state` strings in spec/02-sync-protocol.md.
+        match std::env::var("CARREL_FAKE_SYNC").as_deref() {
+            Ok("unpaired") => {
+                if let Ok(mut state) = fake.state.lock() {
+                    state.sync = SyncInfo {
+                        state: "idle".into(),
+                        message: "Not synced yet.".into(),
+                        last_sync: 0,
+                    };
+                }
+            }
+            Ok("syncing") => {
+                if let Ok(mut state) = fake.state.lock() {
+                    state.sync = SyncInfo {
+                        state: "syncing".into(),
+                        message: "Syncing…".into(),
+                        last_sync: now_unix() - 3_600,
+                    };
+                }
+            }
+            Ok("error") => {
+                if let Ok(mut state) = fake.state.lock() {
+                    state.sync = SyncInfo {
+                        state: "error".into(),
+                        message: "Cannot reach the studio server. Nothing was lost; try again."
+                            .into(),
+                        last_sync: now_unix() - 2 * 3_600,
+                    };
+                }
+            }
+            _ => {}
         }
         match std::env::var("CARREL_FAKE_LIBRARY").as_deref() {
             Ok("unavailable") => fake.set_library_unavailable(true),
@@ -1029,6 +1067,12 @@ impl FakeDaemon {
 
     pub fn unpaired(&self) -> usize {
         self.state.lock().map(|state| state.unpaired).unwrap_or(0)
+    }
+
+    /// How many syncs reached this daemon: the keystroke test's proof that
+    /// Ctrl+Shift+S started one.
+    pub fn synced(&self) -> usize {
+        self.state.lock().map(|state| state.synced).unwrap_or(0)
     }
 
     pub fn exported(&self) -> Vec<(Vec<String>, String, String)> {
@@ -1111,6 +1155,9 @@ impl DaemonClient for FakeDaemon {
     }
 
     fn sync(&self) -> Result<(), DaemonError> {
+        if let Ok(mut state) = self.state.lock() {
+            state.synced += 1;
+        }
         let info = self
             .state
             .lock()
@@ -1244,16 +1291,31 @@ impl DaemonClient for FakeDaemon {
                 .exported
                 .push((selection.clone(), format.clone(), drive_id.clone()));
         }
+        // The fake copy is instant; a slow one keeps the "Exporting" step on
+        // screen long enough for a screenshot.
+        if std::env::var_os("CARREL_FAKE_SLOW_EXPORT").is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
         Ok(format!(
             "/media/carrel/{drive_id}/Carrel export {folder}/ ({format})"
         ))
     }
 
     fn import(&self, drive_id: String, paths: Vec<String>) -> Result<Vec<String>, DaemonError> {
+        // The real daemon scans the drive when the shell names no paths; the
+        // fake copies a deterministic pair so the finished screen has content.
+        let imported = if paths.is_empty() {
+            vec![
+                "Imported/Letters.md".to_owned(),
+                "Imported/travel notes.txt".to_owned(),
+            ]
+        } else {
+            paths
+        };
         if let Ok(mut state) = self.state.lock() {
-            state.imported.push((drive_id, paths.clone()));
+            state.imported.push((drive_id, imported.clone()));
         }
-        Ok(paths)
+        Ok(imported)
     }
 
     fn search_library(
