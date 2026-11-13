@@ -144,6 +144,12 @@ impl Palette {
         blend(self.accent, self.background, 0.30)
     }
 
+    /// A hint under a selected row: the ink mixed onto the row's own accent
+    /// tint, so the smaller text still clears 4.5:1 there.
+    pub fn selected_note(&self) -> String {
+        blend(self.text, &self.selection(), 0.72)
+    }
+
     /// The ring a focused field draws. A neutral step of the ink, never the
     /// accent, and always at least 3:1 against the paper so the edge of a
     /// control is findable.
@@ -265,6 +271,7 @@ pub fn css(settings: &Settings) -> String {
     let hover = palette.hover();
     let selection = palette.selection();
     let text_selection = palette.text_selection();
+    let selected_note = palette.selected_note();
     let focus = palette.focus_ring();
     let family = settings.font.css_family();
     let size = settings.font_size;
@@ -343,6 +350,11 @@ scrollbar {{
 .row-note {{
     color: {dim};
     font-size: 10pt;
+}}
+/* A hint under the selected row sits on that row's tint, so it takes a
+   little more ink to stay readable. */
+.setting-row:selected .row-note {{
+    color: {selected_note};
 }}
 .renaming {{
     background-color: {surface};
@@ -541,6 +553,7 @@ popover.quote-popover > contents {{
         hover = hover,
         selection = selection,
         text_selection = text_selection,
+        selected_note = selected_note,
         focus = focus,
         family = family,
         size = size,
@@ -577,11 +590,16 @@ mod tests {
             let accent = contrast_ratio(palette.accent, palette.background);
             let danger = contrast_ratio(palette.danger, palette.background);
             let ring = contrast_ratio(&palette.focus_ring(), palette.background);
+            let hint = contrast_ratio(&palette.selected_note(), &palette.selection());
             assert!(body >= 7.0, "{name}: body text is only {body:.2}:1");
             assert!(dim >= 4.5, "{name}: dim text is only {dim:.2}:1");
             assert!(accent >= 3.0, "{name}: the accent is only {accent:.2}:1");
             assert!(danger >= 4.5, "{name}: error text is only {danger:.2}:1");
             assert!(ring >= 3.0, "{name}: the focus ring is only {ring:.2}:1");
+            assert!(
+                hint >= 4.5,
+                "{name}: a hint on a selected row is only {hint:.2}:1"
+            );
         }
     }
 

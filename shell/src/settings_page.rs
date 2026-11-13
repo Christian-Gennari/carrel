@@ -167,11 +167,13 @@ impl SettingsState {
     }
 
     pub fn move_by(&mut self, settings: &Settings, delta: i32) {
+        self.about = false;
         let len = rows(settings).len() as i32;
         self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
     }
 
     pub fn select(&mut self, settings: &Settings, index: usize) {
+        self.about = false;
         self.selected = index.min(rows(settings).len() - 1);
     }
 
@@ -328,21 +330,25 @@ impl SettingsState {
         }
     }
 
-    /// The line under the list; it explains the selected row in one sentence.
+    /// The line under the selected row; empty for a row that needs no help.
     pub fn hint_for(&self, settings: &Settings) -> String {
         if self.about {
             return "Carrel is free software, GPL-3.0-or-later. No account is needed to write."
                 .to_owned();
         }
         match self.row(settings) {
-            SettingRow::Theme => {
-                "Automatic wears a day theme from 07:00 and a night theme from 19:00.".to_owned()
-            }
+            SettingRow::Theme if settings.theme.is_automatic() => format!(
+                "{} in the day (07:00–19:00), {} at night.",
+                settings.day_theme.label(),
+                settings.night_theme.label()
+            ),
+            // A fixed theme is its own explanation.
+            SettingRow::Theme => String::new(),
             SettingRow::DayTheme => {
-                "Worn from 07:00 to 19:00 when the theme is Automatic.".to_owned()
+                "The daytime theme while Automatic follows the clock (07:00–19:00).".to_owned()
             }
             SettingRow::NightTheme => {
-                "Worn from 19:00 to 07:00 when the theme is Automatic.".to_owned()
+                "The night-time theme while Automatic follows the clock (19:00–07:00).".to_owned()
             }
             SettingRow::Font => "The same three fonts everywhere, for calm reading.".to_owned(),
             SettingRow::Size => "Ctrl+= and Ctrl+- change this while writing.".to_owned(),
@@ -398,8 +404,7 @@ pub struct SettingsPage {
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
     hint: gtk::Label,
-    note: gtk::Label,
-    mark: gtk::DrawingArea,
+    error: gtk::Label,
     state: RefCell<SettingsState>,
     settings: Rc<RefCell<Settings>>,
     root: PathBuf,
@@ -420,24 +425,20 @@ impl SettingsPage {
         let scroller = ui::scroller(&list);
 
         let hint = ui::hint(HINT);
-        let note = gtk::Label::new(None);
-        note.set_xalign(0.0);
-        note.set_wrap(true);
-        note.set_margin_bottom(6);
-        note.add_css_class("row-note");
 
-        // The mark sits beside the note and shows only on the About row. It
-        // always takes its space, so the list does not move.
-        let mark = ui::mark(30);
-        mark.set_opacity(0.0);
-        let note_row = gtk::Box::new(gtk::Orientation::Horizontal, 14);
-        note_row.append(&mark);
-        note.set_hexpand(true);
-        note_row.append(&note);
+        // A failure (an update that would not apply) is the only line outside
+        // the list; every other hint belongs to its selected row.
+        let error = gtk::Label::new(None);
+        error.set_xalign(0.0);
+        error.set_wrap(true);
+        error.set_margin_bottom(6);
+        error.add_css_class("row-note");
+        error.add_css_class("error-text");
+        error.set_visible(false);
 
         let column = ui::column(820);
         column.append(&ui::title("Settings"));
-        column.append(&note_row);
+        column.append(&error);
         column.append(&scroller);
         column.append(&hint);
 
@@ -459,8 +460,7 @@ impl SettingsPage {
             list,
             scroller,
             hint,
-            note,
-            mark,
+            error,
             state: RefCell::new(initial),
             settings,
             root,
@@ -622,16 +622,22 @@ impl SettingsPage {
             |daemon| daemon.apply_update(),
             move |result| {
                 if let Some(page) = weak.upgrade() {
-                    let mut state = page.state.borrow_mut();
-                    match result {
-                        Ok(()) => {
-                            state.update.wire = "applying".to_owned();
-                            state.update.applying = true;
+                    let failure = {
+                        let mut state = page.state.borrow_mut();
+                        match result {
+                            Ok(()) => {
+                                state.update.wire = "applying".to_owned();
+                                state.update.applying = true;
+                                None
+                            }
+                            Err(error) => {
+                                state.update.applying = false;
+                                Some(error.message)
+                            }
                         }
-                        Err(error) => {
-                            state.update.applying = false;
-                            page.flash_error(&error.message);
-                        }
+                    };
+                    if let Some(message) = failure {
+                        page.flash_error(&message);
                     }
                     page.refresh();
                 }
@@ -641,21 +647,14 @@ impl SettingsPage {
 
     fn flash_error(self: &Rc<Self>, message: &str) {
         self.state.borrow_mut().about = false;
-        self.note.add_css_class("error-text");
-        self.note.set_text(message);
+        self.error.set_text(message);
+        self.error.set_visible(true);
         let weak = Rc::downgrade(self);
         glib::timeout_add_local_once(Duration::from_secs(5), move || {
             if let Some(page) = weak.upgrade() {
-                page.note.remove_css_class("error-text");
-                page.refresh_hint();
+                page.error.set_visible(false);
             }
         });
-    }
-
-    fn refresh_hint(&self) {
-        let state = self.state.borrow();
-        let settings = self.settings.borrow();
-        self.note.set_text(&state.hint_for(&settings));
     }
 
     fn refresh(self: &Rc<Self>) {
@@ -664,34 +663,43 @@ impl SettingsPage {
         }
         let settings = self.settings.borrow();
         let state = self.state.borrow();
-        for row in rows(&settings) {
+        for (index, row) in rows(&settings).iter().enumerate() {
+            // The hint belongs to the selected row only, and sits under it
+            // aligned with the row text.
+            let note = if index == state.selected {
+                state.hint_for(&settings)
+            } else {
+                String::new()
+            };
             let item = match row {
                 SettingRow::Theme | SettingRow::DayTheme | SettingRow::NightTheme => {
-                    theme_value_row(*row, &settings)
+                    theme_value_row(*row, &settings, &note)
                 }
-                _ => ui::value_row(setting_name(*row), &state.value(*row, &settings)),
+                SettingRow::About => {
+                    ui::marked_value_row(setting_name(*row), &state.value(*row, &settings), &note)
+                }
+                _ => ui::value_row(setting_name(*row), &state.value(*row, &settings), &note),
             };
+            // The day and night pickers belong to Automatic: indent them so
+            // they read as part of the Theme row.
+            if matches!(*row, SettingRow::DayTheme | SettingRow::NightTheme) {
+                if let Some(child) = item.child() {
+                    child.set_margin_start(16);
+                }
+            }
             self.list.append(&item);
         }
         ui::select(&self.list, state.selected);
         if let Some(row) = self.list.row_at_index(state.selected as i32) {
             ui::scroll_to_row(&self.scroller, &self.list, &row);
         }
-        self.note.remove_css_class("error-text");
-        self.note.set_text(&state.hint_for(&settings));
-        self.mark
-            .set_opacity(if state.row(&settings) == SettingRow::About {
-                1.0
-            } else {
-                0.0
-            });
         self.hint.set_text(HINT);
     }
 }
 
 /// A theme row: its name, a swatch of its paper, ink and accent, then the
 /// theme's name again as the value (spec/03-ui.md).
-fn theme_value_row(row: SettingRow, settings: &Settings) -> gtk::ListBoxRow {
+fn theme_value_row(row: SettingRow, settings: &Settings, note: &str) -> gtk::ListBoxRow {
     let swatch = match row {
         SettingRow::Theme => match settings.theme.theme() {
             Some(theme) => ui::theme_swatch(theme),
@@ -706,7 +714,7 @@ fn theme_value_row(row: SettingRow, settings: &Settings) -> gtk::ListBoxRow {
         SettingRow::NightTheme => settings.night_theme.label(),
         _ => settings.theme.label(),
     };
-    ui::swatch_row(setting_name(row), &swatch, value)
+    ui::swatch_row(setting_name(row), &swatch, value, note)
 }
 
 fn setting_name(row: SettingRow) -> &'static str {
@@ -803,6 +811,33 @@ mod tests {
         assert_eq!(state.value(SettingRow::Typewriter, &settings), "Off");
         assert_eq!(state.value(SettingRow::Keyboard, &settings), "US");
         assert_eq!(state.value(SettingRow::Update, &settings), "Up to date");
+    }
+
+    #[test]
+    fn the_theme_hint_names_the_chosen_day_and_night_themes() {
+        let mut settings = Settings::default();
+        let state = SettingsState::default();
+        assert_eq!(
+            state.hint_for(&settings),
+            "Light in the day (07:00–19:00), Dark at night."
+        );
+        settings.day_theme = Theme::Sepia;
+        settings.night_theme = Theme::Study;
+        assert_eq!(
+            state.hint_for(&settings),
+            "Sepia in the day (07:00–19:00), Writer's Study at night."
+        );
+
+        // A fixed theme needs no explanation.
+        settings.theme = ThemeChoice::Mist;
+        assert_eq!(state.hint_for(&settings), "");
+
+        // The About sentence is never stale on another row.
+        let mut state = SettingsState::default();
+        state.select(&settings, 0);
+        state.about = true;
+        state.move_by(&settings, 1);
+        assert!(!state.about);
     }
 
     #[test]
