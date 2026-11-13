@@ -495,8 +495,8 @@ impl ExportState {
     pub fn outcome_heading(&self) -> Option<String> {
         match &self.outcome {
             Some(ExportOutcome::Exported { drive, .. }) => Some(format!("Exported to {drive}")),
-            Some(ExportOutcome::Imported { .. }) => Some("Import finished".to_owned()),
-            None => None,
+            // The import result is one line; it is not repeated as a heading.
+            Some(ExportOutcome::Imported { .. }) | None => None,
         }
     }
 
@@ -1088,6 +1088,7 @@ impl ExportPage {
                 let heading = state.outcome_heading().unwrap_or_default();
                 let lines = state.outcome_lines();
                 self.result_heading.set_text(&heading);
+                self.result_heading.set_visible(!heading.is_empty());
                 let (location, detail) = match lines.as_slice() {
                     [] => (None, None),
                     [only] => (None, Some(only.as_str())),
@@ -1441,7 +1442,11 @@ mod tests {
             }
         );
         state.on_imported(vec!["Imported/one.md".into(), "Imported/two.txt".into()]);
-        assert_eq!(state.outcome_heading().as_deref(), Some("Import finished"));
+        assert_eq!(
+            state.outcome_heading(),
+            None,
+            "the import result is one line"
+        );
         assert_eq!(
             state.outcome_lines(),
             vec!["2 files imported into Imported.".to_owned()]
