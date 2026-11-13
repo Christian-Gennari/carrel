@@ -17,15 +17,16 @@ pub trait Battery: fmt::Debug {
         true
     }
 
-    /// What the bottom line shows. No icon fonts, no tofu.
+    /// What the bottom line shows. The word "Battery" keeps the percentage
+    /// from reading as goal progress. No icon fonts, no tofu.
     fn label(&self) -> String {
         if !self.present() {
-            return "no battery".to_owned();
+            return "No battery".to_owned();
         }
         if self.charging() {
-            format!("{}% charging", self.percent())
+            format!("Battery {}% charging", self.percent())
         } else {
-            format!("{}%", self.percent())
+            format!("Battery {}%", self.percent())
         }
     }
 }
@@ -149,8 +150,8 @@ mod tests {
 
     #[test]
     fn labels_plain_and_charging() {
-        assert_eq!(FakeBattery::new(76, false).label(), "76%");
-        assert_eq!(FakeBattery::new(3, true).label(), "3% charging");
+        assert_eq!(FakeBattery::new(76, false).label(), "Battery 76%");
+        assert_eq!(FakeBattery::new(3, true).label(), "Battery 3% charging");
     }
 
     #[test]
@@ -161,13 +162,13 @@ mod tests {
     #[test]
     fn no_battery_says_so_instead_of_zero_percent() {
         let battery = SharedBattery::new();
-        assert_eq!(battery.label(), "no battery");
+        assert_eq!(battery.label(), "No battery");
         battery.set(BatteryStatus {
             present: true,
             percent: 42,
             charging: false,
         });
-        assert_eq!(battery.label(), "42%");
+        assert_eq!(battery.label(), "Battery 42%");
     }
 
     #[test]
