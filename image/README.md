@@ -33,7 +33,7 @@ systemd-repart creates the table from `mkosi.repart/`:
 | data | ≥ 2 GiB | ext4 | grows to fill the disk |
 
 The two root slots are labelled `carrel-root-<version>`
-(`carrel-root-0.2.0` and `carrel-root-0` in a fresh image). The version in the
+(`carrel-root-0.2.1` and `carrel-root-0` in a fresh image). The version in the
 label is what systemd-sysupdate compares; both slots deliberately share the
 same label prefix so sysupdate can pick the older one. The data and hash
 partition UUIDs are fixed (`1111…`/`2222…` for roots, `5555…`/`6666…` for

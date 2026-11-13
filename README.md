@@ -79,7 +79,7 @@ the network goes off again. The protocol is in
 
 ## Status
 
-Carrel 0.2.0 is a preview release. The whole system is tested automatically
+Carrel 0.2.1 is a preview release. The whole system is tested automatically
 in QEMU: boot on UEFI, Secure Boot and BIOS, install to a blank disk, power
 cut, update with rollback, recovery menu, and the signed release image.
 Testing on real laptops starts with this release, so expect rough edges and
