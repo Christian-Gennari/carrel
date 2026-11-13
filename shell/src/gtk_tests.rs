@@ -322,9 +322,9 @@ fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
 // Each writer task runs against the real pages and the same window dispatcher
 // the application installs (`keys::Keys`). The count is the number of key
 // presses the writer makes: a chord is one press, every typed character is
-// one. A confirmation dialog counts the two keys it takes to confirm it
-// (`Right`, `Enter`); its button is then activated in the dialog, exactly the
-// widget those keys reach.
+// one. A confirmation card counts the two keys it takes to confirm it
+// (`Right`, `Enter`); both reach the card's real buttons through the same
+// dispatcher.
 //
 // The table is printed and written to `docs/ux-baseline.md`. The counts are
 // asserted, so a later UI round that needs more keys fails here and must
