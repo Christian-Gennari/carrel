@@ -629,7 +629,11 @@ impl SettingsPage {
     pub fn open_row(self: &Rc<Self>, row: SettingRow) {
         {
             let settings = self.settings.borrow();
-            if let Some(index) = rows(&settings).iter().position(|item| *item == row) {
+            let update_ready = self.state.borrow().update.has_top_row();
+            if let Some(index) = rows(&settings, update_ready)
+                .iter()
+                .position(|item| *item == row)
+            {
                 self.state.borrow_mut().select(&settings, index);
             }
         }
