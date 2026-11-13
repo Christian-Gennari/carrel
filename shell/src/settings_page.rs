@@ -4,7 +4,7 @@
 //! selection and value changes, so the tests do not need a display; the GTK
 //! side only draws the rows and saves the result.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::time::Duration;
@@ -397,15 +397,20 @@ fn cycle_theme(list: &[Theme], current: Theme, delta: i32) -> Theme {
     list[((index + delta).rem_euclid(len)) as usize]
 }
 
-const HINT: &str = "Up/Down move · Left/Right change · Enter open · Esc editor";
+const HINTS: [(&str, &str); 4] = [
+    ("↑ ↓", "Move"),
+    ("← →", "Change"),
+    ("Enter", "Open"),
+    ("Esc", "Back"),
+];
 
 pub struct SettingsPage {
-    pub widget: gtk::Box,
+    pub widget: gtk::Overlay,
+    screen: Rc<ui::Screen>,
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
-    hint: gtk::Label,
-    error: gtk::Label,
     state: RefCell<SettingsState>,
+    status_generation: Cell<u64>,
     settings: Rc<RefCell<Settings>>,
     root: PathBuf,
     client: Client,
@@ -421,29 +426,11 @@ impl SettingsPage {
         root: PathBuf,
         on_change: Rc<dyn Fn()>,
     ) -> Rc<Self> {
+        let screen = ui::Screen::new("Settings");
+        screen.set_hints(&HINTS);
         let list = ui::list();
         let scroller = ui::scroller(&list);
-
-        let hint = ui::hint(HINT);
-
-        // A failure (an update that would not apply) is the only line outside
-        // the list; every other hint belongs to its selected row.
-        let error = gtk::Label::new(None);
-        error.set_xalign(0.0);
-        error.set_wrap(true);
-        error.set_margin_bottom(6);
-        error.add_css_class("row-note");
-        error.add_css_class("error-text");
-        error.set_visible(false);
-
-        let column = ui::column(820);
-        column.append(&ui::title("Settings"));
-        column.append(&error);
-        column.append(&scroller);
-        column.append(&hint);
-
-        let widget = ui::page();
-        widget.append(&column);
+        screen.content.append(&ui::fade_top(&scroller));
 
         // Screenshot hook (dev/screenshot.sh): start with a later row selected,
         // as if the writer had pressed Down that many times.
@@ -456,12 +443,12 @@ impl SettingsPage {
         }
 
         let page = Rc::new(Self {
-            widget,
+            widget: screen.root.clone(),
+            screen,
             list,
             scroller,
-            hint,
-            error,
             state: RefCell::new(initial),
+            status_generation: Cell::new(0),
             settings,
             root,
             client,
@@ -491,7 +478,7 @@ impl SettingsPage {
             if let Some(page) = weak.upgrade() {
                 page.load_update();
                 page.refresh();
-                page.widget.grab_focus();
+                page.screen.focus_page();
             }
         });
     }
@@ -647,12 +634,15 @@ impl SettingsPage {
 
     fn flash_error(self: &Rc<Self>, message: &str) {
         self.state.borrow_mut().about = false;
-        self.error.set_text(message);
-        self.error.set_visible(true);
+        let generation = self.status_generation.get().wrapping_add(1);
+        self.status_generation.set(generation);
+        self.screen.set_status_error(message);
         let weak = Rc::downgrade(self);
         glib::timeout_add_local_once(Duration::from_secs(5), move || {
             if let Some(page) = weak.upgrade() {
-                page.error.set_visible(false);
+                if page.status_generation.get() == generation {
+                    page.screen.set_status("");
+                }
             }
         });
     }
@@ -693,7 +683,6 @@ impl SettingsPage {
         if let Some(row) = self.list.row_at_index(state.selected as i32) {
             ui::scroll_to_row(&self.scroller, &self.list, &row);
         }
-        self.hint.set_text(HINT);
     }
 }
 

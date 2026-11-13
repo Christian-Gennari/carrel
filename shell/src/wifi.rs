@@ -9,13 +9,21 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gdk, glib};
 
 use crate::daemon::{Client, DaemonError, DaemonErrorKind, WifiNetwork};
 use crate::nav::Navigator;
 use crate::ui;
 
-const HINT: &str = "Up/Down move · Enter connect · F forget · R scan · Esc editor";
+const HINTS: [(&str, &str); 5] = [
+    ("Enter", "Connect"),
+    ("F", "Forget"),
+    ("R", "Scan"),
+    ("↑ ↓", "Move"),
+    ("Esc", "Back"),
+];
+const PASSWORD_HINTS: [(&str, &str); 2] = [("Enter", "Connect"), ("Esc", "Cancel")];
+const RADIO_NOTE: &str = "The radio is on only while this screen is open.";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum WifiMode {
@@ -194,14 +202,13 @@ impl WifiState {
 }
 
 pub struct WifiPage {
-    pub widget: gtk::Box,
+    pub widget: gtk::Overlay,
+    screen: Rc<ui::Screen>,
     list: gtk::ListBox,
     list_scroller: gtk::ScrolledWindow,
     entry_bar: gtk::Box,
     entry_label: gtk::Label,
     entry: gtk::Entry,
-    message: gtk::Label,
-    hint: gtk::Label,
     state: RefCell<WifiState>,
     client: Client,
     nav: Rc<Navigator>,
@@ -209,11 +216,24 @@ pub struct WifiPage {
 
 impl WifiPage {
     pub fn new(client: Client, nav: Rc<Navigator>) -> Rc<Self> {
+        let screen = ui::Screen::new("Wi-Fi");
+        screen.set_hints(&HINTS);
+        screen.set_status(RADIO_NOTE);
+
         let list = ui::list();
         let list_scroller = ui::scroller(&list);
-        list_scroller.set_margin_top(4);
+        // Keep the password field close to the list it belongs to: the list
+        // takes its natural height (up to a page's worth) instead of pushing
+        // the field to the bottom of the screen.
+        list_scroller.set_vexpand(false);
+        list_scroller.set_propagate_natural_height(true);
+        list_scroller.set_max_content_height(420);
+        let list_fade = ui::fade_top(&list_scroller);
+        list_fade.set_vexpand(false);
+        screen.content.append(&list_fade);
 
         let entry_label = gtk::Label::new(Some("Password"));
+        entry_label.add_css_class("section-title");
         let entry = gtk::Entry::new();
         entry.set_hexpand(true);
         entry.set_visibility(false);
@@ -222,36 +242,16 @@ impl WifiPage {
         entry_bar.append(&entry_label);
         entry_bar.append(&entry);
         entry_bar.set_visible(false);
-
-        let message = gtk::Label::new(None);
-        message.set_xalign(0.0);
-        message.set_wrap(true);
-        message.add_css_class("status-line");
-        message.set_visible(false);
-
-        let hint = ui::hint(HINT);
-
-        let column = ui::column(820);
-        column.append(&ui::title("Wi-Fi"));
-        let radio_note = ui::hint("The radio is on only while this screen is open.");
-        column.append(&radio_note);
-        column.append(&list_scroller);
-        column.append(&entry_bar);
-        column.append(&message);
-        column.append(&hint);
-
-        let widget = ui::page();
-        widget.append(&column);
+        screen.content.append(&entry_bar);
 
         let page = Rc::new(Self {
-            widget,
+            widget: screen.root.clone(),
+            screen,
             list,
             list_scroller,
             entry_bar,
             entry_label,
             entry,
-            message,
-            hint,
             state: RefCell::new(WifiState {
                 loading: true,
                 ..WifiState::default()
@@ -283,7 +283,7 @@ impl WifiPage {
         self.widget.connect_map(move |_| {
             if let Some(page) = weak.upgrade() {
                 page.scan();
-                page.widget.grab_focus();
+                page.screen.focus_page();
             }
         });
     }
@@ -427,52 +427,46 @@ impl WifiPage {
     }
 
     fn confirm_forget(self: &Rc<Self>, ssid: String) {
-        let window = self
-            .widget
-            .root()
-            .and_then(|root| root.downcast::<gtk::Window>().ok());
-        let dialog = gtk::AlertDialog::builder()
-            .modal(true)
-            .message(format!("Forget “{ssid}”?"))
-            .detail("The saved password is removed from this device. The network stays in the list until the next scan.")
-            .buttons(["Cancel", "Forget"])
-            .cancel_button(0)
-            .default_button(0)
-            .build();
         let weak = Rc::downgrade(self);
-        dialog.choose(window.as_ref(), gio::Cancellable::NONE, move |answer| {
-            if !matches!(answer, Ok(1)) {
-                return;
-            }
-            let Some(page) = weak.upgrade() else {
-                return;
-            };
-            let weak = Rc::downgrade(&page);
-            page.client.spawn(
-                {
-                    let ssid = ssid.clone();
-                    move |daemon| daemon.wifi_forget(&ssid)
-                },
-                move |result| {
-                    if let Some(page) = weak.upgrade() {
-                        match result {
-                            Ok(()) => {
-                                let mut state = page.state.borrow_mut();
-                                state.networks.retain(|network| network.ssid != ssid);
-                                state.message = format!("Forgot {ssid}.");
-                                state.error = false;
-                                drop(state);
-                                page.refresh();
-                            }
-                            Err(error) => {
-                                page.state.borrow_mut().on_error(&error);
-                                page.refresh();
-                            }
+        self.screen.ask(
+            &format!("Forget “{ssid}”?"),
+            "The saved password is removed from this device.",
+            "Forget",
+            move || {
+                let Some(page) = weak.upgrade() else {
+                    return;
+                };
+                page.forget(ssid.clone());
+            },
+        );
+    }
+
+    fn forget(self: &Rc<Self>, ssid: String) {
+        let weak = Rc::downgrade(self);
+        self.client.spawn(
+            {
+                let ssid = ssid.clone();
+                move |daemon| daemon.wifi_forget(&ssid)
+            },
+            move |result| {
+                if let Some(page) = weak.upgrade() {
+                    match result {
+                        Ok(()) => {
+                            let mut state = page.state.borrow_mut();
+                            state.networks.retain(|network| network.ssid != ssid);
+                            state.message = format!("Forgot {ssid}.");
+                            state.error = false;
+                            drop(state);
+                            page.refresh();
+                        }
+                        Err(error) => {
+                            page.state.borrow_mut().on_error(&error);
+                            page.refresh();
                         }
                     }
-                },
-            );
-        });
+                }
+            },
+        );
     }
 
     fn hide_entry(&self) {
@@ -485,6 +479,9 @@ impl WifiPage {
         keyval: gdk::Key,
         state: gdk::ModifierType,
     ) -> glib::Propagation {
+        if self.screen.is_dialog_open() {
+            return self.screen.dialog_key(keyval, state);
+        }
         if state.contains(gdk::ModifierType::CONTROL_MASK) {
             return glib::Propagation::Proceed;
         }
@@ -539,6 +536,7 @@ impl WifiPage {
             let state = self.state.borrow();
             for network in &state.networks {
                 let row = gtk::ListBoxRow::new();
+                row.add_css_class("ui-row");
                 row.add_css_class("file-row");
                 let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
                 let name = gtk::Label::new(Some(&network.ssid));
@@ -575,6 +573,7 @@ impl WifiPage {
                 self.list.append(&row);
             }
             let other = gtk::ListBoxRow::new();
+            other.add_css_class("ui-row");
             other.add_css_class("file-row");
             let label = gtk::Label::new(Some("Other network…"));
             label.set_xalign(0.0);
@@ -589,17 +588,17 @@ impl WifiPage {
 
         let state = self.state.borrow();
         if state.message.is_empty() {
-            self.message.set_visible(false);
+            self.screen.set_status(RADIO_NOTE);
+        } else if state.error {
+            self.screen.set_status_error(&state.message);
         } else {
-            self.message.set_text(&state.message);
-            self.message.set_visible(true);
-            if state.error {
-                self.message.add_css_class("error-text");
-            } else {
-                self.message.remove_css_class("error-text");
-            }
+            self.screen.set_status(&state.message);
         }
-        self.hint.set_text(HINT);
+        if state.mode == WifiMode::List {
+            self.screen.set_hints(&HINTS);
+        } else {
+            self.screen.set_hints(&PASSWORD_HINTS);
+        }
     }
 }
 

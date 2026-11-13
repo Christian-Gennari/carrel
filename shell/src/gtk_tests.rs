@@ -43,6 +43,8 @@ fn gtk_scenarios() {
     sourceview::init();
     replacing_a_query_is_one_undoable_step();
     the_palette_follows_the_text_and_the_keys();
+    the_confirmation_keeps_the_safe_button_first();
+    rename_happens_in_the_place_of_the_row();
     keystroke_baseline();
 }
 
@@ -243,15 +245,86 @@ fn pump_open(palette: &Rc<QuotePalette>, buffer: &sourceview::Buffer) {
     pump(|| palette.result_count() >= 1);
 }
 
+/// The one confirmation card starts on Cancel: Esc and Enter alone cancel,
+/// and only Right then Enter reaches the destructive button.
+fn the_confirmation_keeps_the_safe_button_first() {
+    let shell = TestShell::new(
+        &[("Alpha.md", "# Alpha\n"), ("Zebra.md", "# Zebra\n")],
+        "Alpha.md",
+    );
+    shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    let alpha = shell.root.join("Alpha.md");
+    assert!(alpha.is_file());
+
+    shell.press("Delete", gdk::Key::Delete, gdk::ModifierType::empty());
+    wait_for_dialog_button("Delete");
+    shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    assert!(!has_dialog_button("Delete"), "Esc closed the card");
+    assert!(alpha.is_file(), "Esc changed nothing");
+
+    shell.press("Delete", gdk::Key::Delete, gdk::ModifierType::empty());
+    wait_for_dialog_button("Delete");
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert!(
+        !has_dialog_button("Delete"),
+        "Enter on the safe button closed the card"
+    );
+    assert!(alpha.is_file(), "the safe default changed nothing");
+
+    shell.press("Delete", gdk::Key::Delete, gdk::ModifierType::empty());
+    wait_for_dialog_button("Delete");
+    shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert!(!alpha.exists(), "Right then Enter deleted the file");
+}
+
+/// F2 turns the selected row itself into the entry, with the name shown
+/// without its extension, and Enter saves it back with the extension.
+fn rename_happens_in_the_place_of_the_row() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    shell.press("F2", gdk::Key::F2, gdk::ModifierType::empty());
+    settle();
+    let entries = gtk::Window::list_toplevels()
+        .iter()
+        .find_map(|window| visible_entry(window.upcast_ref()))
+        .expect("the selected row is an entry");
+    assert_eq!(entries.text(), "Alpha", "the .md extension is hidden");
+    entries.set_text("Beta");
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    assert!(shell.root.join("Beta.md").is_file(), "renamed in place");
+    assert!(!shell.root.join("Alpha.md").exists());
+}
+
+fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
+    if !widget.is_visible() {
+        return None;
+    }
+    if let Some(entry) = widget.downcast_ref::<gtk::Entry>() {
+        return Some(entry.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = visible_entry(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Keystroke baseline.
 //
 // Each writer task runs against the real pages and the same window dispatcher
 // the application installs (`keys::Keys`). The count is the number of key
 // presses the writer makes: a chord is one press, every typed character is
-// one. A confirmation dialog counts the two keys it takes to confirm it
-// (`Right`, `Enter`); its button is then activated in the dialog, exactly the
-// widget those keys reach.
+// one. A confirmation card counts the two keys it takes to confirm it
+// (`Right`, `Enter`); both reach the card's real buttons through the same
+// dispatcher.
 //
 // The table is printed and written to `docs/ux-baseline.md`. The counts are
 // asserted, so a later UI round that needs more keys fails here and must
@@ -575,12 +648,13 @@ fn keystroke_baseline() {
         settle();
         shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
         wait_for_dialog_button("Restore");
-        // The dialog's Cancel is the default: Right, Enter reaches Restore.
+        // Cancel, the safe button, has focus; Right reaches the real Restore
+        // button and Enter activates it.
         shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
         shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
         assert!(
-            activate_dialog_button("Restore"),
-            "the Restore button is a real widget in the dialog"
+            !has_dialog_button("Restore"),
+            "Enter activated the Restore button and closed the card"
         );
         pump(|| contents(&shell.editor.buffer()).contains("The kettle clicks off at six"));
         measured.push(("Restore an earlier version", shell.take_sequence()));
@@ -646,6 +720,10 @@ fn finish_baseline(measured: &[(&str, Vec<String>)]) {
 }
 
 fn widget_has_button(widget: &gtk::Widget, label: &str) -> bool {
+    // A closed card hides its scrim; the buttons inside it are not on screen.
+    if !widget.is_visible() {
+        return false;
+    }
     if let Some(button) = widget.downcast_ref::<gtk::Button>() {
         if button.label().as_deref() == Some(label) {
             return true;
@@ -678,33 +756,4 @@ fn wait_for_dialog_button(label: &str) {
         glib::MainContext::default().iteration(false);
         std::thread::sleep(Duration::from_millis(5));
     }
-}
-
-fn activate_dialog_button(label: &str) -> bool {
-    for window in gtk::Window::list_toplevels() {
-        if !window.is_visible() {
-            continue;
-        }
-        if let Some(button) = find_button(window.upcast_ref(), label) {
-            button.activate();
-            return true;
-        }
-    }
-    false
-}
-
-fn find_button(widget: &gtk::Widget, label: &str) -> Option<gtk::Button> {
-    if let Some(button) = widget.downcast_ref::<gtk::Button>() {
-        if button.label().as_deref() == Some(label) {
-            return Some(button.clone());
-        }
-    }
-    let mut child = widget.first_child();
-    while let Some(widget) = child {
-        if let Some(found) = find_button(&widget, label) {
-            return Some(found);
-        }
-        child = widget.next_sibling();
-    }
-    None
 }

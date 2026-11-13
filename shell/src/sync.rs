@@ -14,9 +14,9 @@ use crate::daemon::{Backend, Client, PairingInfo, SyncInfo};
 use crate::nav::Navigator;
 use crate::ui;
 
-const OVERVIEW_HINT: &str = "Up/Down move · Enter choose · Esc editor";
-const URL_HINT: &str = "Enter start pairing · Esc back";
-const PAIRING_HINT: &str = "Waiting for approval · Backspace back · Esc editor";
+const OVERVIEW_HINTS: [(&str, &str); 3] = [("Enter", "Choose"), ("↑ ↓", "Move"), ("Esc", "Back")];
+const URL_HINTS: [(&str, &str); 2] = [("Enter", "Pair"), ("Esc", "Back")];
+const PAIRING_HINTS: [(&str, &str); 2] = [("Backspace", "Overview"), ("Esc", "Back")];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncAction {
@@ -183,8 +183,8 @@ impl SyncState {
 }
 
 pub struct SyncPage {
-    pub widget: gtk::Box,
-    status: gtk::Label,
+    pub widget: gtk::Overlay,
+    screen: Rc<ui::Screen>,
     last_sync: gtk::Label,
     stack: gtk::Stack,
     list: gtk::ListBox,
@@ -193,10 +193,8 @@ pub struct SyncPage {
     code: gtk::Label,
     approval: gtk::Label,
     pairing_note: gtk::Label,
-    pairing_status: gtk::Label,
     qr: gtk::Picture,
     notice: gtk::Label,
-    hint: gtk::Label,
     state: RefCell<SyncState>,
     client: Client,
     nav: Rc<Navigator>,
@@ -204,10 +202,8 @@ pub struct SyncPage {
 
 impl SyncPage {
     pub fn new(client: Client, nav: Rc<Navigator>) -> Rc<Self> {
-        let status = gtk::Label::new(None);
-        status.set_xalign(0.0);
-        status.set_wrap(true);
-        status.add_css_class("sync-progress");
+        let screen = ui::Screen::new("Sync");
+        screen.set_hints(&OVERVIEW_HINTS);
         let last_sync = gtk::Label::new(Some("Last sync: never"));
         last_sync.set_xalign(0.0);
         last_sync.add_css_class("row-note");
@@ -216,7 +212,7 @@ impl SyncPage {
         for action in OVERVIEW_ROWS {
             list.append(&ui::plain_row(action_label(action)));
         }
-        let overview = ui::scroller(&list);
+        let overview = ui::fade_top(&ui::scroller(&list));
 
         let url_title = gtk::Label::new(Some("Address of your Carrel server"));
         url_title.set_xalign(0.0);
@@ -227,9 +223,12 @@ impl SyncPage {
         let url_error = gtk::Label::new(None);
         url_error.set_xalign(0.0);
         url_error.add_css_class("error-text");
-        let url_hint = ui::hint(
+        let url_hint = gtk::Label::new(Some(
             "The server prints its address when it starts. A LAN name or a Tailscale name both work.",
-        );
+        ));
+        url_hint.set_xalign(0.0);
+        url_hint.set_wrap(true);
+        url_hint.add_css_class("row-note");
         let url_box = gtk::Box::new(gtk::Orientation::Vertical, 14);
         url_box.set_margin_top(20);
         url_box.append(&url_title);
@@ -258,15 +257,11 @@ impl SyncPage {
         pairing_note.set_xalign(0.0);
         pairing_note.set_wrap(true);
         pairing_note.add_css_class("row-note");
-        let pairing_status = gtk::Label::new(Some("Waiting for approval…"));
-        pairing_status.set_xalign(0.0);
-        pairing_status.add_css_class("status-line");
         let pairing_left = gtk::Box::new(gtk::Orientation::Vertical, 12);
         pairing_left.set_hexpand(true);
         pairing_left.append(&code);
         pairing_left.append(&approval);
         pairing_left.append(&pairing_note);
-        pairing_left.append(&pairing_status);
         let pairing_box = gtk::Box::new(gtk::Orientation::Horizontal, 36);
         pairing_box.set_margin_top(8);
         pairing_box.append(&pairing_left);
@@ -274,7 +269,7 @@ impl SyncPage {
 
         let stack = gtk::Stack::new();
         stack.set_vexpand(true);
-        stack.set_margin_top(10);
+        stack.set_margin_top(2);
         stack.add_named(&overview, Some("overview"));
         stack.add_named(&url_box, Some("url"));
         stack.add_named(&pairing_box, Some("pairing"));
@@ -286,22 +281,13 @@ impl SyncPage {
         notice.add_css_class("notice-line");
         notice.set_visible(false);
 
-        let hint = ui::hint(OVERVIEW_HINT);
-
-        let column = ui::column(820);
-        column.append(&ui::title("Sync"));
-        column.append(&status);
-        column.append(&last_sync);
-        column.append(&stack);
-        column.append(&notice);
-        column.append(&hint);
-
-        let widget = ui::page();
-        widget.append(&column);
+        screen.content.append(&last_sync);
+        screen.content.append(&stack);
+        screen.content.append(&notice);
 
         let page = Rc::new(Self {
-            widget,
-            status,
+            widget: screen.root.clone(),
+            screen,
             last_sync,
             stack,
             list,
@@ -310,10 +296,8 @@ impl SyncPage {
             code,
             approval,
             pairing_note,
-            pairing_status,
             qr,
             notice,
-            hint,
             state: RefCell::new(SyncState::default()),
             client,
             nav,
@@ -343,7 +327,7 @@ impl SyncPage {
             if let Some(page) = weak.upgrade() {
                 page.load_sync_info();
                 page.refresh();
-                page.widget.grab_focus();
+                page.screen.focus_page();
             }
         });
     }
@@ -570,15 +554,16 @@ impl SyncPage {
             state.info.message.clone(),
             state.info.state == "error",
         );
-        self.status.set_text(if message.is_empty() {
-            "Not synced yet."
+        let message = if message.is_empty() {
+            "Not synced yet.".to_owned()
         } else {
-            &message
-        });
-        if error_state {
-            self.status.add_css_class("error-text");
-        } else {
-            self.status.remove_css_class("error-text");
+            message
+        };
+        match view {
+            SyncView::Pairing => self.screen.set_status("Waiting for approval…"),
+            SyncView::SelfHostedUrl => self.screen.set_status("Pair with a self-hosted server."),
+            SyncView::Overview if error_state => self.screen.set_status_error(&message),
+            SyncView::Overview => self.screen.set_status(&message),
         }
         self.last_sync.set_text(&format!(
             "Last sync: {}",
@@ -589,15 +574,15 @@ impl SyncPage {
             SyncView::Overview => {
                 self.stack.set_visible_child_name("overview");
                 ui::select(&self.list, state.selected);
-                self.hint.set_text(OVERVIEW_HINT);
+                self.screen.set_hints(&OVERVIEW_HINTS);
             }
             SyncView::SelfHostedUrl => {
                 self.stack.set_visible_child_name("url");
-                self.hint.set_text(URL_HINT);
+                self.screen.set_hints(&URL_HINTS);
             }
             SyncView::Pairing => {
                 self.stack.set_visible_child_name("pairing");
-                self.hint.set_text(PAIRING_HINT);
+                self.screen.set_hints(&PAIRING_HINTS);
                 self.render_pairing(&state);
             }
         }
@@ -642,13 +627,6 @@ impl SyncPage {
             ));
         }
         self.pairing_note.set_text(state.pairing_note());
-        if state.waiting {
-            self.pairing_status.set_text("Waiting for approval…");
-            self.pairing_status.remove_css_class("error-text");
-            self.pairing_status.add_css_class("notice-ok");
-        } else {
-            self.pairing_status.set_text("Not paired.");
-        }
         let data = state.qr_data();
         if data.is_empty() {
             self.qr.set_paintable(None::<&gtk::gdk::Paintable>);

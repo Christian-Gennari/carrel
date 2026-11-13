@@ -5,6 +5,7 @@
 //! the path the daemon returns.
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -14,10 +15,24 @@ use gtk::{gdk, glib};
 use crate::daemon::{Client, Drive};
 use crate::editor::EditorPage;
 use crate::nav::Navigator;
-use crate::store::Store;
+use crate::store::{display_path, Store};
 use crate::ui;
 
-const HINT: &str = "Up/Down move · Enter next · Esc editor";
+const HINTS: [(&str, &str); 3] = [("Enter", "Next"), ("↑ ↓", "Move"), ("Esc", "Back")];
+const DRIVE_HINTS: [(&str, &str); 4] = [
+    ("Enter", "Export"),
+    ("R", "Scan"),
+    ("↑ ↓", "Move"),
+    ("Esc", "Back"),
+];
+const IMPORT_HINTS: [(&str, &str); 4] = [
+    ("Enter", "Import"),
+    ("R", "Scan"),
+    ("↑ ↓", "Move"),
+    ("Esc", "Back"),
+];
+const DONE_HINTS: [(&str, &str); 2] = [("Enter", "Again"), ("Esc", "Back")];
+const RUNNING_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ExportFormat {
@@ -138,7 +153,9 @@ impl ExportState {
         match self.step {
             ExportStep::What => vec![
                 match &self.current_file {
-                    Some(path) => format!("Current file · {path}"),
+                    Some(path) => {
+                        format!("Current file · {}", display_path(Path::new(path)))
+                    }
                     None => "Current file · no file open".to_owned(),
                 },
                 "A folder…".to_owned(),
@@ -395,14 +412,14 @@ fn free_space(bytes: u64) -> String {
 }
 
 pub struct ExportPage {
-    pub widget: gtk::Box,
-    step_title: gtk::Label,
+    pub widget: gtk::Overlay,
+    screen: Rc<ui::Screen>,
     list: gtk::ListBox,
     list_scroller: gtk::ScrolledWindow,
+    list_fade: gtk::Overlay,
     note: gtk::Label,
     done_heading: gtk::Label,
     done_detail: gtk::Label,
-    hint: gtk::Label,
     state: RefCell<ExportState>,
     client: Client,
     nav: Rc<Navigator>,
@@ -417,50 +434,40 @@ impl ExportPage {
         editor: Rc<EditorPage>,
         store: Store,
     ) -> Rc<Self> {
-        let step_title = gtk::Label::new(None);
-        step_title.set_xalign(0.0);
-        step_title.add_css_class("section-title");
+        let screen = ui::Screen::new("Export");
+        screen.set_hints(&HINTS);
 
         let list = ui::list();
         let list_scroller = ui::scroller(&list);
+        let list_fade = ui::fade_top(&list_scroller);
+        screen.content.append(&list_fade);
 
         let note = gtk::Label::new(None);
         note.set_xalign(0.0);
         note.set_wrap(true);
         note.add_css_class("notice-line");
+        screen.content.append(&note);
 
         let done_heading = gtk::Label::new(None);
         done_heading.set_xalign(0.0);
         done_heading.add_css_class("done-heading");
+        screen.content.append(&done_heading);
         let done_detail = gtk::Label::new(None);
         done_detail.set_xalign(0.0);
         done_detail.set_wrap(true);
         done_detail.add_css_class("row-note");
         done_detail.set_visible(false);
-
-        let hint = ui::hint(HINT);
-
-        let column = ui::column(820);
-        column.append(&ui::title("Export"));
-        column.append(&step_title);
-        column.append(&list_scroller);
-        column.append(&note);
-        column.append(&done_heading);
-        column.append(&done_detail);
-        column.append(&hint);
-
-        let widget = ui::page();
-        widget.append(&column);
+        screen.content.append(&done_detail);
 
         let page = Rc::new(Self {
-            widget,
-            step_title,
+            widget: screen.root.clone(),
+            screen,
             list,
             list_scroller,
+            list_fade,
             note,
             done_heading,
             done_detail,
-            hint,
             state: RefCell::new(ExportState::default()),
             client,
             nav,
@@ -483,7 +490,7 @@ impl ExportPage {
         self.widget.connect_map(move |_| {
             if let Some(page) = weak.upgrade() {
                 page.on_open();
-                page.widget.grab_focus();
+                page.screen.focus_page();
             }
         });
     }
@@ -679,9 +686,17 @@ impl ExportPage {
                 state.outcome_detail(),
             )
         };
-        self.step_title.set_text(self.state.borrow().step_title());
+        {
+            let state = self.state.borrow();
+            let importing = state.what == Some(What::Import)
+                || matches!(state.outcome.as_ref(), Some(ExportOutcome::Imported { .. }));
+            self.screen
+                .set_title(if importing { "Import" } else { "Export" });
+        }
+        self.screen.set_status(self.state.borrow().step_title());
         for (index, row) in rows.iter().enumerate() {
             let element = gtk::ListBoxRow::new();
+            element.add_css_class("ui-row");
             element.add_css_class("file-row");
             let label = gtk::Label::new(Some(row));
             label.set_xalign(0.0);
@@ -696,6 +711,7 @@ impl ExportPage {
         }
         self.list.set_visible(!rows.is_empty());
         self.list_scroller.set_visible(!rows.is_empty());
+        self.list_fade.set_visible(!rows.is_empty());
         ui::select(&self.list, selected);
         if let Some(row) = self.list.row_at_index(selected as i32) {
             ui::scroll_to_row(&self.list_scroller, &self.list, &row);
@@ -712,12 +728,15 @@ impl ExportPage {
             .set_text(&done_detail.clone().unwrap_or_default());
         self.done_detail.set_visible(done_detail.is_some());
 
-        let hint = match step {
-            ExportStep::Drive => "Up/Down move · Enter export · R scan · Esc editor",
-            ExportStep::Done => "Enter export something else · Esc editor",
-            _ => HINT,
-        };
-        self.hint.set_text(hint);
+        match step {
+            ExportStep::Drive if self.state.borrow().what == Some(What::Import) => {
+                self.screen.set_hints(&IMPORT_HINTS);
+            }
+            ExportStep::Drive => self.screen.set_hints(&DRIVE_HINTS),
+            ExportStep::Running => self.screen.set_hints(&RUNNING_HINTS),
+            ExportStep::Done => self.screen.set_hints(&DONE_HINTS),
+            _ => self.screen.set_hints(&HINTS),
+        }
     }
 }
 

@@ -24,6 +24,8 @@ const LINE_HEIGHT: f64 = 1.6;
 /// 60–75; Pango's approximate width runs a little wide, so 66 measured
 /// characters lands around 70 real ones in the serif.
 const COLUMN_CHARACTERS: f64 = 66.0;
+/// The comfortable margin above the first line of a file.
+const EDITOR_TOP_MARGIN: i32 = 96;
 
 pub struct EditorPage {
     pub widget: gtk::Box,
@@ -82,9 +84,10 @@ impl EditorPage {
         view.set_justification(gtk::Justification::Left);
         view.set_left_margin(32);
         view.set_right_margin(32);
-        // Room above and below so the current line can sit in the middle even
-        // at the start and the end of a document.
-        view.set_top_margin(240);
+        // A comfortable margin above the first line. The current line only
+        // starts travelling to the middle once the writer is past the first
+        // half of the page, so the start of a file is never clipped.
+        view.set_top_margin(EDITOR_TOP_MARGIN);
         view.set_bottom_margin(240);
         view.set_highlight_current_line(false);
         view.set_show_line_numbers(false);
@@ -494,17 +497,19 @@ impl EditorPage {
         }
     }
 
-    /// Half the viewport above and below, so the first and last line can sit
-    /// in the middle as typewriter scrolling promises.
+    /// The first line always keeps its top margin; below the text there is
+    /// half a viewport of room so the last line can still reach the middle.
     fn update_padding(&self) {
         let height = self.view.height();
         if height < 100 {
             return;
         }
-        let padding = (height / 2).max(80);
-        if self.view.top_margin() != padding {
-            self.view.set_top_margin(padding);
-            self.view.set_bottom_margin(padding);
+        let bottom = (height / 2).max(80);
+        if self.view.top_margin() != EDITOR_TOP_MARGIN {
+            self.view.set_top_margin(EDITOR_TOP_MARGIN);
+        }
+        if self.view.bottom_margin() != bottom {
+            self.view.set_bottom_margin(bottom);
         }
     }
 
@@ -1094,7 +1099,21 @@ fn scroll_to_cursor(view: &sourceview::View, buffer: &sourceview::Buffer) {
     let buffer = buffer.clone();
     glib::idle_add_local_once(move || {
         let mark = buffer.get_insert();
-        view.scroll_to_mark(&mark, 0.0, true, 0.0, 0.55);
+        let iter = buffer.iter_at_mark(&mark);
+        // A file that fits the page never scrolls at all, so its first line
+        // keeps the top margin. Longer files stay at the top until the caret
+        // passes the middle, then follow the typewriter rule.
+        let height = view.height();
+        let end = buffer.end_iter();
+        let fits = height > 0 && view.iter_location(&end).y() + 24 < height;
+        let near_top = height > 0 && view.iter_location(&iter).y() < height / 2;
+        if fits || near_top {
+            if let Some(adjustment) = view.vadjustment() {
+                adjustment.set_value(0.0);
+            }
+        } else {
+            view.scroll_to_mark(&mark, 0.0, true, 0.0, 0.55);
+        }
     });
 }
 
