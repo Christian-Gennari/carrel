@@ -49,7 +49,8 @@ Download the image from [carrel.nostos.page](https://carrel.nostos.page) or from
    ([how to verify](image/README.md#verify-a-download)).
 2. Flash it to a USB stick (8 GB or more) with
    [Fedora Media Writer](https://fedoraproject.org/workstation/download),
-   [balenaEtcher](https://etcher.balena.io/), [Rufus](https://rufus.ie/) in
+   [balenaEtcher](https://etcher.balena.io/) 2.19 or newer (2.14 fails on this
+   image), [Rufus](https://rufus.ie/) in
    **DD Image mode**, or
    `xz -dc carrel-<version>.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync`.
 3. Boot the laptop from the stick.
@@ -78,7 +79,7 @@ the network goes off again. The protocol is in
 
 ## Status
 
-Carrel 0.1.0 is a preview release. The whole system is tested automatically
+Carrel 0.2.0 is a preview release. The whole system is tested automatically
 in QEMU: boot on UEFI, Secure Boot and BIOS, install to a blank disk, power
 cut, update with rollback, recovery menu, and the signed release image.
 Testing on real laptops starts with this release, so expect rough edges and

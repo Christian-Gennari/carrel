@@ -30,7 +30,7 @@ UPDATE_PUBKEY  ?= $(ROOT)/image/keys/update-pubring.gpg
 # never ships.
 IMAGE_VERSION  ?= $(shell sed -n 's/^ImageVersion=//p' "$(CURDIR)/image/mkosi.conf")
 RELEASE_VERSION ?= $(IMAGE_VERSION)
-TEST_RELEASE_VERSION ?= 0.2.0
+TEST_RELEASE_VERSION ?= 0.3.0
 DIST_DIR       := $(OUT)/dist
 
 # Where an installed device looks for signed update payloads: the files of the
