@@ -50,6 +50,7 @@ pub struct Screen {
     pub root: gtk::Overlay,
     pub content: gtk::Box,
     page: gtk::Box,
+    title: gtk::Label,
     status: gtk::Label,
     hint_slot: gtk::Box,
     hint_key: RefCell<String>,
@@ -80,8 +81,9 @@ impl Screen {
         hint_slot.add_css_class("hint-slot");
         hint_slot.set_margin_top(18);
 
+        let title = title(title_text);
         let column = column(COLUMN_WIDTH);
-        column.append(&title(title_text));
+        column.append(&title);
         column.append(&status);
         column.append(&content);
         column.append(&hint_slot);
@@ -141,6 +143,7 @@ impl Screen {
             root,
             content,
             page,
+            title,
             status,
             hint_slot,
             hint_key: RefCell::new(String::new()),
@@ -174,6 +177,14 @@ impl Screen {
 
     pub fn focus_page(&self) {
         self.page.grab_focus();
+    }
+
+    /// Rename the page without rebuilding the frame: Export becomes Import
+    /// for the import flow and its result.
+    pub fn set_title(&self, text: &str) {
+        if self.title.text() != text {
+            self.title.set_text(text);
+        }
     }
 
     /// The one-line status under the title. An empty string hides it.
@@ -420,6 +431,33 @@ pub fn scroller(child: &impl IsA<gtk::Widget>) -> gtk::ScrolledWindow {
         .vexpand(true)
         .child(child)
         .build()
+}
+
+/// Put a short fade over the top edge of a list. It appears only while the
+/// list is scrolled, so a row at the edge dissolves into the page instead of
+/// being cut in half under the title.
+pub fn fade_top(scroller: &gtk::ScrolledWindow) -> gtk::Overlay {
+    let overlay = gtk::Overlay::new();
+    overlay.set_hexpand(true);
+    overlay.set_vexpand(true);
+    overlay.set_child(Some(scroller));
+
+    let fade = gtk::DrawingArea::new();
+    fade.set_content_height(24);
+    fade.set_vexpand(false);
+    fade.set_valign(gtk::Align::Start);
+    fade.set_halign(gtk::Align::Fill);
+    fade.set_can_target(false);
+    fade.set_focusable(false);
+    fade.add_css_class("scroll-fade-top");
+    fade.set_visible(false);
+    overlay.add_overlay(&fade);
+
+    let adjustment = scroller.vadjustment();
+    adjustment.connect_value_changed(move |adjustment| {
+        fade.set_visible(adjustment.value() > 1.0);
+    });
+    overlay
 }
 
 /// A row with a label on the left and a value on the right. A non-empty
@@ -701,10 +739,12 @@ fn scroll_now(scroller: &gtk::ScrolledWindow, list: &gtk::ListBox, row: &gtk::Li
     let bottom = top + f64::from(bounds.height());
     let value = adjustment.value();
     let page = adjustment.page_size();
-    if top < value {
-        adjustment.set_value(top);
-    } else if bottom > value + page {
-        adjustment.set_value(bottom - page);
+    // A small margin means the selected row never sits against the edge.
+    const MARGIN: f64 = 14.0;
+    if top - MARGIN < value {
+        adjustment.set_value((top - MARGIN).max(0.0));
+    } else if bottom + MARGIN > value + page {
+        adjustment.set_value(bottom + MARGIN - page);
     }
 }
 
