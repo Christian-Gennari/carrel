@@ -1,6 +1,11 @@
-//! First run: Language → Keyboard → Time zone → Connect sync? → Editor.
+//! First run: two Enters and the page.
 //!
-//! Each answer is saved as soon as it is chosen, so a power cut in the middle
+//! The image already knows the writer's language, keyboard and time zone, so
+//! the welcome screen shows those three answers filled in and one action,
+//! "Start writing". Changing an answer opens its list and comes back; the only
+//! other step is the optional "Connect sync?".
+//!
+//! Every answer is saved as soon as it is chosen, so a power cut in the middle
 //! of setup does not lose the earlier steps.
 
 use std::cell::RefCell;
@@ -11,19 +16,24 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 use crate::daemon::Backend;
+use crate::first_run_defaults;
 use crate::locale;
 use crate::nav::Navigator;
-use crate::settings::Settings;
+use crate::settings::{settings_path, Settings};
 use crate::sync::SyncPage;
 use crate::ui;
 
 const HINTS: [(&str, &str); 3] = [("Enter", "Choose"), ("↑ ↓", "Move"), ("Esc", "Back")];
-const FIRST_HINTS: [(&str, &str); 2] = [("Enter", "Choose"), ("↑ ↓", "Move")];
-const INTRO: &str = "A quiet place to write. Four short answers, then the page.";
+const WELCOME_HINTS: [(&str, &str); 2] = [("Enter", "Choose"), ("↑ ↓", "Move")];
+const START_HINTS: [(&str, &str); 2] = [("Enter", "Start"), ("↑ ↓", "Choose")];
 const SYNC_CHOICES: [&str; 4] = ["Not now", "Nostos", "Self-hosted server", "Google Drive"];
+
+/// The last row of the welcome screen is the action, not a value.
+const START_WRITING: usize = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FirstStep {
+    Welcome,
     Language,
     Keyboard,
     TimeZone,
@@ -33,6 +43,7 @@ pub enum FirstStep {
 impl FirstStep {
     pub fn title(self) -> &'static str {
         match self {
+            Self::Welcome => "Welcome to Carrel",
             Self::Language => "Language",
             Self::Keyboard => "Keyboard",
             Self::TimeZone => "Time zone",
@@ -40,12 +51,14 @@ impl FirstStep {
         }
     }
 
-    fn previous(self) -> Self {
+    /// The welcome row this list belongs to, so closing the list comes back to
+    /// the row the writer came from.
+    fn welcome_row(self) -> usize {
         match self {
-            Self::Language => Self::Language,
-            Self::Keyboard => Self::Language,
-            Self::TimeZone => Self::Keyboard,
-            Self::Sync => Self::TimeZone,
+            Self::Language => 0,
+            Self::Keyboard => 1,
+            Self::TimeZone => 2,
+            _ => START_WRITING,
         }
     }
 }
@@ -65,41 +78,61 @@ pub struct FirstRunState {
 
 impl FirstRunState {
     pub fn step(&self) -> FirstStep {
-        self.step.unwrap_or(FirstStep::Language)
+        self.step.unwrap_or(FirstStep::Welcome)
     }
 
-    pub fn options(&self, settings: &Settings) -> Vec<String> {
+    /// The welcome screen starts on its one action, so a writer who is happy
+    /// with the answers presses Enter and moves on.
+    pub fn start(&mut self) {
+        self.step = Some(FirstStep::Welcome);
+        self.selected = START_WRITING;
+    }
+
+    /// The three prefilled answers and the action, in screen order.
+    pub fn welcome_options(&self, settings: &Settings) -> [(&'static str, String); 4] {
+        [
+            ("Language", settings.language.clone()),
+            (
+                "Keyboard",
+                locale::keyboard_label(&settings.keyboard).to_owned(),
+            ),
+            ("Time zone", settings.time_zone.clone()),
+            ("Start writing", String::new()),
+        ]
+    }
+
+    /// The rows of an open list. The welcome screen and the sync step have
+    /// their own fixed rows.
+    pub fn options(&self) -> Vec<String> {
         match self.step() {
+            FirstStep::Welcome => Vec::new(),
             FirstStep::Language => locale::LANGUAGES
                 .iter()
                 .map(|item| (*item).to_owned())
                 .collect(),
             FirstStep::Keyboard => locale::KEYBOARDS
                 .iter()
-                .map(|(code, label)| format!("{label} ({code})"))
+                .map(|(_, label)| (*label).to_owned())
                 .collect(),
             FirstStep::TimeZone => locale::TIME_ZONES
                 .iter()
                 .map(|item| (*item).to_owned())
                 .collect(),
-            FirstStep::Sync => {
-                let mut rows = Vec::new();
-                for choice in SYNC_CHOICES {
-                    rows.push(choice.to_owned());
-                }
-                rows.push(format!(
-                    "Language: {} · Keyboard: {} · Time zone: {}",
-                    settings.language,
-                    locale::keyboard_label(&settings.keyboard),
-                    settings.time_zone
-                ));
-                rows
-            }
+            FirstStep::Sync => SYNC_CHOICES.iter().map(|item| (*item).to_owned()).collect(),
         }
     }
 
-    /// Keep the cursor on the current value when a step opens.
-    pub fn on_step(&mut self, settings: &Settings) {
+    /// How many rows the cursor may land on.
+    pub fn choice_count(&self) -> usize {
+        match self.step() {
+            FirstStep::Welcome => START_WRITING + 1,
+            FirstStep::Sync => SYNC_CHOICES.len(),
+            _ => self.options().len(),
+        }
+    }
+
+    /// Keep the cursor on the current value when a list opens.
+    fn on_list(&mut self, settings: &Settings) {
         self.selected = match self.step() {
             FirstStep::Language => locale::LANGUAGES
                 .iter()
@@ -113,51 +146,57 @@ impl FirstRunState {
                 .iter()
                 .position(|item| *item == settings.time_zone)
                 .unwrap_or(0),
-            FirstStep::Sync => 0,
+            _ => 0,
         };
     }
 
-    /// The number of rows the cursor may land on. The sync step's last row is
-    /// a summary of the earlier answers, not a fifth choice.
-    pub fn choice_count(&self, settings: &Settings) -> usize {
-        let count = self.options(settings).len();
-        if self.step() == FirstStep::Sync {
-            count.saturating_sub(1)
-        } else {
-            count
-        }
+    fn back_to_welcome(&mut self, row: usize) {
+        self.step = Some(FirstStep::Welcome);
+        self.selected = row;
     }
 
-    pub fn move_by(&mut self, delta: i32, settings: &Settings) {
-        let len = self.choice_count(settings) as i32;
+    pub fn move_by(&mut self, delta: i32) {
+        let len = self.choice_count() as i32;
         if len == 0 {
             return;
         }
         self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
     }
 
+    /// Enter: open the selected list, start writing, or answer the sync step.
     pub fn choose(&mut self, settings: &mut Settings) -> FirstEffect {
         let step = self.step();
         match step {
+            FirstStep::Welcome => {
+                if self.selected >= START_WRITING {
+                    self.step = Some(FirstStep::Sync);
+                    self.selected = 0;
+                    return FirstEffect::Redraw;
+                }
+                self.step = Some(match self.selected {
+                    0 => FirstStep::Language,
+                    1 => FirstStep::Keyboard,
+                    _ => FirstStep::TimeZone,
+                });
+                self.on_list(settings);
+                FirstEffect::Redraw
+            }
             FirstStep::Language => {
                 let options = locale::LANGUAGES;
                 settings.language = options[self.selected.min(options.len() - 1)].to_owned();
-                self.step = Some(FirstStep::Keyboard);
-                self.on_step(settings);
+                self.back_to_welcome(FirstStep::Language.welcome_row());
                 FirstEffect::Redraw
             }
             FirstStep::Keyboard => {
                 let options = locale::KEYBOARDS;
                 settings.keyboard = options[self.selected.min(options.len() - 1)].0.to_owned();
-                self.step = Some(FirstStep::TimeZone);
-                self.on_step(settings);
+                self.back_to_welcome(FirstStep::Keyboard.welcome_row());
                 FirstEffect::Redraw
             }
             FirstStep::TimeZone => {
                 let options = locale::TIME_ZONES;
                 settings.time_zone = options[self.selected.min(options.len() - 1)].to_owned();
-                self.step = Some(FirstStep::Sync);
-                self.on_step(settings);
+                self.back_to_welcome(FirstStep::TimeZone.welcome_row());
                 FirstEffect::Redraw
             }
             FirstStep::Sync => match self.selected {
@@ -169,16 +208,19 @@ impl FirstRunState {
         }
     }
 
-    pub fn back(&mut self, settings: &Settings) {
-        self.step = Some(self.step().previous());
-        self.on_step(settings);
+    /// Esc: a list goes back to the welcome screen, and so does the sync step.
+    pub fn back(&mut self) {
+        match self.step() {
+            FirstStep::Welcome => {}
+            FirstStep::Sync => self.back_to_welcome(START_WRITING),
+            step => self.back_to_welcome(step.welcome_row()),
+        }
     }
 }
 
 pub struct FirstRunPage {
     pub widget: gtk::Overlay,
     screen: Rc<ui::Screen>,
-    step_title: gtk::Label,
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
     state: RefCell<FirstRunState>,
@@ -195,14 +237,19 @@ impl FirstRunPage {
         nav: Rc<Navigator>,
         sync: Rc<SyncPage>,
     ) -> Rc<Self> {
-        let screen = ui::Screen::new("Carrel");
-        screen.set_hints(&HINTS);
-        screen.set_status(INTRO);
+        // A brand-new device has no settings file yet, so the image's own
+        // language, keyboard and zone are the first answers. Anything already
+        // saved belongs to the writer and is left alone.
+        if !settings.borrow().first_run_complete && !settings_path(&root).exists() {
+            let defaults = first_run_defaults::detect();
+            let mut settings = settings.borrow_mut();
+            settings.language = defaults.language;
+            settings.keyboard = defaults.keyboard;
+            settings.time_zone = defaults.time_zone;
+        }
 
-        let step_title = gtk::Label::new(None);
-        step_title.set_xalign(0.0);
-        step_title.add_css_class("step-title");
-        screen.content.append(&step_title);
+        let screen = ui::Screen::new(FirstStep::Welcome.title());
+        screen.set_hints(&WELCOME_HINTS);
 
         let list = ui::list();
         let scroller = ui::scroller(&list);
@@ -211,7 +258,6 @@ impl FirstRunPage {
         let page = Rc::new(Self {
             widget: screen.root.clone(),
             screen,
-            step_title,
             list,
             scroller,
             state: RefCell::new(FirstRunState::default()),
@@ -236,8 +282,7 @@ impl FirstRunPage {
         self.widget.connect_map(move |_| {
             if let Some(page) = weak.upgrade() {
                 if page.state.borrow().step.is_none() {
-                    let settings = page.settings.borrow();
-                    page.state.borrow_mut().on_step(&settings);
+                    page.state.borrow_mut().start();
                 }
                 page.refresh();
                 page.screen.focus_page();
@@ -246,12 +291,7 @@ impl FirstRunPage {
     }
 
     pub fn start(self: &Rc<Self>) {
-        let settings = self.settings.borrow();
-        let mut state = self.state.borrow_mut();
-        state.step = Some(FirstStep::Language);
-        state.on_step(&settings);
-        drop(state);
-        drop(settings);
+        self.state.borrow_mut().start();
         self.refresh();
     }
 
@@ -265,26 +305,19 @@ impl FirstRunPage {
         }
         match keyval {
             gdk::Key::Escape => {
-                if self.state.borrow().step() == FirstStep::Language {
-                    return glib::Propagation::Stop;
+                if self.state.borrow().step() != FirstStep::Welcome {
+                    self.state.borrow_mut().back();
+                    self.refresh();
                 }
-                let settings = self.settings.borrow();
-                self.state.borrow_mut().back(&settings);
-                drop(settings);
-                self.refresh();
                 glib::Propagation::Stop
             }
             gdk::Key::Up => {
-                let settings = self.settings.borrow();
-                self.state.borrow_mut().move_by(-1, &settings);
-                drop(settings);
+                self.state.borrow_mut().move_by(-1);
                 self.refresh();
                 glib::Propagation::Stop
             }
             gdk::Key::Down => {
-                let settings = self.settings.borrow();
-                self.state.borrow_mut().move_by(1, &settings);
-                drop(settings);
+                self.state.borrow_mut().move_by(1);
                 self.refresh();
                 glib::Propagation::Stop
             }
@@ -294,12 +327,7 @@ impl FirstRunPage {
                 glib::Propagation::Stop
             }
             gdk::Key::End => {
-                let settings = self.settings.borrow();
-                let last = self
-                    .state
-                    .borrow()
-                    .choice_count(&settings)
-                    .saturating_sub(1);
+                let last = self.state.borrow().choice_count().saturating_sub(1);
                 self.state.borrow_mut().selected = last;
                 self.refresh();
                 glib::Propagation::Stop
@@ -315,11 +343,7 @@ impl FirstRunPage {
     fn choose(self: &Rc<Self>) {
         let effect = {
             let mut settings = self.settings.borrow_mut();
-            let max = self
-                .state
-                .borrow()
-                .choice_count(&settings)
-                .saturating_sub(1);
+            let max = self.state.borrow().choice_count().saturating_sub(1);
             let mut state = self.state.borrow_mut();
             state.selected = state.selected.min(max);
             state.choose(&mut settings)
@@ -358,41 +382,40 @@ impl FirstRunPage {
         }
         let settings = self.settings.borrow();
         let state = self.state.borrow();
-        if state.step() == FirstStep::Language {
-            self.screen.set_hints(&FIRST_HINTS);
+        let step = state.step();
+        self.screen.set_title(step.title());
+        if step == FirstStep::Welcome {
+            if state.selected == START_WRITING {
+                self.screen.set_hints(&START_HINTS);
+            } else {
+                self.screen.set_hints(&WELCOME_HINTS);
+            }
+            for (index, (name, value)) in state.welcome_options(&settings).iter().enumerate() {
+                let row = if index == START_WRITING {
+                    ui::plain_row(name)
+                } else {
+                    ui::value_row(name, value, "")
+                };
+                self.list.append(&row);
+            }
         } else {
             self.screen.set_hints(&HINTS);
-        }
-        self.step_title.set_text(state.step().title());
-        let options = state.options(&settings);
-        let sync_step = state.step() == FirstStep::Sync;
-        let count = options.len();
-        for (index, option) in options.iter().enumerate() {
-            let row = gtk::ListBoxRow::new();
-            row.add_css_class("ui-row");
-            row.add_css_class("file-row");
-            let label = gtk::Label::new(Some(option));
-            label.set_xalign(0.0);
-            label.add_css_class("file-name");
-            if sync_step && index == count - 1 {
-                label.add_css_class("row-note");
+            for option in state.options() {
+                let row = gtk::ListBoxRow::new();
+                row.add_css_class("ui-row");
+                row.add_css_class("file-row");
+                let label = gtk::Label::new(Some(&option));
+                label.set_xalign(0.0);
+                label.add_css_class("file-name");
+                row.set_child(Some(&label));
+                self.list.append(&row);
             }
-            row.set_child(Some(&label));
-            if sync_step && index == count - 1 {
-                row.set_selectable(false);
-                row.set_activatable(false);
-            }
-            self.list.append(&row);
         }
-        // The summary line at the end of the sync step is not a choice: the
-        // cursor stops at the four real options.
-        let max = if sync_step {
-            count.saturating_sub(2)
-        } else {
-            count.saturating_sub(1)
-        };
-        ui::select(&self.list, state.selected.min(max));
-        if let Some(row) = self.list.row_at_index(state.selected.min(max) as i32) {
+        let selected = state.selected.min(state.choice_count().saturating_sub(1));
+        drop(state);
+        drop(settings);
+        ui::select(&self.list, selected);
+        if let Some(row) = self.list.row_at_index(selected as i32) {
             ui::scroll_to_row(&self.scroller, &self.list, &row);
         }
     }
@@ -403,34 +426,113 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_order_is_language_keyboard_time_zone_then_sync() {
+    fn two_enters_reach_the_editor_with_the_answers_already_filled_in() {
         let mut settings = Settings::default();
         let mut state = FirstRunState::default();
-        state.on_step(&settings);
-        assert_eq!(state.step(), FirstStep::Language);
+        state.start();
+        assert_eq!(state.step(), FirstStep::Welcome);
+        assert_eq!(state.selected, START_WRITING);
 
-        assert_eq!(state.choose(&mut settings), FirstEffect::Redraw);
-        assert_eq!(state.step(), FirstStep::Keyboard);
-        assert_eq!(settings.language, "English");
-
-        state.selected = 1; // UK
-        assert_eq!(state.choose(&mut settings), FirstEffect::Redraw);
-        assert_eq!(state.step(), FirstStep::TimeZone);
-        assert_eq!(settings.keyboard, "gb");
-
-        state.selected = 1; // UTC
+        // Enter on "Start writing", then Enter on the default "Not now".
         assert_eq!(state.choose(&mut settings), FirstEffect::Redraw);
         assert_eq!(state.step(), FirstStep::Sync);
-        assert_eq!(settings.time_zone, "UTC");
+        assert_eq!(state.selected, 0);
+        assert_eq!(state.choose(&mut settings), FirstEffect::Finish);
+        assert_eq!(settings.language, "English");
+        assert_eq!(settings.keyboard, "us");
+        assert_eq!(settings.time_zone, "Local time");
     }
 
     #[test]
-    fn choosing_a_backend_asks_to_pair_and_not_now_finishes() {
+    fn the_welcome_screen_shows_the_three_answers_and_one_action() {
+        let settings = Settings {
+            language: "Deutsch".into(),
+            keyboard: "de".into(),
+            time_zone: "Europe/Berlin".into(),
+            ..Settings::default()
+        };
+        let state = FirstRunState::default();
+        let rows = state.welcome_options(&settings);
+        assert_eq!(rows[0], ("Language", "Deutsch".to_owned()));
+        assert_eq!(rows[1], ("Keyboard", "German".to_owned()));
+        assert_eq!(rows[2], ("Time zone", "Europe/Berlin".to_owned()));
+        assert_eq!(rows[3], ("Start writing", String::new()));
+        assert_eq!(state.choice_count(), 4);
+    }
+
+    #[test]
+    fn changing_an_answer_opens_its_list_and_comes_back_to_its_row() {
+        let mut settings = Settings::default();
+        let mut state = FirstRunState::default();
+        state.start();
+
+        // Language: the cursor starts on the current answer and choosing
+        // returns to the welcome screen, on the Language row.
+        state.selected = 0;
+        assert_eq!(state.choose(&mut settings), FirstEffect::Redraw);
+        assert_eq!(state.step(), FirstStep::Language);
+        assert_eq!(state.selected, 0);
+        state.selected = 1; // Deutsch
+        assert_eq!(state.choose(&mut settings), FirstEffect::Redraw);
+        assert_eq!(settings.language, "Deutsch");
+        assert_eq!(state.step(), FirstStep::Welcome);
+        assert_eq!(state.selected, 0);
+
+        // Keyboard, with the cursor already on US.
+        state.selected = 1;
+        assert_eq!(state.choose(&mut settings), FirstEffect::Redraw);
+        assert_eq!(state.step(), FirstStep::Keyboard);
+        assert_eq!(state.selected, 0);
+        state.selected = 1; // UK
+        assert_eq!(state.choose(&mut settings), FirstEffect::Redraw);
+        assert_eq!(settings.keyboard, "gb");
+        assert_eq!(state.step(), FirstStep::Welcome);
+        assert_eq!(state.selected, 1);
+
+        // Time zone: the cursor starts on Local time.
+        state.selected = 2;
+        assert_eq!(state.choose(&mut settings), FirstEffect::Redraw);
+        assert_eq!(state.step(), FirstStep::TimeZone);
+        assert_eq!(state.selected, 0);
+        state.selected = 1; // UTC
+        assert_eq!(state.choose(&mut settings), FirstEffect::Redraw);
+        assert_eq!(settings.time_zone, "UTC");
+        assert_eq!(state.step(), FirstStep::Welcome);
+        assert_eq!(state.selected, 2);
+    }
+
+    #[test]
+    fn esc_closes_a_list_or_the_sync_step_and_stays_on_the_welcome_screen() {
+        let mut state = FirstRunState::default();
+        state.start();
+        state.selected = 1;
+        state.choose(&mut Settings::default());
+        assert_eq!(state.step(), FirstStep::Keyboard);
+        state.back();
+        assert_eq!(state.step(), FirstStep::Welcome);
+        assert_eq!(state.selected, 1);
+
+        state.selected = START_WRITING;
+        state.choose(&mut Settings::default());
+        assert_eq!(state.step(), FirstStep::Sync);
+        state.back();
+        assert_eq!(state.step(), FirstStep::Welcome);
+        assert_eq!(state.selected, START_WRITING);
+
+        state.back();
+        assert_eq!(state.step(), FirstStep::Welcome);
+    }
+
+    #[test]
+    fn the_sync_step_offers_not_now_first() {
         let mut settings = Settings::default();
         let mut state = FirstRunState {
             step: Some(FirstStep::Sync),
             selected: 0,
         };
+        assert_eq!(state.options().len(), 4);
+        assert_eq!(state.options()[0], "Not now");
+        assert_eq!(state.choice_count(), 4);
         assert_eq!(state.choose(&mut settings), FirstEffect::Finish);
         state.selected = 1;
         assert_eq!(
@@ -450,36 +552,16 @@ mod tests {
     }
 
     #[test]
-    fn back_steps_through_the_flow_but_stops_at_language() {
-        let settings = Settings::default();
-        let mut state = FirstRunState {
-            step: Some(FirstStep::TimeZone),
-            ..FirstRunState::default()
-        };
-        state.back(&settings);
-        assert_eq!(state.step(), FirstStep::Keyboard);
-        state.back(&settings);
-        state.back(&settings);
-        assert_eq!(state.step(), FirstStep::Language);
-    }
-
-    #[test]
-    fn the_sync_step_shows_the_answers_above_it() {
-        let settings = Settings {
-            language: "Deutsch".into(),
-            keyboard: "de".into(),
-            time_zone: "Europe/Berlin".into(),
-            ..Settings::default()
-        };
-        let state = FirstRunState {
-            step: Some(FirstStep::Sync),
-            ..FirstRunState::default()
-        };
-        let options = state.options(&settings);
-        assert_eq!(options.len(), 5);
-        assert_eq!(options[0], "Not now");
-        assert!(options[4].contains("Deutsch"));
-        assert!(options[4].contains("German"));
-        assert!(options[4].contains("Europe/Berlin"));
+    fn the_arrow_keys_skip_nothing_on_the_short_welcome_screen() {
+        let mut state = FirstRunState::default();
+        state.start();
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.push(state.selected);
+            state.move_by(1);
+        }
+        assert_eq!(seen, vec![3, 0, 1, 2]);
+        state.move_by(-1);
+        assert_eq!(state.selected, 2);
     }
 }
