@@ -474,6 +474,11 @@ impl WifiPage {
         self.entry.set_text("");
     }
 
+    /// The forget card is open; the command palette waits for it.
+    pub(crate) fn is_dialog_open(&self) -> bool {
+        self.screen.is_dialog_open()
+    }
+
     pub(crate) fn handle_key(
         self: &Rc<Self>,
         keyval: gdk::Key,

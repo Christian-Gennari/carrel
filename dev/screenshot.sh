@@ -13,12 +13,14 @@
 #
 # Theme ids are deliberately just parameters: the theme round renames them
 # without touching a shot. Use lowercase slugs, because they become file names;
-# the editor and Settings are shot in all six themes in `shoot_all`.
+# the editor, Settings and the empty command palette are shot in all six themes
+# in `shoot_all`.
 #
 # Xvfb is already part of dev/Dockerfile; no GPU, compositor or display is
 # needed. The shell runs with CARREL_FAKE_DAEMON=1, so every screen has
 # deterministic data and the daemon is never required. A state that only the
-# keyboard reaches is named as CARREL_SHOT_KEYS ("Down,Down,Return").
+# keyboard reaches is named as CARREL_SHOT_KEYS ("Down,Down,Return"); a letter
+# in the palette is a key too ("ctrl+k,e,x,p" filters to "exp").
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -210,6 +212,22 @@ shoot_all() {
     shoot quotes-unavailable-$theme_a "$theme_a" true true editor "" CARREL_FAKE_LIBRARY=unavailable CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
     shoot quotes-nomatch-$theme_a "$theme_a" true true editor "" CARREL_SHOT_QUOTE_TEXT=$'\n\n@zzzqx'
 
+    # Command palette: empty in every theme, filtered to "exp", a file match
+    # ("chapter" → Open: Novel/Chapter one) and open over the Files screen.
+    for slug in light sepia mist study dark high-contrast; do
+        CARREL_SHOT_KEYS="ctrl+k" shoot palette-$slug "$slug" true true editor ""
+    done
+    CARREL_SHOT_KEYS="ctrl+k,e,x,p" shoot palette-filter-$theme_a "$theme_a" true true editor ""
+    CARREL_SHOT_KEYS="ctrl+k,e,x,p" shoot palette-filter-dark dark true true editor ""
+    CARREL_SHOT_KEYS="ctrl+k,c,h,a,p,t,e,r" shoot palette-file-$theme_a "$theme_a" true true editor ""
+    CARREL_SHOT_KEYS="ctrl+k,c,h,a,p,t,e,r" shoot palette-file-dark dark true true editor ""
+    CARREL_SHOT_KEYS="ctrl+k" shoot palette-files-$theme_a "$theme_a" true true files ""
+
+    # The key sheet, and the one line an empty document shows.
+    CARREL_SHOT_KEYS="ctrl+slash" shoot keysheet-$theme_a "$theme_a" true true editor ""
+    CARREL_SHOT_KEYS="ctrl+slash" shoot keysheet-dark dark true true editor ""
+    CARREL_SHOT_KEYS="ctrl+n" shoot editor-dark-empty dark true true editor ""
+
     # Sync: unpaired, paired idle, syncing, error, then each pairing flow.
     shoot sync-unpaired-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=unpaired
     shoot sync-idle-$theme_a "$theme_a" true true sync ""
@@ -279,8 +297,8 @@ import html, pathlib, sys
 
 shots = pathlib.Path(sys.argv[1])
 screens = [
-    "editor", "files", "history", "quotes", "sync", "wifi",
-    "export", "import", "settings", "first-run", "battery", "update",
+    "editor", "files", "history", "quotes", "palette", "keysheet", "sync",
+    "wifi", "export", "import", "settings", "first-run", "battery", "update",
 ]
 preferred = ["1366x768", "1920x1080"]
 sizes = [name for name in preferred if (shots / name).is_dir()]
@@ -302,6 +320,7 @@ for name in names:
 
 titles = {
     "first-run": "First run", "wifi": "Wi-Fi", "update": "Update",
+    "palette": "Command palette", "keysheet": "Key sheet",
 }
 page = []
 page.append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">")

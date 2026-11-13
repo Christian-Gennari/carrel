@@ -27,6 +27,7 @@ use crate::first_run::FirstRunPage;
 use crate::history::HistoryPage;
 use crate::keys::Keys;
 use crate::nav::Navigator;
+use crate::palette::{CommandPalette, KeySheet};
 use crate::quotes::QuotePalette;
 use crate::settings::Settings;
 use crate::settings_page::SettingsPage;
@@ -43,6 +44,9 @@ fn gtk_scenarios() {
     sourceview::init();
     replacing_a_query_is_one_undoable_step();
     the_palette_follows_the_text_and_the_keys();
+    the_command_palette_finds_every_action();
+    the_key_sheet_is_behind_ctrl_slash_only();
+    the_start_hint_waits_for_the_first_character();
     the_confirmation_keeps_the_safe_button_first();
     rename_happens_in_the_place_of_the_row();
     keystroke_baseline();
@@ -245,6 +249,141 @@ fn pump_open(palette: &Rc<QuotePalette>, buffer: &sourceview::Buffer) {
     pump(|| palette.result_count() >= 1);
 }
 
+/// Ctrl+K opens one palette from the editor and from every screen, filters by
+/// fuzzy words, runs an action and opens any file by name.
+fn the_command_palette_finds_every_action() {
+    let none = gdk::ModifierType::empty();
+    let shell = TestShell::new(
+        &[
+            ("Alpha.md", "# Alpha\n"),
+            ("Novel/Chapter one.md", "# Chapter one\n"),
+            ("Zebra.md", "# Zebra\n"),
+        ],
+        "Alpha.md",
+    );
+
+    // The editor: the curated first rows, then "exp" lands on Export.
+    shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(shell.palette.is_open());
+    assert_eq!(shell.palette.labels()[0], "New file");
+    shell.type_text("exp");
+    assert_eq!(shell.palette.selected_label().as_deref(), Some("Export…"));
+    shell.press("Esc", gdk::Key::Escape, none);
+    assert!(!shell.palette.is_open());
+    assert!(contents(&shell.editor.buffer()).contains("# Alpha"));
+
+    // Every screen: the palette floats over Files and still opens a document.
+    shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(shell.palette.is_open());
+    assert_eq!(shell.visible(), "files");
+    shell.type_text("zebra");
+    let label = shell.palette.selected_label().expect("a row");
+    assert_eq!(label, "Open: Zebra");
+    shell.press("Enter", gdk::Key::Return, none);
+    settle();
+    assert!(!shell.palette.is_open(), "running closes the palette");
+    assert_eq!(shell.visible(), "editor");
+    assert_eq!(
+        shell.editor.current_rel().as_deref(),
+        Some(Path::new("Zebra.md"))
+    );
+
+    // A theme by name, and the palette closes at once.
+    shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+    shell.type_text("sepia");
+    assert_eq!(
+        shell.palette.selected_label().as_deref(),
+        Some("Theme: Sepia")
+    );
+    shell.press("Enter", gdk::Key::Return, none);
+    settle();
+    assert!(!shell.palette.is_open());
+    assert_eq!(shell.settings.borrow().theme.label(), "Sepia");
+
+    // Focus mode is a toggle: the row says what Enter will do.
+    shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+    shell.type_text("focus");
+    assert_eq!(
+        shell.palette.selected_label().as_deref(),
+        Some("Turn focus mode on")
+    );
+    shell.press("Enter", gdk::Key::Return, none);
+    settle();
+    assert!(shell.settings.borrow().focus_mode);
+
+    // First run is a closed flow: Ctrl+K does nothing there.
+    shell.stack.set_visible_child_name("first_run");
+    shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+    assert!(!shell.palette.is_open());
+    shell.stack.set_visible_child_name("editor");
+
+    // "Keyboard shortcuts" in the palette opens the same card as Ctrl+/.
+    shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+    shell.type_text("keyboard");
+    assert_eq!(
+        shell.palette.selected_label().as_deref(),
+        Some("Keyboard shortcuts")
+    );
+    shell.press("Enter", gdk::Key::Return, none);
+    assert!(!shell.palette.is_open());
+    assert!(shell.key_sheet.is_open());
+    shell.press("Esc", gdk::Key::Escape, none);
+    assert!(!shell.key_sheet.is_open());
+}
+
+/// Ctrl+/ opens the key sheet; `?` stays an ordinary character.
+fn the_key_sheet_is_behind_ctrl_slash_only() {
+    let none = gdk::ModifierType::empty();
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+
+    shell.type_text("?");
+    assert!(contents(&shell.editor.buffer()).ends_with('?'));
+    assert!(!shell.key_sheet.is_open(), "? types a character");
+
+    shell.press("Ctrl+/", gdk::Key::slash, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(shell.key_sheet.is_open());
+    assert!(!shell.palette.is_open());
+    // The card owns the keyboard: a letter does not reach the text.
+    let before = contents(&shell.editor.buffer());
+    shell.press("x", gdk::Key::x, none);
+    assert_eq!(contents(&shell.editor.buffer()), before);
+    shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+    assert!(!shell.palette.is_open(), "the sheet stays on top of Ctrl+K");
+    shell.press("Esc", gdk::Key::Escape, none);
+    assert!(!shell.key_sheet.is_open());
+}
+
+/// The start hint appears in an empty document and leaves with the first
+/// character; it never comes back in that document.
+fn the_start_hint_waits_for_the_first_character() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    assert!(
+        !shell.editor.start_hint_visible(),
+        "a document with text shows no hint"
+    );
+
+    shell.press("Ctrl+N", gdk::Key::n, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(shell.editor.start_hint_visible(), "the new file is empty");
+
+    shell.type_text("H");
+    assert!(
+        !shell.editor.start_hint_visible(),
+        "the first character clears it"
+    );
+    shell.editor.buffer().set_text("");
+    settle();
+    assert!(
+        !shell.editor.start_hint_visible(),
+        "it never returns in the same document"
+    );
+}
+
 /// The one confirmation card starts on Cancel: Esc and Enter alone cancel,
 /// and only Right then Enter reaches the destructive button.
 fn the_confirmation_keeps_the_safe_button_first() {
@@ -331,7 +470,7 @@ fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
 // change the baseline deliberately.
 // ---------------------------------------------------------------------------
 
-const BASELINE: [(&str, usize); 7] = [
+const BASELINE: [(&str, usize); 11] = [
     ("Open an existing file by name", 4),
     ("Create a new file", 12),
     ("Insert a quote with @", 7),
@@ -339,6 +478,10 @@ const BASELINE: [(&str, usize); 7] = [
     ("Export the current file to USB as .docx", 6),
     ("Restore an earlier version", 5),
     ("Change the theme", 2),
+    ("Open a file with the command palette", 7),
+    ("Toggle focus mode with the command palette", 7),
+    ("Set the theme to Sepia with the command palette", 7),
+    ("Show the keyboard shortcuts", 1),
 ];
 
 struct TestShell {
@@ -347,6 +490,8 @@ struct TestShell {
     window: gtk::Window,
     editor: Rc<EditorPage>,
     quotes: Rc<QuotePalette>,
+    palette: Rc<CommandPalette>,
+    key_sheet: Rc<KeySheet>,
     keys: Rc<Keys>,
     settings: Rc<RefCell<Settings>>,
     daemon: Arc<FakeDaemon>,
@@ -411,12 +556,16 @@ impl TestShell {
         let quotes = QuotePalette::new(client.clone(), Rc::clone(&editor));
         let sync = SyncPage::new(client.clone(), Rc::clone(&nav));
         let wifi = WifiPage::new(client.clone(), Rc::clone(&nav));
+        let restyle: Rc<dyn Fn()> = {
+            let editor = Rc::clone(&editor);
+            Rc::new(move || editor.reapply_style())
+        };
         let settings_page = SettingsPage::new(
             client.clone(),
             Rc::clone(&nav),
             Rc::clone(&settings),
             root.clone(),
-            Rc::new(|| {}),
+            Rc::clone(&restyle),
         );
         let export = ExportPage::new(
             client.clone(),
@@ -430,6 +579,26 @@ impl TestShell {
             Rc::clone(&nav),
             Rc::clone(&sync),
         );
+        let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        dim.add_css_class("overlay-dim");
+        dim.set_hexpand(true);
+        dim.set_vexpand(true);
+        dim.set_can_target(true);
+        dim.set_visible(false);
+        let key_sheet = KeySheet::new(dim.clone());
+        let palette = CommandPalette::new(
+            client.clone(),
+            store.clone(),
+            Rc::clone(&settings),
+            restyle,
+            Rc::clone(&editor),
+            Rc::clone(&nav),
+            Rc::clone(&quotes),
+            Rc::clone(&sync),
+            Rc::clone(&settings_page),
+            Rc::clone(&key_sheet),
+            dim.clone(),
+        );
 
         stack.add_named(&editor.widget, Some("editor"));
         stack.add_named(&files.widget, Some("files"));
@@ -440,7 +609,12 @@ impl TestShell {
         stack.add_named(&export.widget, Some("export"));
         stack.add_named(&first_run.widget, Some("first_run"));
         stack.set_visible_child_name("editor");
-        window.set_child(Some(&stack));
+        let overlay = gtk::Overlay::new();
+        overlay.set_child(Some(&stack));
+        overlay.add_overlay(&dim);
+        overlay.add_overlay(&palette.widget);
+        overlay.add_overlay(&key_sheet.widget);
+        window.set_child(Some(&overlay));
         editor.open_rel(Path::new(open)).expect("open fixture");
         window.present();
         settle();
@@ -457,6 +631,8 @@ impl TestShell {
             wifi,
             export,
             first_run,
+            Rc::clone(&palette),
+            Rc::clone(&key_sheet),
         );
 
         Self {
@@ -465,6 +641,8 @@ impl TestShell {
             window,
             editor,
             quotes,
+            palette,
+            key_sheet,
             keys,
             settings,
             daemon,
@@ -480,8 +658,11 @@ impl TestShell {
     }
 
     /// Type text as GTK delivers it: the key goes through the dispatcher
-    /// first, then the character reaches the focused text view.
+    /// first, then the character reaches the focused text view. While the
+    /// command palette is open it takes the letters itself, as it does in the
+    /// application.
     fn type_text(&self, text: &str) {
+        let palette_open = self.palette.is_open();
         for character in text.chars() {
             let name = character.to_string();
             let (label, key) = match character {
@@ -496,9 +677,11 @@ impl TestShell {
                 ),
             };
             self.press(&label, key, gdk::ModifierType::empty());
-            self.editor
-                .buffer()
-                .insert_at_cursor(&character.to_string());
+            if !palette_open {
+                self.editor
+                    .buffer()
+                    .insert_at_cursor(&character.to_string());
+            }
         }
         settle();
     }
@@ -669,6 +852,76 @@ fn keystroke_baseline() {
         shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
         assert_ne!(shell.settings.borrow().theme, before, "the theme changed");
         measured.push(("Change the theme", shell.take_sequence()));
+    }
+
+    // Open a document by its name: Ctrl+K, the name, Enter. The palette lists
+    // the file under the actions, so no screen and no arrows are needed.
+    {
+        let shell = TestShell::new(
+            &[("Alpha.md", "# Alpha\n"), ("Zebra.md", "# Zebra\n")],
+            "Alpha.md",
+        );
+        shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+        shell.type_text("zebra");
+        assert_eq!(
+            shell.palette.selected_label().as_deref(),
+            Some("Open: Zebra")
+        );
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        settle();
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Zebra.md"))
+        );
+        measured.push((
+            "Open a file with the command palette",
+            shell.take_sequence(),
+        ));
+    }
+
+    // Toggle focus mode: Ctrl+K, "focus", Enter. The toggle applies at once.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+        shell.type_text("focus");
+        assert_eq!(
+            shell.palette.selected_label().as_deref(),
+            Some("Turn focus mode on")
+        );
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        settle();
+        assert!(shell.settings.borrow().focus_mode);
+        assert!(!shell.palette.is_open());
+        measured.push((
+            "Toggle focus mode with the command palette",
+            shell.take_sequence(),
+        ));
+    }
+
+    // Set the theme by name: Ctrl+K, "sepia", Enter.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+        shell.type_text("sepia");
+        assert_eq!(
+            shell.palette.selected_label().as_deref(),
+            Some("Theme: Sepia")
+        );
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        settle();
+        assert_eq!(shell.settings.borrow().theme.label(), "Sepia");
+        measured.push((
+            "Set the theme to Sepia with the command palette",
+            shell.take_sequence(),
+        ));
+    }
+
+    // The key sheet: one chord from the editor.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.press("Ctrl+/", gdk::Key::slash, gdk::ModifierType::CONTROL_MASK);
+        assert!(shell.key_sheet.is_open());
+        measured.push(("Show the keyboard shortcuts", shell.take_sequence()));
     }
 
     finish_baseline(&measured);

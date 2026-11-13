@@ -15,3 +15,7 @@ Regenerate with `dev/run.sh bash dev/ux-baseline.sh` (Xvfb, no GPU).
 | Export the current file to USB as .docx | 6 | Ctrl+E Enter Down Down Enter Enter |
 | Restore an earlier version | 5 | Ctrl+H Down Enter Right Enter |
 | Change the theme | 2 | Ctrl+, Right |
+| Open a file with the command palette | 7 | Ctrl+K z e b r a Enter |
+| Toggle focus mode with the command palette | 7 | Ctrl+K f o c u s Enter |
+| Set the theme to Sepia with the command palette | 7 | Ctrl+K s e p i a Enter |
+| Show the keyboard shortcuts | 1 | Ctrl+/ |

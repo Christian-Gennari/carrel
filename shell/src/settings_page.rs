@@ -555,6 +555,20 @@ impl SettingsPage {
         }
     }
 
+    /// Show the Settings screen with `row` selected. The command palette uses
+    /// it for "Theme…" and "Install update".
+    pub fn open_row(self: &Rc<Self>, row: SettingRow) {
+        {
+            let settings = self.settings.borrow();
+            if let Some(index) = rows(&settings).iter().position(|item| *item == row) {
+                self.state.borrow_mut().select(&settings, index);
+            }
+        }
+        self.nav.show("settings");
+        self.refresh();
+        self.screen.focus_page();
+    }
+
     fn change(self: &Rc<Self>, delta: i32) {
         let changed = {
             let mut settings = self.settings.borrow_mut();
@@ -601,7 +615,7 @@ impl SettingsPage {
         }
     }
 
-    fn apply_update(self: &Rc<Self>) {
+    pub(crate) fn apply_update(self: &Rc<Self>) {
         self.state.borrow_mut().update.applying = true;
         self.refresh();
         let weak = Rc::downgrade(self);

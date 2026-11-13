@@ -374,20 +374,23 @@ impl ExportState {
     pub fn done_heading(&self) -> Option<&'static str> {
         match self.outcome {
             Some(ExportOutcome::Exported { .. }) => Some("Safe to remove"),
-            Some(ExportOutcome::Imported { .. }) => Some("Import finished"),
-            None => None,
+            // The import result is one line; it is not repeated as a heading.
+            Some(ExportOutcome::Imported { .. }) | None => None,
         }
     }
 
     pub fn outcome_detail(&self) -> Option<String> {
         match &self.outcome {
             Some(ExportOutcome::Exported { path }) => Some(path.clone()),
-            Some(ExportOutcome::Imported { paths }) => {
-                Some(format!("{} files into Writing/Imported/", paths.len()))
-            }
-            None => None,
+            Some(ExportOutcome::Imported { .. }) | None => None,
         }
     }
+}
+
+/// One sentence for a finished import, shown once under the title.
+pub fn imported_text(count: usize) -> String {
+    let files = if count == 1 { "file" } else { "files" };
+    format!("{count} {files} imported into Imported.")
 }
 
 pub fn outcome_text(outcome: Option<&ExportOutcome>) -> String {
@@ -395,9 +398,7 @@ pub fn outcome_text(outcome: Option<&ExportOutcome>) -> String {
         Some(ExportOutcome::Exported { path }) => {
             format!("Exported to {path}. Safe to remove the drive.")
         }
-        Some(ExportOutcome::Imported { paths }) => {
-            format!("Imported {} files into Writing/Imported/.", paths.len())
-        }
+        Some(ExportOutcome::Imported { paths }) => imported_text(paths.len()),
         None => String::new(),
     }
 }
@@ -693,7 +694,18 @@ impl ExportPage {
             self.screen
                 .set_title(if importing { "Import" } else { "Export" });
         }
-        self.screen.set_status(self.state.borrow().step_title());
+        let import_done = {
+            let state = self.state.borrow();
+            state.step == ExportStep::Done
+                && matches!(state.outcome.as_ref(), Some(ExportOutcome::Imported { .. }))
+        };
+        if import_done {
+            // One line under the title, once: no "Finished", no heading, no
+            // second sentence.
+            self.screen.set_status("");
+        } else {
+            self.screen.set_status(self.state.borrow().step_title());
+        }
         for (index, row) in rows.iter().enumerate() {
             let element = gtk::ListBoxRow::new();
             element.add_css_class("ui-row");
@@ -856,11 +868,14 @@ mod tests {
         );
         state.on_imported(vec!["Imported/one.md".into(), "Imported/two.txt".into()]);
         assert_eq!(state.step, ExportStep::Done);
+        assert_eq!(state.note("2026-11-12"), "2 files imported into Imported.");
+        assert_eq!(state.outcome_detail(), None, "the result is shown once");
+        assert_eq!(state.done_heading(), None);
         assert_eq!(
-            state.outcome_detail().as_deref(),
-            Some("2 files into Writing/Imported/")
+            imported_text(1),
+            "1 file imported into Imported.",
+            "one file reads as a single file"
         );
-        assert_eq!(state.done_heading(), Some("Import finished"));
     }
 
     #[test]

@@ -26,6 +26,8 @@ const LINE_HEIGHT: f64 = 1.6;
 const COLUMN_CHARACTERS: f64 = 66.0;
 /// The comfortable margin above the first line of a file.
 const EDITOR_TOP_MARGIN: i32 = 96;
+/// The one quiet line an empty document shows, where the text will begin.
+pub const START_HINT: &str = "Start writing. Ctrl+K for everything else.";
 
 pub struct EditorPage {
     pub widget: gtk::Box,
@@ -33,6 +35,8 @@ pub struct EditorPage {
     buffer: sourceview::Buffer,
     scroller: gtk::ScrolledWindow,
     status: gtk::Label,
+    bottom: gtk::Box,
+    start_hint: gtk::Label,
     note: gtk::Label,
     hairline: gtk::DrawingArea,
     hairline_fraction: Rc<Cell<f64>>,
@@ -47,6 +51,9 @@ pub struct EditorPage {
     current: RefCell<Option<PathBuf>>,
     untitled: Cell<bool>,
     loading: Cell<bool>,
+    /// The start hint is gone for this opening of the document; it never
+    /// comes back while the document stays open.
+    start_hint_dismissed: Cell<bool>,
     last_edit_at: Cell<Instant>,
     last_words: Cell<u64>,
     today_words: Cell<u64>,
@@ -109,7 +116,36 @@ impl EditorPage {
         let status = gtk::Label::new(None);
         status.set_xalign(0.0);
         status.add_css_class("bottom-line");
-        status.set_visible(settings.borrow().show_bottom_line);
+
+        // The bottom line ends with a dim Ctrl+K key cap, so the palette is
+        // discoverable without a tip or a pop-up.
+        let cap = gtk::Label::new(Some("Ctrl+K"));
+        cap.add_css_class("bottom-cap");
+        cap.set_valign(gtk::Align::Center);
+        let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        bottom.add_css_class("bottom-line-row");
+        bottom.append(&status);
+        bottom.append(&cap);
+        bottom.set_visible(settings.borrow().show_bottom_line);
+
+        // Where the text will begin: one quiet line in an empty document. It
+        // sits exactly over the first character and leaves with the first
+        // typed key.
+        let start_hint = gtk::Label::new(Some(START_HINT));
+        start_hint.add_css_class("start-hint");
+        start_hint.set_halign(gtk::Align::Start);
+        start_hint.set_valign(gtk::Align::Start);
+        start_hint.set_margin_start(32);
+        start_hint.set_margin_top(EDITOR_TOP_MARGIN);
+        start_hint.set_can_target(false);
+        start_hint.set_focusable(false);
+        start_hint.set_visible(false);
+        let view_overlay = gtk::Overlay::new();
+        view_overlay.set_child(Some(&scroller));
+        view_overlay.set_halign(gtk::Align::Center);
+        view_overlay.set_hexpand(false);
+        view_overlay.set_vexpand(true);
+        view_overlay.add_overlay(&start_hint);
 
         let note = gtk::Label::new(None);
         note.set_xalign(0.5);
@@ -149,9 +185,9 @@ impl EditorPage {
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.add_css_class("carrel-page");
-        widget.append(&scroller);
+        widget.append(&view_overlay);
         widget.append(&note);
-        widget.append(&status);
+        widget.append(&bottom);
         widget.append(&hairline);
 
         let tags = Tags::new(&buffer, &palette);
@@ -164,6 +200,8 @@ impl EditorPage {
             buffer,
             scroller,
             status,
+            bottom,
+            start_hint,
             note,
             hairline,
             hairline_fraction,
@@ -178,6 +216,7 @@ impl EditorPage {
             current: RefCell::new(None),
             untitled: Cell::new(false),
             loading: Cell::new(false),
+            start_hint_dismissed: Cell::new(false),
             last_edit_at: Cell::new(Instant::now()),
             last_words: Cell::new(0),
             today_words: Cell::new(stats.words),
@@ -211,6 +250,10 @@ impl EditorPage {
                     eprintln!("carrel: could not journal edit: {error}");
                     page.save_error.set(true);
                 }
+            }
+            if !text.is_empty() {
+                page.start_hint_dismissed.set(true);
+                page.start_hint.set_visible(false);
             }
             page.note_edit();
         });
@@ -613,7 +656,7 @@ impl EditorPage {
         self.focus_previous.set(Some(current));
     }
 
-    fn toggle_focus_mode(self: &Rc<Self>) {
+    pub(crate) fn toggle_focus_mode(self: &Rc<Self>) {
         {
             let mut settings = self.settings.borrow_mut();
             settings.focus_mode = !settings.focus_mode;
@@ -693,6 +736,7 @@ impl EditorPage {
         self.restyle_now();
         self.update_status(false);
         self.scroll_to_cursor();
+        self.update_start_hint();
         Ok(())
     }
 
@@ -744,6 +788,20 @@ impl EditorPage {
         self.doc.borrow().is_some()
     }
 
+    /// The start hint is on screen only in an open, still empty document whose
+    /// first key has not been typed.
+    fn update_start_hint(&self) {
+        let empty = self.doc.borrow().is_some() && self.buffer_text().is_empty();
+        self.start_hint
+            .set_visible(empty && !self.start_hint_dismissed.get());
+    }
+
+    /// For the tests and the screenshot script.
+    #[cfg(test)]
+    pub(crate) fn start_hint_visible(&self) -> bool {
+        self.start_hint.is_visible()
+    }
+
     pub fn open_rel(&self, rel: &Path) -> Result<(), String> {
         self.close_document();
         let doc = self
@@ -771,11 +829,13 @@ impl EditorPage {
             eprintln!("carrel: could not remember last file: {error}");
         }
 
+        self.start_hint_dismissed.set(!text.is_empty());
         let end = self.buffer.end_iter();
         self.buffer.place_cursor(&end);
         self.restyle_now();
         self.update_status(false);
         self.scroll_to_cursor();
+        self.update_start_hint();
         Ok(())
     }
 
@@ -995,7 +1055,7 @@ impl EditorPage {
         self.hairline.queue_draw();
     }
 
-    fn change_font(self: &Rc<Self>, larger: bool) {
+    pub(crate) fn change_font(self: &Rc<Self>, larger: bool) {
         let changed = {
             let mut settings = self.settings.borrow_mut();
             if larger {
@@ -1011,13 +1071,13 @@ impl EditorPage {
         self.reapply_style();
     }
 
-    fn toggle_bottom_line(self: &Rc<Self>) {
+    pub(crate) fn toggle_bottom_line(self: &Rc<Self>) {
         let visible = {
             let mut settings = self.settings.borrow_mut();
             settings.show_bottom_line = !settings.show_bottom_line;
             settings.show_bottom_line
         };
-        self.status.set_visible(visible);
+        self.bottom.set_visible(visible);
         if visible {
             self.note.set_visible(false);
         } else {
@@ -1041,7 +1101,7 @@ impl EditorPage {
         theme::apply(&self.css, &self.settings.borrow());
         self.tags.update_colors(&palette);
         *self.hairline_color.borrow_mut() = theme::rgb(palette.accent);
-        self.status
+        self.bottom
             .set_visible(self.settings.borrow().show_bottom_line);
         self.update_line_height();
         self.update_column_width();

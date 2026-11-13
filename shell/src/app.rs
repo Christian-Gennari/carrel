@@ -20,6 +20,7 @@ use crate::first_run::FirstRunPage;
 use crate::history::HistoryPage;
 use crate::keys::Keys;
 use crate::nav::Navigator;
+use crate::palette::{CommandPalette, KeySheet};
 use crate::quotes::QuotePalette;
 use crate::settings::Settings;
 use crate::settings_page::SettingsPage;
@@ -161,6 +162,29 @@ pub fn run(application: &gtk::Application) {
         Rc::clone(&nav),
         Rc::clone(&sync),
     );
+    // A paper layer at 60 % draws the page behind the palette and the key
+    // sheet at about 40 %, the same dim as focus mode.
+    let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    dim.add_css_class("overlay-dim");
+    dim.set_hexpand(true);
+    dim.set_vexpand(true);
+    dim.set_can_target(true);
+    dim.set_visible(false);
+
+    let key_sheet = KeySheet::new(dim.clone());
+    let palette = CommandPalette::new(
+        client.clone(),
+        store.clone(),
+        Rc::clone(&settings),
+        Rc::clone(&restyle),
+        Rc::clone(&editor),
+        Rc::clone(&nav),
+        Rc::clone(&quotes),
+        Rc::clone(&sync),
+        Rc::clone(&settings_page),
+        Rc::clone(&key_sheet),
+        dim.clone(),
+    );
 
     stack.add_named(&editor.widget, Some("editor"));
     stack.add_named(&files.widget, Some("files"));
@@ -171,7 +195,15 @@ pub fn run(application: &gtk::Application) {
     stack.add_named(&export.widget, Some("export"));
     stack.add_named(&first_run.widget, Some("first_run"));
     stack.set_visible_child_name("editor");
-    window.set_child(Some(&stack));
+
+    // The palette and the key sheet float over every screen, so they are
+    // siblings of the stack rather than part of one page.
+    let overlay = gtk::Overlay::new();
+    overlay.set_child(Some(&stack));
+    overlay.add_overlay(&dim);
+    overlay.add_overlay(&palette.widget);
+    overlay.add_overlay(&key_sheet.widget);
+    window.set_child(Some(&overlay));
 
     // Battery changes go to the bottom line and to the 10 % / 5 % notes;
     // sync and pairing signals go to the screen that shows them.
@@ -223,6 +255,8 @@ pub fn run(application: &gtk::Application) {
         Rc::clone(&wifi),
         Rc::clone(&export),
         Rc::clone(&first_run),
+        palette,
+        key_sheet,
     );
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);

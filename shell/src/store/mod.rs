@@ -317,6 +317,26 @@ impl Store {
 
     /// Most recently modified Markdown file at the top level, used when the
     /// remembered file has gone away.
+    /// Every document under the writing root, relative and sorted by name.
+    /// The command palette lists these so a few letters open any file.
+    pub fn document_paths(&self) -> Vec<PathBuf> {
+        let mut all = Vec::new();
+        if collect_files(self.root(), Path::new(""), &mut all).is_err() {
+            return Vec::new();
+        }
+        all.retain(|path| {
+            path.file_name()
+                .map(|name| is_document_name(&name.to_string_lossy()))
+                .unwrap_or(false)
+        });
+        all.sort_by(|a, b| {
+            a.to_string_lossy()
+                .to_lowercase()
+                .cmp(&b.to_string_lossy().to_lowercase())
+        });
+        all
+    }
+
     pub fn most_recent_file(&self) -> StoreResult<Option<PathBuf>> {
         let mut best: Option<(SystemTime, PathBuf)> = None;
         for entry in self.list(Path::new(""))? {
@@ -573,6 +593,25 @@ mod tests {
             .unwrap()
             .path();
         assert!(trash.join("Novel/one.md").is_file());
+    }
+
+    #[test]
+    fn document_paths_lists_every_document_and_nothing_else() {
+        let (dir, store) = store();
+        fs::create_dir_all(dir.path().join("Novel")).unwrap();
+        fs::write(dir.path().join("Notes.md"), "x").unwrap();
+        fs::write(dir.path().join("Novel/Chapter one.md"), "x").unwrap();
+        fs::write(dir.path().join("Novel/travel notes.txt"), "x").unwrap();
+        fs::write(dir.path().join("Novel/cover.png"), "x").unwrap();
+        fs::write(dir.path().join(".hidden.md"), "x").unwrap();
+        assert_eq!(
+            store.document_paths(),
+            vec![
+                PathBuf::from("Notes.md"),
+                PathBuf::from("Novel/Chapter one.md"),
+                PathBuf::from("Novel/travel notes.txt"),
+            ]
+        );
     }
 
     #[test]

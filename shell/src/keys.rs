@@ -18,6 +18,7 @@ use crate::files::FilesPage;
 use crate::first_run::FirstRunPage;
 use crate::history::HistoryPage;
 use crate::nav::Navigator;
+use crate::palette::{CommandPalette, KeySheet};
 use crate::quotes::QuotePalette;
 use crate::settings_page::SettingsPage;
 use crate::sync::SyncPage;
@@ -37,6 +38,8 @@ pub struct Keys {
     wifi: Rc<WifiPage>,
     export: Rc<ExportPage>,
     first_run: Rc<FirstRunPage>,
+    palette: Rc<CommandPalette>,
+    key_sheet: Rc<KeySheet>,
 }
 
 impl Keys {
@@ -53,6 +56,8 @@ impl Keys {
         wifi: Rc<WifiPage>,
         export: Rc<ExportPage>,
         first_run: Rc<FirstRunPage>,
+        palette: Rc<CommandPalette>,
+        key_sheet: Rc<KeySheet>,
     ) -> Rc<Self> {
         Rc::new(Self {
             stack,
@@ -66,6 +71,8 @@ impl Keys {
             wifi,
             export,
             first_run,
+            palette,
+            key_sheet,
         })
     }
 
@@ -77,15 +84,53 @@ impl Keys {
             .unwrap_or_default()
     }
 
+    /// A confirmation card is modal: the palette waits until it is answered.
+    fn dialog_open(&self) -> bool {
+        match self.visible().as_str() {
+            "files" => self.files.is_dialog_open(),
+            "history" => self.history.is_dialog_open(),
+            "wifi" => self.wifi.is_dialog_open(),
+            _ => false,
+        }
+    }
+
     pub fn handle(&self, keyval: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
         let visible = self.visible();
         let control = state.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
         let key = keyval.to_lower();
 
-        // The global keys from spec/03-ui.md. First run is a closed flow:
-        // only its own keys apply until the editor is reached.
-        if control && visible != "first_run" {
+        // The key sheet is on top of everything until Esc. First run is a
+        // closed flow: the palette and the sheet do not exist there.
+        if self.key_sheet.handle_key(keyval, state) == glib::Propagation::Stop {
+            return glib::Propagation::Stop;
+        }
+        if visible == "first_run" {
+            return self.first_run.handle_key(keyval, state);
+        }
+
+        // While the palette is open every key belongs to it, so no letter
+        // reaches the editor or a screen behind it.
+        if self.palette.handle_key(keyval, state) == glib::Propagation::Stop {
+            return glib::Propagation::Stop;
+        }
+
+        if control {
+            // Ctrl+K: the same palette from the editor and every screen.
+            if key == gdk::Key::k && !self.dialog_open() {
+                self.palette.open();
+                return glib::Propagation::Stop;
+            }
+            // Ctrl+/: the key sheet. `?` stays a normal character in the
+            // editor, so the sheet has a chord of its own.
+            if key == gdk::Key::slash && !self.dialog_open() {
+                self.key_sheet.open();
+                return glib::Propagation::Stop;
+            }
+        }
+
+        // The global keys from spec/03-ui.md.
+        if control {
             if key == gdk::Key::h {
                 self.nav.show("history");
                 return glib::Propagation::Stop;
@@ -111,6 +156,7 @@ impl Keys {
             "settings" => self.settings_page.handle_key(keyval, state),
             "wifi" => self.wifi.handle_key(keyval, state),
             "export" => self.export.handle_key(keyval, state),
+            // First run returns above; this arm is never reached.
             "first_run" => self.first_run.handle_key(keyval, state),
             // The Quotes palette (Ctrl+' and the `@` trigger) lives in the
             // editor, so it sees the editor's keys first.
