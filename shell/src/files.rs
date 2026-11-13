@@ -143,12 +143,7 @@ impl FilesPage {
         });
     }
 
-    /// The delete card is open; the command palette waits for it.
-    pub(crate) fn is_dialog_open(&self) -> bool {
-        self.screen.is_dialog_open()
-    }
-
-    /// The delete or conflict card is open; the command palette waits for it.
+    /// A delete or conflict card is open; the command palette waits for it.
     pub(crate) fn is_dialog_open(&self) -> bool {
         self.screen.is_dialog_open()
     }
