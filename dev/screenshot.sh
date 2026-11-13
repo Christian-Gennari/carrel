@@ -255,11 +255,18 @@ PY
     rm -f "$root/$conflict"
     # --- end UI round 6 (Files) --------------------------------------------
 
-    # History: the list with its preview, another version previewed, and the
-    # restore confirmation.
-    shoot history-list-$theme_a "$theme_a" true true history ""
-    CARREL_SHOT_KEYS="Down" shoot history-preview-$theme_a "$theme_a" true true history ""
+    # --- History and Export/Import (issue #30) ---
+    # History: the diff preview against the current text in every theme, a
+    # second version, and the restore confirmation in light and dark.
+    for slug in light sepia mist study dark high-contrast; do
+        shoot history-diff-$slug "$slug" true true history ""
+    done
+    CARREL_SHOT_KEYS="Down" shoot history-version-$theme_a "$theme_a" true true history ""
+    CARREL_SHOT_KEYS="Down" shoot history-version-$theme_b "$theme_b" true true history ""
     CARREL_SHOT_KEYS="Return" shoot history-restore-$theme_a "$theme_a" true true history ""
+    CARREL_SHOT_KEYS="Return" shoot history-restore-$theme_b "$theme_b" true true history ""
+    # --- end History and Export/Import ---
+
 
     # Quotes palette: typing `@` in the editor opens it at the caret. The shell
     # types the text itself (CARREL_SHOT_QUOTE_TEXT), in both themes, then the
@@ -364,16 +371,37 @@ PY
     # end Sync and Wi-Fi (issue #29)
     # ------------------------------------------------------------------
 
-    # Export: each step, the export in progress, the finished .docx, no drive,
-    # and the import result.
-    shoot export-what-$theme_a "$theme_a" true true export ""
-    CARREL_SHOT_KEYS="Down,Return" shoot export-folder-$theme_a "$theme_a" true true export ""
-    CARREL_SHOT_KEYS="Return" shoot export-format-$theme_a "$theme_a" true true export ""
-    CARREL_SHOT_KEYS="Return,Return" shoot export-drive-$theme_a "$theme_a" true true export ""
-    CARREL_SHOT_KEYS="Return,Return,Return" shoot export-running-$theme_a "$theme_a" true true export "" CARREL_FAKE_SLOW_EXPORT=1
-    CARREL_SHOT_KEYS="Return,Down,Down,Return,Return" shoot export-docx-done-$theme_a "$theme_a" true true export ""
-    shoot export-no-drive-$theme_a "$theme_a" true true export-drive "" CARREL_FAKE_NO_DRIVE=1
-    CARREL_SHOT_KEYS="Down,Down,Down,Return,Return" shoot import-$theme_a "$theme_a" true true export ""
+    # --- History and Export/Import (issue #30) ---
+    # Export and Import: one screen with three rows and one action. Every
+    # state in light and dark; the three rows in every theme. `shot_export`
+    # forgets the remembered choices between shots, so each starts from the
+    # defaults the writer sees on a fresh device.
+    shot_export() {
+        rm -f "$root/.carrel/export.json"
+        shoot "$@"
+    }
+    for slug in light sepia mist study dark high-contrast; do
+        shot_export export-configure-$slug "$slug" true true export ""
+    done
+    for slug in "$theme_a" "$theme_b"; do
+        CARREL_SHOT_KEYS="Right,Down,Right" shot_export export-folder-$slug \
+            "$slug" true true export ""
+        CARREL_FAKE_NO_DRIVE=1 shot_export export-no-drive-$slug \
+            "$slug" true true export ""
+        CARREL_FAKE_SLOW_EXPORT=1 CARREL_SHOT_KEYS="Down,Right,Right,Return" \
+            shot_export export-running-$slug "$slug" true true export ""
+        CARREL_SHOT_KEYS="Down,Right,Right,Return" shot_export export-docx-done-$slug \
+            "$slug" true true export ""
+        CARREL_FAKE_EXPORT_ERROR=1 CARREL_SHOT_KEYS="Down,Right,Right,Return" \
+            shot_export export-error-$slug "$slug" true true export ""
+        CARREL_SHOT_KEYS="i" shot_export import-configure-$slug \
+            "$slug" true true export ""
+        CARREL_FAKE_SLOW_IMPORT=1 CARREL_SHOT_KEYS="i,Return" \
+            shot_export import-running-$slug "$slug" true true export ""
+        CARREL_SHOT_KEYS="i,Return" shot_export import-done-$slug \
+            "$slug" true true export ""
+    done
+    # --- end History and Export/Import ---
 
     # --- UI round 7 (issue #28): Settings in groups, update ready, first run ---
     # Settings: every theme at the top (Look group, Theme row), then the
