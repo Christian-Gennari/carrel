@@ -1,6 +1,9 @@
 # Carrel dev container: everything needed to build and test Carrel.
 FROM debian:trixie
 ENV DEBIAN_FRONTEND=noninteractive
+# fonts-dejavu-extra gives the dev fallback serif a real italic face; the
+# image ships Source Serif 4 with one, and the editor's Markdown italics must
+# photograph the same way in the dev container.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git build-essential pkg-config python3 python3-pip \
       python3-pefile \
@@ -11,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       debian-archive-keyring \
       qemu-system-x86 qemu-utils ovmf \
       cage weston xvfb imagemagick tesseract-ocr \
+      fonts-dejavu-extra \
       pandoc poppler-utils cmake \
     && rm -rf /var/lib/apt/lists/*
 # Debian trixie does not package the typst CLI, but PDF export needs it
