@@ -21,7 +21,7 @@ use crate::history::HistoryPage;
 use crate::keys::Keys;
 use crate::nav::Navigator;
 use crate::quotes::QuotePalette;
-use crate::settings::{Settings, Theme};
+use crate::settings::Settings;
 use crate::settings_page::SettingsPage;
 use crate::store::{self, Store};
 use crate::sync::SyncPage;
@@ -49,7 +49,7 @@ pub fn run(application: &gtk::Application) {
     }
     theme::apply(&provider, &settings.borrow());
     if let Some(gtk_settings) = gtk::Settings::default() {
-        gtk_settings.set_gtk_application_prefer_dark_theme(settings.borrow().theme == Theme::Night);
+        gtk_settings.set_gtk_application_prefer_dark_theme(theme::prefers_dark(&settings.borrow()));
         // spec/03-ui.md: no caret animation, no keystroke sounds.
         gtk_settings.set_gtk_cursor_blink(false);
         gtk_settings.set_gtk_enable_event_sounds(false);
@@ -118,12 +118,29 @@ pub fn run(application: &gtk::Application) {
                 theme::apply(&provider, &settings);
                 if let Some(gtk_settings) = gtk::Settings::default() {
                     gtk_settings
-                        .set_gtk_application_prefer_dark_theme(settings.theme == Theme::Night);
+                        .set_gtk_application_prefer_dark_theme(theme::prefers_dark(&settings));
                 }
             }
             editor.reapply_style();
         })
     };
+
+    // Automatic follows local time, so the palette can change while the
+    // device is open. One check a minute is enough: the hour turns at most
+    // twice a day (spec/03-ui.md).
+    {
+        let settings = Rc::clone(&settings);
+        let restyle = Rc::clone(&restyle);
+        let mut showing = settings.borrow().theme_at(theme::local_hour());
+        glib::timeout_add_seconds_local(60, move || {
+            let now = settings.borrow().theme_at(theme::local_hour());
+            if now != showing {
+                showing = now;
+                restyle();
+            }
+            glib::ControlFlow::Continue
+        });
+    }
 
     let settings_page = SettingsPage::new(
         client.clone(),

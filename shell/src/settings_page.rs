@@ -15,12 +15,16 @@ use gtk::{gdk, glib};
 use crate::daemon::Client;
 use crate::locale;
 use crate::nav::Navigator;
-use crate::settings::{FontChoice, Settings, DAILY_GOAL_STEP, MAX_DAILY_GOAL, MIN_DAILY_GOAL};
+use crate::settings::{
+    FontChoice, Settings, Theme, DAILY_GOAL_STEP, MAX_DAILY_GOAL, MIN_DAILY_GOAL,
+};
 use crate::ui;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingRow {
     Theme,
+    DayTheme,
+    NightTheme,
     Font,
     Size,
     DailyGoal,
@@ -39,7 +43,32 @@ pub enum SettingRow {
     About,
 }
 
-pub const ROWS: [SettingRow; 17] = [
+/// Every row, with the two Automatic slots right after Theme.
+const ROWS_AUTOMATIC: [SettingRow; 19] = [
+    SettingRow::Theme,
+    SettingRow::DayTheme,
+    SettingRow::NightTheme,
+    SettingRow::Font,
+    SettingRow::Size,
+    SettingRow::DailyGoal,
+    SettingRow::GoalProgress,
+    SettingRow::FocusMode,
+    SettingRow::Typewriter,
+    SettingRow::Spellcheck,
+    SettingRow::Clock,
+    SettingRow::Wifi,
+    SettingRow::SyncBackends,
+    SettingRow::SyncAtShutdown,
+    SettingRow::Keyboard,
+    SettingRow::Language,
+    SettingRow::TimeZone,
+    SettingRow::Update,
+    SettingRow::About,
+];
+
+/// The same list without the day and night pickers: they only exist while
+/// Automatic is chosen (spec/03-ui.md).
+const ROWS_FIXED: [SettingRow; 17] = [
     SettingRow::Theme,
     SettingRow::Font,
     SettingRow::Size,
@@ -58,6 +87,15 @@ pub const ROWS: [SettingRow; 17] = [
     SettingRow::Update,
     SettingRow::About,
 ];
+
+/// The rows this person's settings put on screen.
+pub fn rows(settings: &Settings) -> &'static [SettingRow] {
+    if settings.theme.is_automatic() {
+        &ROWS_AUTOMATIC
+    } else {
+        &ROWS_FIXED
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsEffect {
@@ -123,28 +161,41 @@ pub struct SettingsState {
 }
 
 impl SettingsState {
-    pub fn row(&self) -> SettingRow {
-        ROWS[self.selected.min(ROWS.len() - 1)]
+    pub fn row(&self, settings: &Settings) -> SettingRow {
+        let rows = rows(settings);
+        rows[self.selected.min(rows.len() - 1)]
     }
 
-    pub fn move_by(&mut self, delta: i32) {
-        let len = ROWS.len() as i32;
+    pub fn move_by(&mut self, settings: &Settings, delta: i32) {
+        let len = rows(settings).len() as i32;
         self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
     }
 
-    pub fn select(&mut self, index: usize) {
-        self.selected = index.min(ROWS.len() - 1);
+    pub fn select(&mut self, settings: &Settings, index: usize) {
+        self.selected = index.min(rows(settings).len() - 1);
     }
 
     /// Change the selected value. Returns true when something was saved.
     pub fn change(&mut self, settings: &mut Settings, delta: i32) -> bool {
-        let row = self.row();
+        let row = self.row(settings);
         match row {
             SettingRow::Theme => {
-                if delta != 0 {
-                    settings.theme = settings.theme.other();
-                }
-                true
+                let next = settings.theme.cycled(delta);
+                let changed = next != settings.theme;
+                settings.theme = next;
+                changed
+            }
+            SettingRow::DayTheme => {
+                let next = cycle_theme(&Theme::DAY, settings.day_theme, delta);
+                let changed = next != settings.day_theme;
+                settings.day_theme = next;
+                changed
+            }
+            SettingRow::NightTheme => {
+                let next = cycle_theme(&Theme::NIGHT, settings.night_theme, delta);
+                let changed = next != settings.night_theme;
+                settings.night_theme = next;
+                changed
             }
             SettingRow::Font => {
                 let next = match (settings.font, delta) {
@@ -240,8 +291,8 @@ impl SettingsState {
         }
     }
 
-    pub fn activate(&mut self) -> SettingsEffect {
-        match self.row() {
+    pub fn activate(&mut self, settings: &Settings) -> SettingsEffect {
+        match self.row(settings) {
             SettingRow::Wifi => SettingsEffect::OpenWifi,
             SettingRow::SyncBackends => SettingsEffect::OpenSync,
             SettingRow::Update if self.update.ready() => SettingsEffect::ApplyUpdate,
@@ -256,6 +307,8 @@ impl SettingsState {
     pub fn value(&self, row: SettingRow, settings: &Settings) -> String {
         match row {
             SettingRow::Theme => settings.theme.label().to_owned(),
+            SettingRow::DayTheme => settings.day_theme.label().to_owned(),
+            SettingRow::NightTheme => settings.night_theme.label().to_owned(),
             SettingRow::Font => settings.font.label().to_owned(),
             SettingRow::Size => format!("{} px", settings.font_size),
             SettingRow::DailyGoal => format!("{} words", settings.daily_goal),
@@ -281,8 +334,16 @@ impl SettingsState {
             return "Carrel is free software, GPL-3.0-or-later. No account is needed to write."
                 .to_owned();
         }
-        match self.row() {
-            SettingRow::Theme => "Paper is warm off-white; Night is dark grey.".to_owned(),
+        match self.row(settings) {
+            SettingRow::Theme => {
+                "Automatic wears a day theme from 07:00 and a night theme from 19:00.".to_owned()
+            }
+            SettingRow::DayTheme => {
+                "Worn from 07:00 to 19:00 when the theme is Automatic.".to_owned()
+            }
+            SettingRow::NightTheme => {
+                "Worn from 19:00 to 07:00 when the theme is Automatic.".to_owned()
+            }
             SettingRow::Font => "The same three fonts everywhere, for calm reading.".to_owned(),
             SettingRow::Size => "Ctrl+= and Ctrl+- change this while writing.".to_owned(),
             SettingRow::DailyGoal => "Shown on the bottom line: words today / goal.".to_owned(),
@@ -321,6 +382,13 @@ fn on_off(value: bool) -> String {
     } else {
         "Off".to_owned()
     }
+}
+
+/// Move `delta` places through a day or night slot, wrapping.
+fn cycle_theme(list: &[Theme], current: Theme, delta: i32) -> Theme {
+    let len = list.len() as i32;
+    let index = list.iter().position(|item| *item == current).unwrap_or(0) as i32;
+    list[((index + delta).rem_euclid(len)) as usize]
 }
 
 const HINT: &str = "Up/Down move · Left/Right change · Enter open · Esc editor";
@@ -383,7 +451,7 @@ impl SettingsPage {
             .ok()
             .and_then(|value| value.parse::<usize>().ok())
         {
-            initial.select(index);
+            initial.select(&settings.borrow(), index);
         }
 
         let page = Rc::new(Self {
@@ -408,7 +476,12 @@ impl SettingsPage {
         let weak = Rc::downgrade(self);
         self.list.connect_row_activated(move |_, row| {
             if let Some(page) = weak.upgrade() {
-                page.state.borrow_mut().select(row.index().max(0) as usize);
+                {
+                    let settings = page.settings.borrow();
+                    page.state
+                        .borrow_mut()
+                        .select(&settings, row.index().max(0) as usize);
+                }
                 page.activate();
             }
         });
@@ -451,22 +524,34 @@ impl SettingsPage {
                 glib::Propagation::Stop
             }
             gdk::Key::Up => {
-                self.state.borrow_mut().move_by(-1);
+                {
+                    let settings = self.settings.borrow();
+                    self.state.borrow_mut().move_by(&settings, -1);
+                }
                 self.refresh();
                 glib::Propagation::Stop
             }
             gdk::Key::Down => {
-                self.state.borrow_mut().move_by(1);
+                {
+                    let settings = self.settings.borrow();
+                    self.state.borrow_mut().move_by(&settings, 1);
+                }
                 self.refresh();
                 glib::Propagation::Stop
             }
             gdk::Key::Home => {
-                self.state.borrow_mut().select(0);
+                {
+                    let settings = self.settings.borrow();
+                    self.state.borrow_mut().select(&settings, 0);
+                }
                 self.refresh();
                 glib::Propagation::Stop
             }
             gdk::Key::End => {
-                self.state.borrow_mut().select(ROWS.len() - 1);
+                {
+                    let settings = self.settings.borrow();
+                    self.state.borrow_mut().select(&settings, usize::MAX);
+                }
                 self.refresh();
                 glib::Propagation::Stop
             }
@@ -498,11 +583,18 @@ impl SettingsPage {
     }
 
     fn activate(self: &Rc<Self>) {
-        let effect = self.state.borrow_mut().activate();
+        let effect = {
+            let settings = self.settings.borrow();
+            self.state.borrow_mut().activate(&settings)
+        };
         match effect {
             SettingsEffect::None => {
                 // Enter on a value row behaves like the right arrow.
-                if self.state.borrow().row() != SettingRow::About {
+                let row = {
+                    let settings = self.settings.borrow();
+                    self.state.borrow().row(&settings)
+                };
+                if row != SettingRow::About {
                     let changed = {
                         let mut settings = self.settings.borrow_mut();
                         self.state.borrow_mut().change(&mut settings, 1)
@@ -572,8 +664,13 @@ impl SettingsPage {
         }
         let settings = self.settings.borrow();
         let state = self.state.borrow();
-        for row in ROWS {
-            let item = ui::value_row(setting_name(row), &state.value(row, &settings));
+        for row in rows(&settings) {
+            let item = match row {
+                SettingRow::Theme | SettingRow::DayTheme | SettingRow::NightTheme => {
+                    theme_value_row(*row, &settings)
+                }
+                _ => ui::value_row(setting_name(*row), &state.value(*row, &settings)),
+            };
             self.list.append(&item);
         }
         ui::select(&self.list, state.selected);
@@ -582,18 +679,41 @@ impl SettingsPage {
         }
         self.note.remove_css_class("error-text");
         self.note.set_text(&state.hint_for(&settings));
-        self.mark.set_opacity(if state.row() == SettingRow::About {
-            1.0
-        } else {
-            0.0
-        });
+        self.mark
+            .set_opacity(if state.row(&settings) == SettingRow::About {
+                1.0
+            } else {
+                0.0
+            });
         self.hint.set_text(HINT);
     }
+}
+
+/// A theme row: its name, a swatch of its paper, ink and accent, then the
+/// theme's name again as the value (spec/03-ui.md).
+fn theme_value_row(row: SettingRow, settings: &Settings) -> gtk::ListBoxRow {
+    let swatch = match row {
+        SettingRow::Theme => match settings.theme.theme() {
+            Some(theme) => ui::theme_swatch(theme),
+            None => ui::automatic_swatch(settings.day_theme, settings.night_theme),
+        },
+        SettingRow::DayTheme => ui::theme_swatch(settings.day_theme),
+        SettingRow::NightTheme => ui::theme_swatch(settings.night_theme),
+        _ => ui::theme_swatch(Theme::Light),
+    };
+    let value = match row {
+        SettingRow::DayTheme => settings.day_theme.label(),
+        SettingRow::NightTheme => settings.night_theme.label(),
+        _ => settings.theme.label(),
+    };
+    ui::swatch_row(setting_name(row), &swatch, value)
 }
 
 fn setting_name(row: SettingRow) -> &'static str {
     match row {
         SettingRow::Theme => "Theme",
+        SettingRow::DayTheme => "Day theme",
+        SettingRow::NightTheme => "Night theme",
         SettingRow::Font => "Font",
         SettingRow::Size => "Size",
         SettingRow::DailyGoal => "Daily goal",
@@ -616,15 +736,28 @@ fn setting_name(row: SettingRow) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settings::{GoalDisplay, Theme};
+    use crate::settings::{GoalDisplay, Theme, ThemeChoice};
+
+    fn select(state: &mut SettingsState, settings: &Settings, row: SettingRow) {
+        let index = rows(settings)
+            .iter()
+            .position(|item| *item == row)
+            .expect("row is on screen");
+        state.select(settings, index);
+    }
 
     #[test]
     fn every_setting_from_the_spec_has_one_row() {
-        let names: Vec<&str> = ROWS.iter().map(|row| setting_name(*row)).collect();
+        let automatic: Vec<&str> = rows(&Settings::default())
+            .iter()
+            .map(|row| setting_name(*row))
+            .collect();
         assert_eq!(
-            names,
+            automatic,
             vec![
                 "Theme",
+                "Day theme",
+                "Night theme",
                 "Font",
                 "Size",
                 "Daily goal",
@@ -643,13 +776,25 @@ mod tests {
                 "About",
             ]
         );
+
+        // A fixed theme has no day or night slot to show.
+        let fixed = Settings {
+            theme: ThemeChoice::Sepia,
+            ..Settings::default()
+        };
+        let names: Vec<&str> = rows(&fixed).iter().map(|row| setting_name(*row)).collect();
+        assert_eq!(names.len(), 17);
+        assert!(!names.contains(&"Day theme"));
+        assert!(!names.contains(&"Night theme"));
     }
 
     #[test]
     fn values_read_like_the_spec() {
         let settings = Settings::default();
         let state = SettingsState::default();
-        assert_eq!(state.value(SettingRow::Theme, &settings), "Paper");
+        assert_eq!(state.value(SettingRow::Theme, &settings), "Automatic");
+        assert_eq!(state.value(SettingRow::DayTheme, &settings), "Light");
+        assert_eq!(state.value(SettingRow::NightTheme, &settings), "Dark");
         assert_eq!(state.value(SettingRow::Font, &settings), "Serif");
         assert_eq!(state.value(SettingRow::Size, &settings), "19 px");
         assert_eq!(state.value(SettingRow::DailyGoal, &settings), "500 words");
@@ -661,17 +806,82 @@ mod tests {
     }
 
     #[test]
+    fn the_day_and_night_rows_appear_only_while_automatic_is_chosen() {
+        let mut settings = Settings::default();
+        let mut state = SettingsState::default();
+        assert_eq!(rows(&settings).len(), 19);
+        state.move_by(&settings, 1);
+        assert_eq!(state.row(&settings), SettingRow::DayTheme);
+        state.move_by(&settings, 1);
+        assert_eq!(state.row(&settings), SettingRow::NightTheme);
+
+        // Two down from Automatic is Font: choosing a fixed theme takes the
+        // slot rows away, and the selection lands on the row now there.
+        select(&mut state, &settings, SettingRow::Theme);
+        state.change(&mut settings, 1);
+        assert_eq!(settings.theme, ThemeChoice::Light);
+        assert_eq!(rows(&settings).len(), 17);
+        state.move_by(&settings, 1);
+        assert_eq!(state.row(&settings), SettingRow::Font);
+    }
+
+    #[test]
+    fn theme_row_walks_automatic_then_the_six_themes() {
+        let mut settings = Settings::default();
+        let mut state = SettingsState::default();
+        let mut labels = Vec::new();
+        for _ in 0..7 {
+            labels.push(state.value(SettingRow::Theme, &settings));
+            state.change(&mut settings, 1);
+        }
+        assert_eq!(
+            labels,
+            vec![
+                "Automatic",
+                "Light",
+                "Sepia",
+                "Mist",
+                "Writer's Study",
+                "Dark",
+                "High contrast",
+            ]
+        );
+        assert_eq!(settings.theme, ThemeChoice::Automatic);
+    }
+
+    #[test]
+    fn day_and_night_rows_only_cycle_themes_of_their_mode() {
+        let mut settings = Settings::default();
+        let mut state = SettingsState::default();
+        select(&mut state, &settings, SettingRow::DayTheme);
+        state.change(&mut settings, 1);
+        assert_eq!(settings.day_theme, Theme::Sepia);
+        state.change(&mut settings, 1);
+        assert_eq!(settings.day_theme, Theme::HighContrast);
+        state.change(&mut settings, 1);
+        assert_eq!(settings.day_theme, Theme::Light);
+
+        select(&mut state, &settings, SettingRow::NightTheme);
+        state.change(&mut settings, 1);
+        assert_eq!(settings.night_theme, Theme::Mist);
+        state.change(&mut settings, 1);
+        assert_eq!(settings.night_theme, Theme::Study);
+        state.change(&mut settings, 1);
+        assert_eq!(settings.night_theme, Theme::Dark);
+        assert!(settings.night_theme.is_dark());
+    }
+
+    #[test]
     fn goal_progress_and_focus_mode_change_and_persist_through_the_page() {
         let mut settings = Settings::default();
         let mut state = SettingsState::default();
-        let row = |row: SettingRow| ROWS.iter().position(|item| *item == row).unwrap();
-        state.select(row(SettingRow::GoalProgress));
+        select(&mut state, &settings, SettingRow::GoalProgress);
         assert!(state.change(&mut settings, 1));
         assert_eq!(settings.goal_display, GoalDisplay::Hairline);
         state.change(&mut settings, 1);
         assert_eq!(settings.goal_display, GoalDisplay::Numbers);
 
-        state.select(row(SettingRow::FocusMode));
+        select(&mut state, &settings, SettingRow::FocusMode);
         assert!(state.change(&mut settings, 0));
         assert!(settings.focus_mode);
         state.change(&mut settings, 0);
@@ -682,11 +892,7 @@ mod tests {
     fn changing_values_is_immediate_and_clamped() {
         let mut settings = Settings::default();
         let mut state = SettingsState::default();
-        state.select(
-            ROWS.iter()
-                .position(|row| *row == SettingRow::DailyGoal)
-                .unwrap(),
-        );
+        select(&mut state, &settings, SettingRow::DailyGoal);
         for _ in 0..30 {
             state.change(&mut settings, 1);
         }
@@ -696,40 +902,28 @@ mod tests {
         }
         assert_eq!(settings.daily_goal, MIN_DAILY_GOAL);
 
-        state.select(0);
+        state.select(&settings, 0);
         state.change(&mut settings, 1);
-        assert_eq!(settings.theme, Theme::Night);
+        assert_eq!(settings.theme, ThemeChoice::Light);
         state.change(&mut settings, 1);
-        assert_eq!(settings.theme, Theme::Paper);
+        assert_eq!(settings.theme, ThemeChoice::Sepia);
     }
 
     #[test]
     fn keyboard_language_and_time_zone_cycle() {
         let mut settings = Settings::default();
         let mut state = SettingsState::default();
-        state.select(
-            ROWS.iter()
-                .position(|row| *row == SettingRow::Keyboard)
-                .unwrap(),
-        );
+        select(&mut state, &settings, SettingRow::Keyboard);
         state.change(&mut settings, 1);
         assert_eq!(settings.keyboard, "gb");
         state.change(&mut settings, 1);
         assert_eq!(settings.keyboard, "de");
 
-        state.select(
-            ROWS.iter()
-                .position(|row| *row == SettingRow::Language)
-                .unwrap(),
-        );
+        select(&mut state, &settings, SettingRow::Language);
         state.change(&mut settings, 1);
         assert_eq!(settings.language, "Deutsch");
 
-        state.select(
-            ROWS.iter()
-                .position(|row| *row == SettingRow::TimeZone)
-                .unwrap(),
-        );
+        select(&mut state, &settings, SettingRow::TimeZone);
         state.change(&mut settings, 1);
         assert_eq!(settings.time_zone, "UTC");
     }
@@ -738,18 +932,15 @@ mod tests {
     fn the_update_row_reads_the_daemons_status_string() {
         use crate::daemon::{DaemonClient, FakeDaemon};
         let fake = FakeDaemon::new();
+        let settings = Settings::default();
         let mut state = SettingsState {
             update: UpdateState::from_wire(fake.update_status().unwrap()),
             ..SettingsState::default()
         };
         assert!(state.update.ready());
-        state.select(
-            ROWS.iter()
-                .position(|row| *row == SettingRow::Update)
-                .unwrap(),
-        );
+        select(&mut state, &settings, SettingRow::Update);
         assert_eq!(
-            state.value(SettingRow::Update, &Settings::default()),
+            state.value(SettingRow::Update, &settings),
             "Update ready (0.2.0) · Apply"
         );
         fake.set_update("none");
@@ -759,29 +950,18 @@ mod tests {
 
     #[test]
     fn navigation_rows_open_screens_and_update_applies_only_when_ready() {
+        let settings = Settings::default();
         let mut state = SettingsState::default();
-        state.select(
-            ROWS.iter()
-                .position(|row| *row == SettingRow::Wifi)
-                .unwrap(),
-        );
-        assert_eq!(state.activate(), SettingsEffect::OpenWifi);
-        state.select(
-            ROWS.iter()
-                .position(|row| *row == SettingRow::SyncBackends)
-                .unwrap(),
-        );
-        assert_eq!(state.activate(), SettingsEffect::OpenSync);
-        state.select(
-            ROWS.iter()
-                .position(|row| *row == SettingRow::Update)
-                .unwrap(),
-        );
+        select(&mut state, &settings, SettingRow::Wifi);
+        assert_eq!(state.activate(&settings), SettingsEffect::OpenWifi);
+        select(&mut state, &settings, SettingRow::SyncBackends);
+        assert_eq!(state.activate(&settings), SettingsEffect::OpenSync);
+        select(&mut state, &settings, SettingRow::Update);
         state.update = UpdateState::from_wire("none");
-        assert_eq!(state.activate(), SettingsEffect::None);
+        assert_eq!(state.activate(&settings), SettingsEffect::None);
         state.update = UpdateState::from_wire("ready:1.0");
         assert!(state.update.ready());
         assert_eq!(state.update.label(), "Update ready (1.0) · Apply");
-        assert_eq!(state.activate(), SettingsEffect::ApplyUpdate);
+        assert_eq!(state.activate(&settings), SettingsEffect::ApplyUpdate);
     }
 }

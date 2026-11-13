@@ -4,6 +4,9 @@
 use gtk::prelude::*;
 use gtk::{glib, pango};
 
+use crate::settings::Theme;
+use crate::theme::{self, Palette};
+
 /// The page itself: fills the window, carries the theme background.
 pub fn page() -> gtk::Box {
     let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -154,6 +157,130 @@ pub fn value_row(name: &str, value: &str) -> gtk::ListBoxRow {
     line.append(&value);
     row.set_child(Some(&line));
     row
+}
+
+/// A value row with a small drawing (a theme swatch) before the value.
+pub fn swatch_row(name: &str, swatch: &gtk::DrawingArea, value: &str) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.add_css_class("setting-row");
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let label = gtk::Label::new(Some(name));
+    label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.add_css_class("setting-label");
+    let value_label = gtk::Label::new(Some(value));
+    value_label.set_xalign(1.0);
+    value_label.set_ellipsize(pango::EllipsizeMode::End);
+    value_label.add_css_class("setting-value");
+    line.append(&label);
+    line.append(swatch);
+    line.append(&value_label);
+    row.set_child(Some(&line));
+    row
+}
+
+/// A theme in miniature: its paper, two rules of its ink and its accent dot.
+/// Settings shows one beside each theme's name (spec/03-ui.md).
+pub fn theme_swatch(theme: Theme) -> gtk::DrawingArea {
+    swatch(24, theme, None)
+}
+
+/// Automatic in miniature: the day theme beside the night theme.
+pub fn automatic_swatch(day: Theme, night: Theme) -> gtk::DrawingArea {
+    swatch(42, day, Some(night))
+}
+
+fn swatch(width: i32, theme: Theme, night: Option<Theme>) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(width);
+    area.set_content_height(24);
+    area.set_halign(gtk::Align::End);
+    area.set_valign(gtk::Align::Center);
+    area.set_can_focus(false);
+    area.set_focusable(false);
+    area.set_accessible_role(gtk::AccessibleRole::Img);
+    area.update_property(&[gtk::accessible::Property::Label("Theme swatch")]);
+    area.set_draw_func(move |_, context, width, height| {
+        let width = f64::from(width);
+        let height = f64::from(height);
+        match night {
+            Some(night) => {
+                let gap = 2.0;
+                let half = ((width - gap) / 2.0).max(1.0);
+                draw_swatch(context, 0.0, half, height, Palette::of(theme));
+                draw_swatch(context, half + gap, half, height, Palette::of(night));
+            }
+            None => draw_swatch(context, 0.0, width, height, Palette::of(theme)),
+        }
+    });
+    area
+}
+
+/// One small page: paper fill, a hairline edge, ink rules and the accent dot.
+fn draw_swatch(context: &gtk::cairo::Context, x: f64, width: f64, height: f64, palette: Palette) {
+    let radius = (height * 0.18).min(4.0);
+    rounded_rect(
+        context,
+        x + 0.5,
+        0.5,
+        (width - 1.0).max(1.0),
+        (height - 1.0).max(1.0),
+        radius,
+    );
+    set_source(context, palette.background);
+    let _ = context.fill_preserve();
+    set_source(
+        context,
+        &theme::blend(palette.text, palette.background, 0.30),
+    );
+    context.set_line_width(1.0);
+    let _ = context.stroke();
+
+    // One rule of ink and one accent dot: the theme's paper, ink and accent.
+    let pad = (width * 0.20).max(2.0);
+    let rule = (width - 2.0 * pad).max(1.0);
+    let thick = (height * 0.13).max(1.5);
+    set_source(context, palette.text);
+    context.rectangle(x + pad, height * 0.32, rule, thick);
+    let _ = context.fill();
+    set_source(context, palette.accent);
+    context.arc(
+        x + width * 0.50,
+        height * 0.66,
+        (height * 0.12).max(1.5),
+        0.0,
+        std::f64::consts::TAU,
+    );
+    let _ = context.fill();
+}
+
+fn set_source(context: &gtk::cairo::Context, hex: &str) {
+    let (red, green, blue) = theme::rgb(hex);
+    context.set_source_rgb(red, green, blue);
+}
+
+fn rounded_rect(
+    context: &gtk::cairo::Context,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    radius: f64,
+) {
+    let radius = radius.min(width / 2.0).min(height / 2.0);
+    use std::f64::consts::{FRAC_PI_2, PI};
+    context.new_path();
+    context.arc(x + width - radius, y + radius, radius, -FRAC_PI_2, 0.0);
+    context.arc(
+        x + width - radius,
+        y + height - radius,
+        radius,
+        0.0,
+        FRAC_PI_2,
+    );
+    context.arc(x + radius, y + height - radius, radius, FRAC_PI_2, PI);
+    context.arc(x + radius, y + radius, radius, PI, PI + FRAC_PI_2);
+    context.close_path();
 }
 
 pub fn plain_row(name: &str) -> gtk::ListBoxRow {
