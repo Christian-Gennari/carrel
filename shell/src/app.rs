@@ -105,7 +105,12 @@ pub fn run(application: &gtk::Application) {
     nav.attach(&editor);
 
     let files = FilesPage::new(store.clone(), Rc::clone(&editor), stack.clone());
-    let history = HistoryPage::new(client.clone(), Rc::clone(&nav), Rc::clone(&editor));
+    let history = HistoryPage::new(
+        client.clone(),
+        Rc::clone(&nav),
+        Rc::clone(&editor),
+        Rc::clone(&settings),
+    );
     let quotes = QuotePalette::new(client.clone(), Rc::clone(&editor));
     let handoff = WifiHandoff::new();
     let sync = SyncPage::new(

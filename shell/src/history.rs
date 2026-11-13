@@ -1,6 +1,7 @@
-//! The History screen: versions by time with word-count deltas, a preview,
-//! and Restore behind a confirmation. Restoring never rewrites history: the
-//! old text is applied as a new edit and committed afterwards.
+//! The History screen: versions by time with a word-change bar, a preview
+//! that shows what changed against the current text, and Restore behind the
+//! shared confirmation. Restoring never rewrites history: the old text is
+//! applied as a new edit and committed afterwards.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -12,10 +13,17 @@ use gtk::{gdk, glib};
 use crate::daemon::{Client, HistoryEntry};
 use crate::editor::EditorPage;
 use crate::nav::Navigator;
+use crate::settings::Settings;
 use crate::store::display_path;
+use crate::theme;
 use crate::ui;
 
-const HINTS: [(&str, &str); 3] = [("Enter", "Restore"), ("↑ ↓", "Versions"), ("Esc", "Back")];
+const HINTS: [(&str, &str); 4] = [
+    ("Enter", "Restore"),
+    ("↑ ↓", "Versions"),
+    ("PgUp PgDn", "Scroll"),
+    ("Esc", "Back"),
+];
 
 /// The pure part: which version is selected, what the preview shows, what the
 /// screen asks the daemon for next.
@@ -134,6 +142,156 @@ impl HistoryState {
             "no change".to_owned()
         }
     }
+
+    /// The largest change in the list, for the little +/- bars.
+    pub fn largest_delta(&self) -> u64 {
+        self.versions
+            .iter()
+            .map(|entry| entry.delta.unsigned_abs())
+            .max()
+            .unwrap_or(0)
+            .max(1)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiffKind {
+    Same,
+    Added,
+    Removed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffRun {
+    pub kind: DiffKind,
+    pub text: String,
+}
+
+/// The largest word-diff table Carrel builds. A whole-book rewrite falls back
+/// to one removed block and one added block, which still reads as a diff and
+/// never stalls the screen.
+const MAX_DIFF_CELLS: usize = 1_000_000;
+
+/// A word-level diff of an old version against the text as it is now. Added
+/// text exists only now; removed text exists only in the old version. Runs
+/// merge so the preview has as few tags as possible.
+pub fn diff_runs(old: &str, current: &str) -> Vec<DiffRun> {
+    let old_tokens = tokens(old);
+    let new_tokens = tokens(current);
+
+    let prefix = old_tokens
+        .iter()
+        .zip(&new_tokens)
+        .take_while(|(old, new)| old == new)
+        .count();
+    let max_suffix = old_tokens
+        .len()
+        .min(new_tokens.len())
+        .saturating_sub(prefix);
+    let suffix = old_tokens
+        .iter()
+        .rev()
+        .zip(new_tokens.iter().rev())
+        .take(max_suffix)
+        .take_while(|(old, new)| old == new)
+        .count();
+
+    let mut runs = Vec::new();
+    push_run(&mut runs, DiffKind::Same, &old_tokens[..prefix].concat());
+
+    let old_middle = &old_tokens[prefix..old_tokens.len() - suffix];
+    let new_middle = &new_tokens[prefix..new_tokens.len() - suffix];
+    if old_middle.len().saturating_mul(new_middle.len()) > MAX_DIFF_CELLS {
+        push_run(&mut runs, DiffKind::Removed, &old_middle.concat());
+        push_run(&mut runs, DiffKind::Added, &new_middle.concat());
+    } else {
+        diff_middle(old_middle, new_middle, &mut runs);
+    }
+
+    push_run(
+        &mut runs,
+        DiffKind::Same,
+        &old_tokens[old_tokens.len() - suffix..].concat(),
+    );
+    runs
+}
+
+fn diff_middle(old: &[String], new: &[String], runs: &mut Vec<DiffRun>) {
+    let rows = old.len();
+    let columns = new.len();
+    let width = columns + 1;
+    let mut table = vec![0u32; (rows + 1) * width];
+    for row in (0..rows).rev() {
+        for column in (0..columns).rev() {
+            table[row * width + column] = if old[row] == new[column] {
+                table[(row + 1) * width + column + 1] + 1
+            } else {
+                table[(row + 1) * width + column].max(table[row * width + column + 1])
+            };
+        }
+    }
+    let (mut row, mut column) = (0, 0);
+    while row < rows && column < columns {
+        if old[row] == new[column] {
+            push_run(runs, DiffKind::Same, &old[row]);
+            row += 1;
+            column += 1;
+        } else if table[(row + 1) * width + column] >= table[row * width + column + 1] {
+            push_run(runs, DiffKind::Removed, &old[row]);
+            row += 1;
+        } else {
+            push_run(runs, DiffKind::Added, &new[column]);
+            column += 1;
+        }
+    }
+    while row < rows {
+        push_run(runs, DiffKind::Removed, &old[row]);
+        row += 1;
+    }
+    while column < columns {
+        push_run(runs, DiffKind::Added, &new[column]);
+        column += 1;
+    }
+}
+
+fn push_run(runs: &mut Vec<DiffRun>, kind: DiffKind, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if let Some(last) = runs.last_mut() {
+        if last.kind == kind {
+            last.text.push_str(text);
+            return;
+        }
+    }
+    runs.push(DiffRun {
+        kind,
+        text: text.to_owned(),
+    });
+}
+
+/// Words and the whitespace between them as separate runs, so a word at the
+/// end of a line still matches the same word when a paragraph follows it.
+fn tokens(text: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut whitespace: Option<bool> = None;
+    for character in text.chars() {
+        let is_whitespace = character.is_whitespace();
+        if whitespace == Some(is_whitespace) {
+            current.push(character);
+        } else {
+            if !current.is_empty() {
+                tokens.push(std::mem::take(&mut current));
+            }
+            current.push(character);
+            whitespace = Some(is_whitespace);
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
 }
 
 pub struct HistoryPage {
@@ -142,47 +300,85 @@ pub struct HistoryPage {
     list: gtk::ListBox,
     list_scroller: gtk::ScrolledWindow,
     preview_title: gtk::Label,
-    preview: gtk::Label,
+    preview_legend: gtk::Label,
+    preview: gtk::TextView,
+    preview_scroller: gtk::ScrolledWindow,
+    added_tag: gtk::TextTag,
+    removed_tag: gtk::TextTag,
     notice: gtk::Label,
     state: RefCell<HistoryState>,
     client: Client,
     nav: Rc<Navigator>,
     editor: Rc<EditorPage>,
+    settings: Rc<RefCell<Settings>>,
     list_generation: std::cell::Cell<u64>,
     preview_generation: std::cell::Cell<u64>,
 }
 
 impl HistoryPage {
-    pub fn new(client: Client, nav: Rc<Navigator>, editor: Rc<EditorPage>) -> Rc<Self> {
+    pub fn new(
+        client: Client,
+        nav: Rc<Navigator>,
+        editor: Rc<EditorPage>,
+        settings: Rc<RefCell<Settings>>,
+    ) -> Rc<Self> {
         let screen = ui::Screen::new("History");
         screen.set_hints(&HINTS);
 
         let list = ui::list();
-        list.set_width_request(340);
+        list.set_width_request(396);
         let list_scroller = ui::scroller(&list);
 
         let preview_title = gtk::Label::new(None);
         preview_title.set_xalign(0.0);
+        preview_title.set_wrap(true);
         preview_title.add_css_class("preview-title");
-        let preview = gtk::Label::new(None);
-        preview.set_xalign(0.0);
-        preview.set_yalign(0.0);
-        preview.set_wrap(true);
-        preview.set_wrap_mode(gtk::pango::WrapMode::WordChar);
-        preview.set_selectable(false);
+        let preview_legend = gtk::Label::new(None);
+        preview_legend.set_xalign(0.0);
+        preview_legend.set_wrap(true);
+        preview_legend.add_css_class("row-note");
+        preview_legend.set_visible(false);
+
+        let preview = gtk::TextView::new();
+        preview.set_editable(false);
+        preview.set_cursor_visible(false);
+        preview.set_wrap_mode(gtk::WrapMode::WordChar);
+        preview.set_can_focus(false);
+        preview.set_focusable(false);
+        preview.set_left_margin(0);
+        preview.set_right_margin(0);
+        preview.set_top_margin(0);
+        preview.set_bottom_margin(0);
         preview.add_css_class("preview-text");
-        let preview_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        preview_box.set_hexpand(true);
-        preview_box.set_margin_start(24);
-        preview_box.append(&preview_title);
-        preview_box.append(&preview);
-        let preview_scroller = ui::scroller(&preview_box);
-        preview_scroller.add_css_class("preview-scroller");
+        preview.add_css_class("diff-view");
+        let added_tag = preview
+            .buffer()
+            .create_tag(Some("added"), &[])
+            .expect("the added tag");
+        let removed_tag = preview
+            .buffer()
+            .create_tag(Some("removed"), &[])
+            .expect("the removed tag");
+        let preview_scroller = ui::scroller(&preview);
+
+        let preview_inner = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        preview_inner.set_margin_start(24);
+        preview_inner.set_vexpand(true);
+        preview_inner.append(&preview_title);
+        preview_inner.append(&preview_legend);
+        preview_inner.append(&preview_scroller);
+
+        // The pane carries the hairline, so it runs the full height of the
+        // screen beside the list.
+        let preview_pane = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        preview_pane.set_vexpand(true);
+        preview_pane.add_css_class("preview-scroller");
+        preview_pane.append(&preview_inner);
 
         let columns = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         columns.set_vexpand(true);
         columns.append(&ui::fade_top(&list_scroller));
-        columns.append(&preview_scroller);
+        columns.append(&preview_pane);
         screen.content.append(&columns);
 
         let notice = gtk::Label::new(None);
@@ -198,12 +394,17 @@ impl HistoryPage {
             list,
             list_scroller,
             preview_title,
+            preview_legend,
             preview,
+            preview_scroller,
+            added_tag,
+            removed_tag,
             notice,
             state: RefCell::new(HistoryState::default()),
             client,
             nav,
             editor,
+            settings,
             list_generation: std::cell::Cell::new(0),
             preview_generation: std::cell::Cell::new(0),
         });
@@ -290,11 +491,10 @@ impl HistoryPage {
             state.preview_rev = None;
             state.error = None;
         }
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
-        }
+        self.clear_list();
         self.preview_title.set_text("Loading…");
-        self.preview.set_text("");
+        self.preview_legend.set_visible(false);
+        self.preview.buffer().set_text("");
         self.update_notice();
     }
 
@@ -310,24 +510,31 @@ impl HistoryPage {
                 state.notice = message.to_owned();
             }
         }
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
-        }
+        self.clear_list();
         self.preview_title.set_text("");
-        self.preview.set_text(message);
+        self.preview_legend.set_visible(false);
+        self.preview.buffer().set_text(message);
         self.update_notice();
     }
 
-    fn rebuild_list(&self) {
+    fn clear_list(&self) {
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
+    }
+
+    fn rebuild_list(&self) {
+        self.clear_list();
         let state = self.state.borrow();
+        let largest = state.largest_delta() as f64;
+        let palette = theme::palette(&self.settings.borrow());
+        let ink = colour(palette.text);
+        let dim = colour(&palette.dim());
         for entry in &state.versions {
             let row = gtk::ListBoxRow::new();
             row.add_css_class("ui-row");
             row.add_css_class("file-row");
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             let time = gtk::Label::new(Some(&ui::format_moment(entry.time)));
             time.set_xalign(0.0);
             time.set_hexpand(true);
@@ -336,8 +543,10 @@ impl HistoryPage {
             let detail = gtk::Label::new(Some(&HistoryState::delta_label(entry)));
             detail.set_xalign(1.0);
             detail.add_css_class("history-delta");
+            let bar = delta_bar(entry.delta, largest, ink, dim);
             line.append(&time);
             line.append(&detail);
+            line.append(&bar);
             row.set_child(Some(&line));
             self.list.append(&row);
         }
@@ -372,6 +581,7 @@ impl HistoryPage {
         self.preview_generation.set(generation);
         let weak = Rc::downgrade(self);
         self.preview_title.set_text("Loading…");
+        self.preview_legend.set_visible(false);
         let request_rev = rev.clone();
         self.client.spawn(
             move |daemon| daemon.restore(&path, &request_rev),
@@ -399,8 +609,16 @@ impl HistoryPage {
     }
 
     fn update_preview(&self) {
-        let state = self.state.borrow();
-        let Some(entry) = state.current() else {
+        let (entry, old, error) = {
+            let state = self.state.borrow();
+            (
+                state.current().cloned(),
+                state.preview.clone(),
+                state.error.clone(),
+            )
+        };
+        let Some(entry) = entry else {
+            self.update_notice();
             return;
         };
         self.preview_title.set_text(&format!(
@@ -408,12 +626,57 @@ impl HistoryPage {
             ui::format_moment(entry.time),
             crate::store::stats::format_number(u64::from(entry.words))
         ));
-        match &state.preview {
-            Some(text) => self.preview.set_text(text),
-            None => self.preview.set_text(""),
+        if let Some(message) = error {
+            self.preview_legend.set_visible(false);
+            self.preview.buffer().set_text(&message);
+            self.update_notice();
+            return;
         }
-        drop(state);
+        let Some(old) = old else {
+            self.preview_legend.set_visible(false);
+            self.preview.buffer().set_text("");
+            self.update_notice();
+            return;
+        };
+        self.preview_legend.set_visible(true);
+        self.preview_legend
+            .set_text("Compared with the current text · tinted added · struck removed");
+        self.show_diff(&old, &self.current_text());
         self.update_notice();
+    }
+
+    /// Tints what exists only now and strikes what exists only in the old
+    /// version, in the theme's own raised-surface and dim tokens.
+    fn show_diff(&self, old: &str, current: &str) {
+        let palette = theme::palette(&self.settings.borrow());
+        self.added_tag
+            .set_background_rgba(Some(&colour(&palette.surface())));
+        self.removed_tag
+            .set_foreground_rgba(Some(&colour(&palette.dim())));
+        self.removed_tag.set_strikethrough(true);
+
+        let buffer = self.preview.buffer();
+        buffer.set_text("");
+        let mut iter = buffer.end_iter();
+        for run in diff_runs(old, current) {
+            match run.kind {
+                DiffKind::Same => buffer.insert(&mut iter, &run.text),
+                DiffKind::Added => {
+                    buffer.insert_with_tags_by_name(&mut iter, &run.text, &["added"]);
+                }
+                DiffKind::Removed => {
+                    buffer.insert_with_tags_by_name(&mut iter, &run.text, &["removed"]);
+                }
+            }
+        }
+        self.preview_scroller.vadjustment().set_value(0.0);
+    }
+
+    fn current_text(&self) -> String {
+        let buffer = self.editor.buffer();
+        buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .to_string()
     }
 
     fn update_notice(&self) {
@@ -438,6 +701,13 @@ impl HistoryPage {
         self.screen.is_dialog_open()
     }
 
+    fn scroll_preview(&self, pages: f64) {
+        let adjustment = self.preview_scroller.vadjustment();
+        let maximum = (adjustment.upper() - adjustment.page_size()).max(0.0);
+        let target = adjustment.value() + pages * adjustment.page_size() * 0.9;
+        adjustment.set_value(target.clamp(0.0, maximum));
+    }
+
     pub(crate) fn handle_key(
         self: &Rc<Self>,
         keyval: gdk::Key,
@@ -460,6 +730,14 @@ impl HistoryPage {
             }
             gdk::Key::Down => {
                 self.move_selection(1);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Page_Up => {
+                self.scroll_preview(-1.0);
+                glib::Propagation::Stop
+            }
+            gdk::Key::Page_Down => {
+                self.scroll_preview(1.0);
                 glib::Propagation::Stop
             }
             gdk::Key::Home => {
@@ -594,6 +872,68 @@ impl HistoryPage {
     }
 }
 
+/// A theme token as a solid GTK colour.
+fn colour(hex: &str) -> gdk::RGBA {
+    let (red, green, blue) = theme::rgb(hex);
+    gdk::RGBA::new(red as f32, green as f32, blue as f32, 1.0)
+}
+
+/// A small bar either side of a centre tick: longer to the right for words
+/// added, to the left for words removed. The delta label says the exact
+/// number; the bar makes the sign readable at a glance.
+fn delta_bar(delta: i64, largest: f64, ink: gdk::RGBA, dim: gdk::RGBA) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(40);
+    area.set_content_height(14);
+    area.set_valign(gtk::Align::Center);
+    area.set_can_focus(false);
+    area.set_focusable(false);
+    area.set_accessible_role(gtk::AccessibleRole::Img);
+    let sign = if delta > 0 {
+        "words added"
+    } else if delta < 0 {
+        "words removed"
+    } else {
+        "no change"
+    };
+    area.update_property(&[gtk::accessible::Property::Label(sign)]);
+    let largest = largest.max(1.0);
+    area.set_draw_func(move |_, context, width, height| {
+        let centre = f64::from(width) / 2.0;
+        let middle = f64::from(height) / 2.0;
+        let bar = (f64::from(height) * 0.42).max(3.0);
+        context.set_source_rgba(
+            f64::from(dim.red()),
+            f64::from(dim.green()),
+            f64::from(dim.blue()),
+            0.55,
+        );
+        context.rectangle(centre - 0.5, middle - bar / 2.0, 1.0, bar);
+        let _ = context.fill();
+        if delta == 0 {
+            return;
+        }
+        let magnitude = (delta.unsigned_abs() as f64 / largest)
+            .sqrt()
+            .clamp(0.0, 1.0);
+        let length = 3.0 + magnitude * (centre - 3.0);
+        let colour = if delta > 0 { ink } else { dim };
+        context.set_source_rgba(
+            f64::from(colour.red()),
+            f64::from(colour.green()),
+            f64::from(colour.blue()),
+            1.0,
+        );
+        if delta > 0 {
+            context.rectangle(centre + 1.0, middle - bar / 2.0, length, bar);
+        } else {
+            context.rectangle(centre - 1.0 - length, middle - bar / 2.0, length, bar);
+        }
+        let _ = context.fill();
+    });
+    area
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +949,20 @@ mod tests {
         }
     }
 
+    fn same_text(runs: &[DiffRun]) -> String {
+        runs.iter()
+            .filter(|run| run.kind != DiffKind::Removed)
+            .map(|run| run.text.as_str())
+            .collect()
+    }
+
+    fn old_text(runs: &[DiffRun]) -> String {
+        runs.iter()
+            .filter(|run| run.kind != DiffKind::Added)
+            .map(|run| run.text.as_str())
+            .collect()
+    }
+
     #[test]
     fn deltas_read_as_words_not_arithmetic() {
         assert_eq!(HistoryState::delta_label(&entry("a", 86, 10)), "+86 words");
@@ -618,6 +972,15 @@ mod tests {
             HistoryState::delta_label(&entry("a", 1_204, 1_204)),
             "+1,204 words"
         );
+    }
+
+    #[test]
+    fn the_list_knows_the_largest_change_for_its_bars() {
+        let mut state = HistoryState::new("draft.md");
+        state.set_versions(vec![entry("a", 86, 10), entry("b", -1_204, 10)]);
+        assert_eq!(state.largest_delta(), 1_204);
+        state.set_versions(Vec::new());
+        assert_eq!(state.largest_delta(), 1);
     }
 
     #[test]
@@ -671,5 +1034,85 @@ mod tests {
         let empty = FakeDaemon::new();
         empty.set_versions(Vec::new());
         assert!(empty.history("draft.md").unwrap().is_empty());
+    }
+
+    #[test]
+    fn identical_text_is_one_unchanged_run() {
+        let text = "The kettle clicks off at six.\n\n";
+        let runs = diff_runs(text, text);
+        assert_eq!(
+            runs,
+            vec![DiffRun {
+                kind: DiffKind::Same,
+                text: text.to_owned()
+            }]
+        );
+    }
+
+    #[test]
+    fn a_changed_word_is_removed_then_added() {
+        let old = "The kettle clicks off at five.";
+        let current = "The kettle clicks off at six.";
+        let runs = diff_runs(old, current);
+        assert_eq!(
+            runs,
+            vec![
+                DiffRun {
+                    kind: DiffKind::Same,
+                    text: "The kettle clicks off at ".into()
+                },
+                DiffRun {
+                    kind: DiffKind::Removed,
+                    text: "five.".into()
+                },
+                DiffRun {
+                    kind: DiffKind::Added,
+                    text: "six.".into()
+                },
+            ]
+        );
+        assert_eq!(same_text(&runs), current);
+        assert_eq!(old_text(&runs), old);
+    }
+
+    #[test]
+    fn an_added_paragraph_is_tinted_and_a_deleted_one_is_struck() {
+        let old = "First line.\n\nSecond line.\n";
+        let current = "First line.\n\nSecond line.\n\nA new paragraph.\n";
+        let runs = diff_runs(old, current);
+        assert!(runs
+            .iter()
+            .any(|run| run.kind == DiffKind::Added && run.text.contains("A new paragraph.")));
+        assert_eq!(same_text(&runs), current);
+        assert_eq!(old_text(&runs), old);
+
+        let runs = diff_runs(current, old);
+        assert!(runs
+            .iter()
+            .any(|run| run.kind == DiffKind::Removed && run.text.contains("A new paragraph.")));
+        assert_eq!(same_text(&runs), old);
+        assert_eq!(old_text(&runs), current);
+    }
+
+    #[test]
+    fn empty_text_on_either_side_reads_as_a_whole_change() {
+        let added = diff_runs("", "A new file.\n");
+        assert_eq!(added.len(), 1);
+        assert_eq!(added[0].kind, DiffKind::Added);
+        let removed = diff_runs("An old file.\n", "");
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0].kind, DiffKind::Removed);
+        assert!(diff_runs("", "").is_empty());
+    }
+
+    #[test]
+    fn a_huge_rewrite_still_yields_a_readable_diff() {
+        let old = "old words here. ".repeat(8_000);
+        let current = "new words there. ".repeat(8_000);
+        let runs = diff_runs(&old, &current);
+        assert!(runs.iter().any(|run| run.kind == DiffKind::Removed));
+        assert!(runs.iter().any(|run| run.kind == DiffKind::Added));
+        assert_eq!(same_text(&runs), current);
+        assert_eq!(old_text(&runs), old);
     }
 }

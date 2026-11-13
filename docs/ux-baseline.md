@@ -12,8 +12,9 @@ Regenerate with `dev/run.sh bash dev/ux-baseline.sh` (Xvfb, no GPU).
 | Create a new file | 12 | Ctrl+N C h a p t e r Space t w o |
 | Insert a quote with @ | 7 | @ r o o m Down Enter |
 | Start a sync | 1 | Ctrl+Shift+S |
-| Export the current file to USB as .docx | 6 | Ctrl+E Enter Down Down Enter Enter |
-| Restore an earlier version | 5 | Ctrl+H Down Enter Right Enter |
+| Export the current file to USB as .docx | 5 | Ctrl+E Down Right Right Enter |
+| Export again in the last format | 2 | Ctrl+E Enter |
+| Compare and restore a version | 5 | Ctrl+H Down Enter Right Enter |
 | Change the theme | 2 | Ctrl+, Right |
 | Open a file with the command palette | 7 | Ctrl+K z e b r a Enter |
 | Toggle focus mode with the command palette | 7 | Ctrl+K f o c u s Enter |

@@ -19,9 +19,9 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 use crate::battery::SharedBattery;
-use crate::daemon::{Client, DaemonEvent, FakeDaemon};
+use crate::daemon::{Client, DaemonEvent, Drive, FakeDaemon};
 use crate::editor::{place_block, EditorPage};
-use crate::export::ExportPage;
+use crate::export::{ExportFormat, ExportPage, ExportPrefs};
 use crate::files::FilesPage;
 use crate::first_run::FirstRunPage;
 use crate::handoff::WifiHandoff;
@@ -49,6 +49,9 @@ fn gtk_scenarios() {
     the_key_sheet_is_behind_ctrl_slash_only();
     the_start_hint_waits_for_the_first_character();
     the_confirmation_keeps_the_safe_button_first();
+    a_drive_arriving_enables_export();
+    the_import_result_is_said_once();
+    export_remembers_after_leaving_the_screen();
     rename_happens_in_the_place_of_the_row();
     files_search_finds_a_document_in_any_folder();
     recent_files_open_from_the_files_screen();
@@ -425,6 +428,119 @@ fn the_confirmation_keeps_the_safe_button_first() {
     assert!(!alpha.exists(), "Right then Enter deleted the file");
 }
 
+/// A drive plugged in while the Export screen is open turns the To row into
+/// the drive and enables the action, without reopening the screen.
+fn a_drive_arriving_enables_export() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    shell.daemon.set_drives(Vec::new());
+    shell.press("Ctrl+E", gdk::Key::e, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(
+        !shell.export.can_export(),
+        "without a drive there is no export"
+    );
+    shell.daemon.set_drives(vec![Drive {
+        id: "usb-1".into(),
+        label: "CARREL USB".into(),
+        free_bytes: 12_400_000_000,
+    }]);
+    pump(|| shell.export.can_export());
+}
+
+/// The import result is on the screen once: no second copy in the status line
+/// or anywhere else ("2 files imported into Imported.").
+fn the_import_result_is_said_once() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    shell.press("Ctrl+E", gdk::Key::e, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    shell.press("i", gdk::Key::i, gdk::ModifierType::empty());
+    settle();
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    pump(|| !shell.daemon.imported().is_empty());
+    settle();
+    let sentence = "2 files imported into Imported.";
+    let count = text_on_screen(shell.window.upcast_ref(), sentence);
+    assert_eq!(count, 1, "the import result is said {count} times");
+    shell.press("i", gdk::Key::i, gdk::ModifierType::empty());
+    settle();
+    assert_eq!(
+        text_on_screen(shell.window.upcast_ref(), sentence),
+        0,
+        "I starts the import again"
+    );
+}
+
+/// The choices survive leaving the screen: .docx and the current file are
+/// remembered after Esc, so Ctrl+E Enter exports again in Word.
+fn export_remembers_after_leaving_the_screen() {
+    let shell = TestShell::new(
+        &[("The quiet morning.md", "# The quiet morning\n")],
+        "The quiet morning.md",
+    );
+    shell.press("Ctrl+E", gdk::Key::e, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+    shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    pump(|| !shell.daemon.exported().is_empty());
+    settle();
+    assert_eq!(
+        ExportPrefs::load(&shell.root).format,
+        ExportFormat::Docx,
+        "the last format is on disk"
+    );
+
+    shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    settle();
+    shell.press("Ctrl+E", gdk::Key::e, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    pump(|| shell.daemon.exported().len() == 2);
+    let exported = shell.daemon.exported();
+    assert_eq!(
+        exported[1].1, "docx",
+        "the format survived leaving the screen"
+    );
+    assert_eq!(
+        exported[1].0,
+        vec!["current:The quiet morning.md".to_owned()]
+    );
+
+    // E on the finished result is "Export something else".
+    settle();
+    shell.press("e", gdk::Key::e, gdk::ModifierType::empty());
+    settle();
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    pump(|| shell.daemon.exported().len() == 3);
+    assert_eq!(shell.daemon.exported()[2].1, "docx");
+}
+
+/// How many visible places on the screen contain `needle`. A duplicated
+/// result would be two labels or a label plus a text view.
+fn text_on_screen(widget: &gtk::Widget, needle: &str) -> usize {
+    if !widget.is_mapped() {
+        return 0;
+    }
+    let mut count = 0;
+    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+        if label.text().contains(needle) {
+            count += 1;
+        }
+    }
+    if let Some(view) = widget.downcast_ref::<gtk::TextView>() {
+        let buffer = view.buffer();
+        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+        count += text.matches(needle).count();
+    }
+    let mut child = widget.first_child();
+    while let Some(child_widget) = child {
+        count += text_on_screen(&child_widget, needle);
+        child = child_widget.next_sibling();
+    }
+    count
+}
+
 /// F2 turns the selected row itself into the entry, with the name shown
 /// without its extension, and Enter saves it back with the extension.
 fn rename_happens_in_the_place_of_the_row() {
@@ -708,15 +824,18 @@ fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
 // change the baseline deliberately.
 // ---------------------------------------------------------------------------
 
-const BASELINE: [(&str, usize); 17] = [
+const BASELINE: [(&str, usize); 18] = [
     // The Recent group sits above the folder tree, so the last row is still
     // the last document: Ctrl+O End Enter opens it in three keys.
     ("Open an existing file by name", 3),
     ("Create a new file", 12),
     ("Insert a quote with @", 7),
     ("Start a sync", 1),
-    ("Export the current file to USB as .docx", 6),
-    ("Restore an earlier version", 5),
+    // --- History and Export (issue #30) ---
+    ("Export the current file to USB as .docx", 5),
+    ("Export again in the last format", 2),
+    ("Compare and restore a version", 5),
+    // --- end History and Export ---
     ("Change the theme", 2),
     ("Open a file with the command palette", 7),
     ("Toggle focus mode with the command palette", 7),
@@ -758,6 +877,7 @@ struct TestShell {
     key_sheet: Rc<KeySheet>,
     sync: Rc<SyncPage>,
     wifi: Rc<WifiPage>,
+    export: Rc<ExportPage>,
     keys: Rc<Keys>,
     nav: Rc<Navigator>,
     first_run: Rc<FirstRunPage>,
@@ -820,7 +940,12 @@ impl TestShell {
         let nav = Navigator::new(stack.clone());
         nav.attach(&editor);
         let files = FilesPage::new(store.clone(), Rc::clone(&editor), stack.clone());
-        let history = HistoryPage::new(client.clone(), Rc::clone(&nav), Rc::clone(&editor));
+        let history = HistoryPage::new(
+            client.clone(),
+            Rc::clone(&nav),
+            Rc::clone(&editor),
+            Rc::clone(&settings),
+        );
         let quotes = QuotePalette::new(client.clone(), Rc::clone(&editor));
         let handoff = WifiHandoff::new();
         let sync = SyncPage::new(
@@ -918,7 +1043,7 @@ impl TestShell {
             Rc::clone(&sync),
             settings_page,
             Rc::clone(&wifi),
-            export,
+            Rc::clone(&export),
             Rc::clone(&first_run),
             Rc::clone(&palette),
             Rc::clone(&key_sheet),
@@ -934,6 +1059,7 @@ impl TestShell {
             key_sheet,
             sync,
             wifi,
+            export: Rc::clone(&export),
             keys,
             nav,
             first_run,
@@ -1089,7 +1215,10 @@ fn keystroke_baseline() {
         measured.push(("Start a sync", shell.take_sequence()));
     }
 
-    // Export the current file to the USB drive as .docx.
+    // Export the current file to the USB drive as .docx: Ctrl+E opens the one
+    // screen, Down reaches Format, Right twice chooses Word .docx, Enter
+    // exports. Then the same screen remembers the file, the format and the
+    // drive: Ctrl+E Enter exports again in the last format.
     {
         let shell = TestShell::new(
             &[("The quiet morning.md", "# The quiet morning\n")],
@@ -1097,14 +1226,12 @@ fn keystroke_baseline() {
         );
         shell.press("Ctrl+E", gdk::Key::e, gdk::ModifierType::CONTROL_MASK);
         settle();
-        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
-        for _ in 0..2 {
-            shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
-        }
-        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
-        settle();
+        shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+        shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+        shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
         shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
         pump(|| !shell.daemon.exported().is_empty());
+        settle();
         let exported = shell.daemon.exported();
         assert_eq!(exported[0].1, "docx");
         assert_eq!(
@@ -1115,9 +1242,23 @@ fn keystroke_baseline() {
             "Export the current file to USB as .docx",
             shell.take_sequence(),
         ));
+
+        shell.press("Ctrl+E", gdk::Key::e, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        pump(|| shell.daemon.exported().len() == 2);
+        settle();
+        let exported = shell.daemon.exported();
+        assert_eq!(exported[1].1, "docx", "the last format was remembered");
+        assert_eq!(
+            exported[1].0,
+            vec!["current:The quiet morning.md".to_owned()]
+        );
+        measured.push(("Export again in the last format", shell.take_sequence()));
     }
 
-    // Restore an earlier version: open History, go to the second version,
+    // Compare and restore an earlier version: open History, go to the second
+    // version (the preview shows the differences against the current text),
     // Enter, then confirm the dialog with Right and Enter.
     {
         let shell = TestShell::new(
@@ -1139,7 +1280,7 @@ fn keystroke_baseline() {
             "Enter activated the Restore button and closed the card"
         );
         pump(|| contents(&shell.editor.buffer()).contains("The kettle clicks off at six"));
-        measured.push(("Restore an earlier version", shell.take_sequence()));
+        measured.push(("Compare and restore a version", shell.take_sequence()));
     }
 
     // Change the theme: Settings opens on its first row, Right changes it.
