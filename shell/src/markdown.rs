@@ -9,7 +9,9 @@
 //! * `*italic*` and `_italic_` (not inside words, so `snake_case` is safe)
 //! * `# headings` (levels 1–6)
 //! * `> quotes` (indented, marker dimmed)
-//! * `nostos:cite/…` links (small, raised, dimmed)
+//! * `-`, `*`, `+` and `1.` list markers (dimmed)
+//! * `nostos:cite/…` links (the scheme is hidden and the id is a small,
+//!   raised, dimmed marker)
 //! * `[^1](nostos:cite/…)` and `[text](nostos:cite/…)` links: the label is a
 //!   small raised marker and the rest of the link syntax is hidden, unless the
 //!   cursor is inside the link
@@ -20,9 +22,9 @@ pub enum Kind {
     Italic,
     Heading(u8),
     Quote,
-    Cite,
     /// The label of a `[label](nostos:cite/…)` link when it is short, like
-    /// `1` in `[^1](…)`: a small raised marker.
+    /// `1` in `[^1](…)`, or the id of a bare `nostos:cite/…` link: a small
+    /// raised marker. Never the raw URL.
     CiteMarker,
     /// The label of a longer citation link (quoted words): normal size.
     CiteText,
@@ -107,6 +109,18 @@ fn scan_line(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) {
         });
     }
 
+    // List markers, dimmed like every other piece of Markdown syntax. Up to
+    // three leading spaces are allowed, as CommonMark does. A `*` or `_` that
+    // starts emphasis has no space after it, so it is not mistaken for a
+    // bullet.
+    if let Some((marker_start, marker_end)) = list_marker(chars, start, end) {
+        spans.push(Span {
+            start: marker_start,
+            end: marker_end,
+            kind: Kind::Marker,
+        });
+    }
+
     let mut index = start;
     while index < end {
         let ch = chars[index];
@@ -121,6 +135,12 @@ fn scan_line(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) {
                 index = link_end;
                 continue;
             }
+            // A broken citation link stays completely plain: its target must
+            // not become a bare marker. Skip the target as a unit.
+            if let Some(link_end) = broken_cite_link_end(chars, index, end) {
+                index = link_end;
+                continue;
+            }
         }
 
         if ch == '*' || ch == '_' {
@@ -132,21 +152,97 @@ fn scan_line(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) {
         }
 
         if starts_with(chars, index, end, "nostos:cite/") {
-            let mut link_end = index + "nostos:cite/".chars().count();
-            while link_end < end && !chars[link_end].is_whitespace() {
+            // A bare target has no label: hide the scheme and keep the id as
+            // the quiet marker. The buffer text itself is never touched, so
+            // the file on disk stays exactly as it was stored.
+            let scheme_end = index + "nostos:cite/".chars().count();
+            let mut link_end = scheme_end;
+            // Ids are slugs. Stopping at the first other character keeps
+            // sentence punctuation and the `)` of a broken link outside the
+            // marker, and leaves an empty target alone.
+            while link_end < end
+                && (chars[link_end].is_alphanumeric() || matches!(chars[link_end], '-' | '_'))
+            {
                 link_end += 1;
             }
-            spans.push(Span {
-                start: index,
-                end: link_end,
-                kind: Kind::Cite,
-            });
-            index = link_end;
-            continue;
+            if link_end > scheme_end {
+                spans.push(Span {
+                    start: index,
+                    end: link_end,
+                    kind: Kind::CiteLink,
+                });
+                spans.push(Span {
+                    start: index,
+                    end: scheme_end,
+                    kind: Kind::CiteHidden,
+                });
+                spans.push(Span {
+                    start: scheme_end,
+                    end: link_end,
+                    kind: Kind::CiteMarker,
+                });
+                index = link_end;
+                continue;
+            }
         }
 
         index += 1;
     }
+}
+
+/// The end of a list marker starting at `start`: `- `, `* `, `+ `, or up to
+/// nine digits followed by `. ` or `) `. `None` when the line does not start
+/// with a list item. The trailing space is part of the marker so the dimmed
+/// range ends where the item's text begins.
+fn list_marker(chars: &[char], start: usize, end: usize) -> Option<(usize, usize)> {
+    let mut at = start;
+    while at < end && at - start < 3 && chars[at] == ' ' {
+        at += 1;
+    }
+    if at >= end {
+        return None;
+    }
+    match chars[at] {
+        '-' | '*' | '+' => {
+            let after = at + 1;
+            (after < end && chars[after] == ' ').then_some((at, after + 1))
+        }
+        '0'..='9' => {
+            let mut digits = at;
+            while digits < end && digits - at < 9 && chars[digits].is_ascii_digit() {
+                digits += 1;
+            }
+            let punctuation = digits;
+            if punctuation >= end || !matches!(chars[punctuation], '.' | ')') {
+                return None;
+            }
+            let after = punctuation + 1;
+            (after < end && chars[after] == ' ').then_some((at, after + 1))
+        }
+        _ => None,
+    }
+}
+
+/// The end of a malformed `[label](nostos:cite/…)` link starting at `start`:
+/// the link's syntax stays plain, and the target inside it is not mistaken
+/// for a bare marker. `None` when the text does not look like such a link.
+fn broken_cite_link_end(chars: &[char], start: usize, end: usize) -> Option<usize> {
+    const TARGET: &str = "](nostos:cite/";
+    let mut close = start + 1;
+    while close < end && chars[close] != ']' {
+        if chars[close] == '[' {
+            return None;
+        }
+        close += 1;
+    }
+    if close >= end || !starts_with(chars, close, end, TARGET) {
+        return None;
+    }
+    let mut at = close + TARGET.chars().count();
+    while at < end && !chars[at].is_whitespace() && chars[at] != ')' {
+        at += 1;
+    }
+    Some(at)
 }
 
 /// A label of at most this many characters, without spaces, is drawn as a
@@ -400,9 +496,35 @@ mod tests {
     }
 
     #[test]
-    fn bare_citation_targets_are_superscript_markers() {
+    fn list_markers_are_dimmed() {
+        for (text, marker) in [
+            ("- buy ink", "- "),
+            ("* buy ink", "* "),
+            ("+ buy ink", "+ "),
+            ("1. buy ink", "1. "),
+        ] {
+            assert!(has(text, Kind::Marker, marker), "{text:?}");
+        }
+        // Three leading spaces are a list; four are a code block.
+        assert!(has("   - nested", Kind::Marker, "- "));
+        assert!(!has("    - code", Kind::Marker, "- "));
+        // Emphasis at the start of a line is not a bullet.
+        assert!(!has("**bold**", Kind::Marker, "* "));
+        assert!(!has("*not closed", Kind::Marker, "* "));
+        // An ordered marker keeps its punctuation and the space.
+        assert!(has("12) an item", Kind::Marker, "12) "));
+    }
+
+    #[test]
+    fn bare_citation_targets_hide_the_scheme_and_keep_a_marker() {
         let text = "As seen. nostos:cite/abc123";
-        assert!(has(text, Kind::Cite, "nostos:cite/abc123"));
+        assert!(has(text, Kind::CiteMarker, "abc123"));
+        assert!(has(text, Kind::CiteHidden, "nostos:cite/"));
+        assert!(has(text, Kind::CiteLink, "nostos:cite/abc123"));
+        // Sentence punctuation stays outside the marker.
+        let quoted = "As seen nostos:cite/abc123, and again.";
+        assert!(has(quoted, Kind::CiteMarker, "abc123"));
+        assert!(!has(quoted, Kind::CiteMarker, "abc123,"));
     }
 
     #[test]
@@ -412,8 +534,15 @@ mod tests {
         assert!(has(text, Kind::CiteHidden, "[^"));
         assert!(has(text, Kind::CiteHidden, "](nostos:cite/abc123)"));
         assert!(has(text, Kind::CiteLink, "[^1](nostos:cite/abc123)"));
-        // The target is not also a bare citation span.
-        assert!(!kinds(text).iter().any(|(kind, _)| *kind == Kind::Cite));
+        // The target is not also a bare citation marker.
+        assert!(!has(text, Kind::CiteMarker, "nostos:cite/abc123"));
+        assert_eq!(
+            kinds(text)
+                .iter()
+                .filter(|(kind, _)| *kind == Kind::CiteMarker)
+                .count(),
+            1
+        );
     }
 
     #[test]
