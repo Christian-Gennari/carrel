@@ -17,6 +17,7 @@ use crate::editor::EditorPage;
 use crate::export::ExportPage;
 use crate::files::FilesPage;
 use crate::first_run::FirstRunPage;
+use crate::handoff::WifiHandoff;
 use crate::history::HistoryPage;
 use crate::keys::Keys;
 use crate::nav::Navigator;
@@ -106,8 +107,14 @@ pub fn run(application: &gtk::Application) {
     let files = FilesPage::new(store.clone(), Rc::clone(&editor), stack.clone());
     let history = HistoryPage::new(client.clone(), Rc::clone(&nav), Rc::clone(&editor));
     let quotes = QuotePalette::new(client.clone(), Rc::clone(&editor));
-    let sync = SyncPage::new(client.clone(), Rc::clone(&nav));
-    let wifi = WifiPage::new(client.clone(), Rc::clone(&nav));
+    let handoff = WifiHandoff::new();
+    let sync = SyncPage::new(
+        client.clone(),
+        Rc::clone(&nav),
+        handoff.clone(),
+        root.clone(),
+    );
+    let wifi = WifiPage::new(client.clone(), Rc::clone(&nav), handoff);
 
     let restyle: Rc<dyn Fn()> = {
         let settings = Rc::clone(&settings);

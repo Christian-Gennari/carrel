@@ -23,7 +23,11 @@ Regenerate with `dev/run.sh bash dev/ux-baseline.sh` (Xvfb, no GPU).
 | Move a file into a folder | 5 | Ctrl+O Down Down Shift+M Enter |
 | First run to editor with defaults | 2 | Enter Enter |
 | Change font size in Settings | 6 | Ctrl+, Down Down Down Down Right |
+| Pair with Nostos from the editor | 2 | Ctrl+Shift+S Enter |
+| Sync when Wi-Fi is not set up yet | 2 | Ctrl+Shift+S Enter |
 
 <!-- UI round 6 (Files, issue #27): "Find and open a file by typing" and "Move a file into a folder". -->
 
 <!-- UI round 7 (issue #28): "First run to editor with defaults" and "Change font size in Settings" are the Settings and first-run rows. -->
+
+<!-- Sync and Wi-Fi from the editor (issue #29): the last two rows. -->

@@ -813,9 +813,14 @@ struct FakeState {
     drives: Vec<Drive>,
     update: String,
     pending_pair: Option<PairingInfo>,
+    /// Whether a service is paired; the real daemon refuses to sync otherwise.
+    configured: bool,
+    /// No network: every sync fails the way a device with no Wi-Fi does.
+    wifi_down: bool,
     committed: usize,
     unpaired: usize,
     synced: usize,
+    pairs: usize,
     exported: Vec<(Vec<String>, String, String)>,
     imported: Vec<(String, Vec<String>)>,
     quotes: Vec<FakeQuote>,
@@ -918,9 +923,12 @@ impl FakeDaemon {
                 }],
                 update: "ready:0.2.0".into(),
                 pending_pair: None,
+                configured: true,
+                wifi_down: false,
                 committed: 0,
                 unpaired: 0,
                 synced: 0,
+                pairs: 0,
                 exported: Vec::new(),
                 imported: Vec::new(),
                 quotes: demo_quotes(),
@@ -966,7 +974,8 @@ impl FakeDaemon {
         // progress line while a sync runs, or its failure. Values match the
         // `SyncInfo.state` strings in spec/02-sync-protocol.md.
         match std::env::var("CARREL_FAKE_SYNC").as_deref() {
-            Ok("unpaired") => {
+            Ok("unpaired") => fake.set_unpaired(true),
+            Ok("never") => {
                 if let Ok(mut state) = fake.state.lock() {
                     state.sync = SyncInfo {
                         state: "idle".into(),
@@ -979,7 +988,7 @@ impl FakeDaemon {
                 if let Ok(mut state) = fake.state.lock() {
                     state.sync = SyncInfo {
                         state: "syncing".into(),
-                        message: "Syncing…".into(),
+                        message: "Syncing… 3 of 12 files".into(),
                         last_sync: now_unix() - 3_600,
                     };
                 }
@@ -994,7 +1003,22 @@ impl FakeDaemon {
                     };
                 }
             }
+            Ok("no-wifi") => {
+                fake.set_wifi_down(true);
+                if let Ok(mut state) = fake.state.lock() {
+                    state.sync = SyncInfo {
+                        state: "error".into(),
+                        message: "No Wi-Fi. Open Wi-Fi to choose a network.".into(),
+                        last_sync: now_unix() - 2 * 3_600,
+                    };
+                }
+            }
             _ => {}
+        }
+        if std::env::var_os("CARREL_FAKE_WIFI_EMPTY").is_some() {
+            if let Ok(mut state) = fake.state.lock() {
+                state.networks.clear();
+            }
         }
         match std::env::var("CARREL_FAKE_LIBRARY").as_deref() {
             Ok("unavailable") => fake.set_library_unavailable(true),
@@ -1032,6 +1056,33 @@ impl FakeDaemon {
         if let Ok(mut state) = self.state.lock() {
             state.drives = drives;
         }
+    }
+
+    /// Forget every paired service, as a device that was never set up.
+    pub fn set_unpaired(&self, unpaired: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.configured = !unpaired;
+            state.pending_pair = None;
+            if unpaired {
+                state.sync = SyncInfo {
+                    state: "idle".into(),
+                    message: "Not synced yet.".into(),
+                    last_sync: 0,
+                };
+            }
+        }
+    }
+
+    /// Make every sync fail the way a device with no network does.
+    pub fn set_wifi_down(&self, down: bool) {
+        if let Ok(mut state) = self.state.lock() {
+            state.wifi_down = down;
+        }
+    }
+
+    /// How many pairing attempts reached this daemon.
+    pub fn pairs(&self) -> usize {
+        self.state.lock().map(|state| state.pairs).unwrap_or(0)
     }
 
     pub fn set_update(&self, update: impl Into<String>) {
@@ -1158,15 +1209,37 @@ impl DaemonClient for FakeDaemon {
         if let Ok(mut state) = self.state.lock() {
             state.synced += 1;
         }
-        let info = self
+        let (configured, wifi_down, last_sync) = self
             .state
             .lock()
-            .map(|state| state.sync.clone())
+            .map(|state| (state.configured, state.wifi_down, state.sync.last_sync))
             .map_err(|_| DaemonError::failed("fake lock"))?;
+        // The real daemon answers a sync it cannot run as a `SyncStatus` error,
+        // not as a failed call: the screen draws it the same way either way.
+        if !configured {
+            let failed = SyncInfo {
+                state: "error".into(),
+                message: "this device is not paired with a sync server or Google Drive".into(),
+                last_sync,
+            };
+            self.set_sync(failed.clone());
+            self.emit(DaemonEvent::Sync(failed));
+            return Ok(());
+        }
+        if wifi_down {
+            let failed = SyncInfo {
+                state: "error".into(),
+                message: "No Wi-Fi. Open Wi-Fi to choose a network.".into(),
+                last_sync,
+            };
+            self.set_sync(failed.clone());
+            self.emit(DaemonEvent::Sync(failed));
+            return Ok(());
+        }
         let running = SyncInfo {
             state: "syncing".into(),
-            message: "Syncing…".into(),
-            last_sync: info.last_sync,
+            message: "Syncing… 3 of 12 files".into(),
+            last_sync,
         };
         self.set_sync(running.clone());
         self.emit(DaemonEvent::Sync(running));
@@ -1211,6 +1284,18 @@ impl DaemonClient for FakeDaemon {
         };
         if let Ok(mut state) = self.state.lock() {
             state.pending_pair = Some(info.clone());
+            state.pairs += 1;
+            state.configured = true;
+        }
+        // The screenshot flow shows "Paired." on the screen: approve while the
+        // code is still being read, then let the shell's beat run.
+        if std::env::var("CARREL_FAKE_PAIR").as_deref() == Ok("approved") {
+            std::thread::sleep(std::time::Duration::from_millis(1_400));
+            self.emit(DaemonEvent::Pair {
+                state: "approved".into(),
+                code: info.code.clone(),
+                message: format!("Paired with {}.", paired_label(&info.backend)),
+            });
         }
         Ok(info)
     }
@@ -1219,6 +1304,7 @@ impl DaemonClient for FakeDaemon {
         if let Ok(mut state) = self.state.lock() {
             state.unpaired += 1;
             state.pending_pair = None;
+            state.configured = false;
         }
         Ok(())
     }
@@ -1240,6 +1326,8 @@ impl DaemonClient for FakeDaemon {
             for network in &mut state.networks {
                 network.connected = network.ssid == ssid;
             }
+            // A successful connection ends the "no network" failure.
+            state.wifi_down = false;
         }
         Ok(())
     }
@@ -1389,6 +1477,16 @@ fn slug(title: &str) -> String {
         }
     }
     slug.trim_matches('-').to_string()
+}
+
+/// The service name the pairing message and the Sync screen use.
+fn paired_label(backend: &str) -> &'static str {
+    match backend {
+        "nostos" => "Nostos",
+        "self-hosted" => "your server",
+        "google-drive" => "Google Drive",
+        _ => "the service",
+    }
 }
 
 fn hit(

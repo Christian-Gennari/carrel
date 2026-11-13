@@ -288,21 +288,81 @@ PY
     CARREL_SHOT_KEYS="ctrl+slash" shoot keysheet-dark dark true true editor ""
     CARREL_SHOT_KEYS="ctrl+n" shoot editor-dark-empty dark true true editor ""
 
-    # Sync: unpaired, paired idle, syncing, error, then each pairing flow.
-    shoot sync-unpaired-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=unpaired
-    shoot sync-idle-$theme_a "$theme_a" true true sync ""
-    shoot sync-syncing-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=syncing
-    shoot sync-error-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=error
-    shoot sync-pair-nostos-$theme_a "$theme_a" true true pair-nostos ""
-    shoot sync-pair-selfhosted-$theme_a "$theme_a" true true pair-selfhosted ""
-    shoot sync-pair-selfhosted-code-$theme_a "$theme_a" true true pair-selfhosted-code ""
-    shoot sync-pair-gdrive-$theme_a "$theme_a" true true pair-gdrive ""
+    # ------------------------------------------------------------------
+    # Sync and Wi-Fi (issue #29): every state, light and dark.
+    # ------------------------------------------------------------------
+    # The Sync screen remembers which services it paired (`.carrel/sync-ui.json`,
+    # written by the shell). Every shot below starts from a device whose memory
+    # is cleared, unless the shot names a service with CARREL_SHOT_PAIRED.
+    shoot_memory() {
+        rm -f "$root/.carrel/sync-ui.json"
+        if [ -n "${CARREL_SHOT_PAIRED:-}" ]; then
+            printf '{"paired": ["%s"]}\n' "$CARREL_SHOT_PAIRED" \
+                > "$root/.carrel/sync-ui.json"
+        fi
+        shoot "$@"
+    }
+    # Sync: the state is the hero. Unpaired choices, up to date, a first
+    # sync waiting, a sync in progress with counts, a server failure, no
+    # Wi-Fi with its one action, and the unpair confirmation.
+    shoot_memory sync-unpaired-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=unpaired
+    shoot_memory sync-unpaired-$theme_b "$theme_b" true true sync "" CARREL_FAKE_SYNC=unpaired
+    CARREL_SHOT_PAIRED=nostos shoot_memory sync-up-to-date-$theme_a "$theme_a" true true sync ""
+    CARREL_SHOT_PAIRED=nostos shoot_memory sync-up-to-date-$theme_b "$theme_b" true true sync ""
+    CARREL_SHOT_PAIRED=nostos \
+        shoot_memory sync-ready-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=never
+    CARREL_SHOT_PAIRED=nostos \
+        shoot_memory sync-ready-$theme_b "$theme_b" true true sync "" CARREL_FAKE_SYNC=never
+    CARREL_SHOT_PAIRED=nostos \
+        shoot_memory sync-syncing-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=syncing
+    CARREL_SHOT_PAIRED=nostos \
+        shoot_memory sync-syncing-$theme_b "$theme_b" true true sync "" CARREL_FAKE_SYNC=syncing
+    CARREL_SHOT_PAIRED=nostos \
+        shoot_memory sync-error-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=error
+    CARREL_SHOT_PAIRED=nostos \
+        shoot_memory sync-error-$theme_b "$theme_b" true true sync "" CARREL_FAKE_SYNC=error
+    CARREL_SHOT_PAIRED=nostos \
+        shoot_memory sync-no-wifi-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=no-wifi
+    CARREL_SHOT_PAIRED=nostos \
+        shoot_memory sync-no-wifi-$theme_b "$theme_b" true true sync "" CARREL_FAKE_SYNC=no-wifi
+    CARREL_SHOT_PAIRED=nostos CARREL_SHOT_KEYS="Down,Down,Down,Return" \
+        shoot_memory sync-unpair-confirm-$theme_a "$theme_a" true true sync ""
+    # Pairing: the code with its QR and one sentence, each backend.
+    shoot_memory sync-pair-nostos-$theme_a "$theme_a" true true pair-nostos ""
+    shoot_memory sync-pair-nostos-$theme_b "$theme_b" true true pair-nostos ""
+    shoot_memory sync-pair-selfhosted-$theme_a "$theme_a" true true pair-selfhosted ""
+    shoot_memory sync-pair-selfhosted-code-$theme_a "$theme_a" true true pair-selfhosted-code ""
+    shoot_memory sync-pair-gdrive-$theme_a "$theme_a" true true pair-gdrive ""
+    # "Paired." holds for a beat before Sync returns; this lands inside it.
+    CARREL_FAKE_PAIR=approved \
+        shoot_memory sync-paired-beat-$theme_a "$theme_a" true true pair-nostos ""
 
-    # Wi-Fi: the scan list, the password bar (Down on a locked network, Enter)
-    # and the captive-portal error (Down, Down on Hotel Guest, Enter).
-    shoot wifi-scan-$theme_a "$theme_a" true true wifi ""
-    CARREL_SHOT_KEYS="Down,Return" shoot wifi-password-$theme_a "$theme_a" true true wifi ""
-    CARREL_SHOT_KEYS="Down,Down,Return" shoot wifi-error-$theme_a "$theme_a" true true wifi ""
+    # Wi-Fi: the scan with icons, the field under its network, the two
+    # inline errors, a hidden network, no networks, and Forget.
+    shoot_memory wifi-scan-$theme_a "$theme_a" true true wifi ""
+    shoot_memory wifi-scan-$theme_b "$theme_b" true true wifi ""
+    CARREL_SHOT_KEYS="Down,Return" shoot_memory wifi-password-$theme_a "$theme_a" true true wifi ""
+    CARREL_SHOT_KEYS="Down,Return" shoot_memory wifi-password-$theme_b "$theme_b" true true wifi ""
+    CARREL_SHOT_KEYS="Down,Return,Return" \
+        shoot_memory wifi-empty-password-$theme_a "$theme_a" true true wifi ""
+    CARREL_SHOT_KEYS="Down,Down,Return" shoot_memory wifi-error-$theme_a "$theme_a" true true wifi ""
+    CARREL_SHOT_KEYS="Down,Down,Return" shoot_memory wifi-error-$theme_b "$theme_b" true true wifi ""
+    CARREL_SHOT_KEYS="Down,Down,Down,Down,Return" \
+        shoot_memory wifi-other-network-$theme_a "$theme_a" true true wifi ""
+    shoot_memory wifi-no-networks-$theme_a "$theme_a" true true wifi "" CARREL_FAKE_WIFI_EMPTY=1
+    CARREL_SHOT_KEYS="F" shoot_memory wifi-forget-confirm-$theme_a "$theme_a" true true wifi ""
+    # Opened from Sync to fix a failed sync: the screen says why it is here.
+    CARREL_SHOT_PAIRED=nostos CARREL_SHOT_KEYS="Return" \
+        shoot_memory wifi-from-sync-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=no-wifi
+    # Every theme on both screens: the hero, the danger colour, the icons and
+    # the inline field all come from theme tokens only.
+    for slug in light sepia mist study dark high-contrast; do
+        CARREL_SHOT_PAIRED=nostos shoot_memory sync-themes-$slug "$slug" true true sync ""
+        CARREL_SHOT_KEYS="Down,Return" shoot_memory wifi-themes-$slug "$slug" true true wifi ""
+    done
+    # ------------------------------------------------------------------
+    # end Sync and Wi-Fi (issue #29)
+    # ------------------------------------------------------------------
 
     # Export: each step, the export in progress, the finished .docx, no drive,
     # and the import result.
