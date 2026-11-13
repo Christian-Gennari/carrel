@@ -49,6 +49,11 @@ fn gtk_scenarios() {
     the_start_hint_waits_for_the_first_character();
     the_confirmation_keeps_the_safe_button_first();
     rename_happens_in_the_place_of_the_row();
+    files_search_finds_a_document_in_any_folder();
+    recent_files_open_from_the_files_screen();
+    opening_a_folder_starts_at_its_first_entry();
+    new_file_from_files_lands_in_the_selected_folder();
+    a_conflict_copy_offers_three_ways();
     keystroke_baseline();
 }
 
@@ -438,6 +443,218 @@ fn rename_happens_in_the_place_of_the_row() {
     assert!(!shell.root.join("Alpha.md").exists());
 }
 
+/// Typing on the Files screen searches every folder at once: no field to
+/// focus, Backspace edits the query, Esc clears it before it leaves, and a
+/// query that matches nothing says so.
+fn files_search_finds_a_document_in_any_folder() {
+    let shell = TestShell::new(
+        &[
+            ("The quiet morning.md", "# The quiet morning\n"),
+            ("Novel/Chapter one.md", "# Chapter one\n"),
+            ("Notes.md", "# Notes\n"),
+        ],
+        "The quiet morning.md",
+    );
+    let ctrl_o = gdk::ModifierType::CONTROL_MASK;
+    let none = gdk::ModifierType::empty();
+
+    shell.press("Ctrl+O", gdk::Key::o, ctrl_o);
+    settle();
+    shell.type_search("quiet");
+    shell.press("Enter", gdk::Key::Return, none);
+    assert_eq!(shell.visible(), "editor");
+    assert_eq!(
+        shell.editor.current_rel().as_deref(),
+        Some(Path::new("The quiet morning.md"))
+    );
+
+    // A hit in another folder shows its folder path after the name.
+    shell.press("Ctrl+O", gdk::Key::o, ctrl_o);
+    settle();
+    shell.press("Esc", gdk::Key::Escape, none);
+    settle();
+    shell.type_search("chapter");
+    assert!(
+        shell.has_label("Novel/"),
+        "the folder path sits dim after the name"
+    );
+    shell.press("Enter", gdk::Key::Return, none);
+    assert_eq!(
+        shell.editor.current_rel().as_deref(),
+        Some(Path::new("Novel/Chapter one.md"))
+    );
+
+    // No match: the exact sentence, and Enter does nothing.
+    shell.press("Ctrl+O", gdk::Key::o, ctrl_o);
+    settle();
+    shell.press("Esc", gdk::Key::Escape, none);
+    settle();
+    shell.type_search("zzzqx");
+    assert!(shell.has_label("No documents match “zzzqx”."));
+    shell.press("Enter", gdk::Key::Return, none);
+    assert_eq!(shell.visible(), "files");
+
+    // Backspace edits the query; Esc clears it and the next Esc leaves.
+    shell.press("BackSpace", gdk::Key::BackSpace, none);
+    assert!(shell.has_label("No documents match “zzzq”."));
+    shell.press("Esc", gdk::Key::Escape, none);
+    assert!(shell.has_label("Recent"));
+    assert_eq!(shell.visible(), "files");
+    shell.press("Esc", gdk::Key::Escape, none);
+    assert_eq!(shell.visible(), "editor");
+}
+
+/// The last opened document is the first row of the Files screen, so Enter
+/// reopens it without hunting through the folder tree.
+fn recent_files_open_from_the_files_screen() {
+    let shell = TestShell::new(
+        &[
+            ("Novel/Chapter one.md", "# Chapter one\n"),
+            ("Alpha.md", "# Alpha\n"),
+        ],
+        "Novel/Chapter one.md",
+    );
+    shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(shell.has_label("Recent"));
+    // The first selectable row is the recent, not the Novel folder.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert_eq!(shell.visible(), "editor");
+    assert_eq!(
+        shell.editor.current_rel().as_deref(),
+        Some(Path::new("Novel/Chapter one.md"))
+    );
+}
+
+/// Opening a folder lands on its first entry, not on the Recent group above
+/// it (the open document is often both).
+fn opening_a_folder_starts_at_its_first_entry() {
+    let shell = TestShell::new(
+        &[
+            ("Novel/Chapter one.md", "# Chapter one\n"),
+            ("Novel/Chapter two.md", "# Chapter two\n"),
+            ("Alpha.md", "# Alpha\n"),
+        ],
+        "Alpha.md",
+    );
+    shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    // Recent Alpha is selected; Down reaches the Novel folder.
+    shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    assert_eq!(shell.visible(), "files", "Enter opened the folder");
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert_eq!(shell.visible(), "editor");
+    assert_eq!(
+        shell.editor.current_rel().as_deref(),
+        Some(Path::new("Novel/Chapter one.md")),
+        "the first row of the folder is selected"
+    );
+}
+
+/// Ctrl+N from Files creates the document in the selected folder and opens
+/// the editor at once; the first line names it.
+fn new_file_from_files_lands_in_the_selected_folder() {
+    let shell = TestShell::new(
+        &[
+            ("Novel/Chapter one.md", "# Chapter one\n"),
+            ("Alpha.md", "# Alpha\n"),
+        ],
+        "Alpha.md",
+    );
+    shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    // The recent Alpha is selected; Down reaches the Novel folder.
+    shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    shell.press("Ctrl+N", gdk::Key::n, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert_eq!(shell.visible(), "editor");
+    assert_eq!(
+        shell.editor.current_rel().as_deref(),
+        Some(Path::new("Novel/Untitled.md"))
+    );
+    shell.type_text("Chapter two");
+    pump(|| shell.editor.current_rel().as_deref() == Some(Path::new("Novel/Chapter two.md")));
+    assert!(shell.root.join("Novel/Chapter two.md").is_file());
+}
+
+/// A sync conflict copy is marked; Enter offers Keep mine, Keep theirs and
+/// Keep both, and each answer leaves the writer with the documents they chose.
+fn a_conflict_copy_offers_three_ways() {
+    const COPY: &str = "Notes (conflict 2026-11-13 0912 from Studio).md";
+    const COPY_TEXT: &str = "# Notes, from the studio\n";
+    let none = gdk::ModifierType::empty();
+    let ctrl_o = gdk::ModifierType::CONTROL_MASK;
+
+    // Keep both: the copy gets an ordinary name and the original stays.
+    {
+        let shell = TestShell::new(&[("Notes.md", "# Notes\n"), (COPY, COPY_TEXT)], "Notes.md");
+        shell.press("Ctrl+O", gdk::Key::o, ctrl_o);
+        settle();
+        shell.type_search("conflict");
+        assert!(shell.has_label("Conflict"));
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        wait_for_dialog_button("Keep mine");
+        wait_for_dialog_button("Keep theirs");
+        wait_for_dialog_button("Keep both");
+        // Esc leaves both files exactly as they were.
+        shell.press("Esc", gdk::Key::Escape, none);
+        assert!(shell.root.join(COPY).is_file());
+        // Enter opens the card again; the focused answer is the safe one.
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        wait_for_dialog_button("Keep both");
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        assert!(shell.root.join("Notes.md").is_file());
+        assert!(!shell.root.join(COPY).exists());
+        assert!(shell.root.join("Notes 2.md").is_file());
+    }
+
+    // Keep mine: the local document stays and the copy goes to the trash.
+    {
+        let shell = TestShell::new(&[("Notes.md", "# Notes\n"), (COPY, COPY_TEXT)], "Notes.md");
+        shell.press("Ctrl+O", gdk::Key::o, ctrl_o);
+        settle();
+        shell.type_search("conflict");
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        wait_for_dialog_button("Keep mine");
+        // Keep both has focus; two Lefts reach Keep mine.
+        shell.press("Left", gdk::Key::Left, none);
+        shell.press("Left", gdk::Key::Left, none);
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        assert!(!shell.root.join(COPY).exists());
+        assert_eq!(
+            std::fs::read_to_string(shell.root.join("Notes.md")).unwrap(),
+            "# Notes\n"
+        );
+    }
+
+    // Keep theirs: the other side's version becomes the document.
+    {
+        let shell = TestShell::new(&[("Notes.md", "# Notes\n"), (COPY, COPY_TEXT)], "Notes.md");
+        shell.press("Ctrl+O", gdk::Key::o, ctrl_o);
+        settle();
+        shell.type_search("conflict");
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        wait_for_dialog_button("Keep theirs");
+        // Keep both has focus; one Left reaches Keep theirs.
+        shell.press("Left", gdk::Key::Left, none);
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        assert!(!shell.root.join(COPY).exists());
+        assert_eq!(
+            std::fs::read_to_string(shell.root.join("Notes.md")).unwrap(),
+            COPY_TEXT
+        );
+    }
+}
+
 fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
     if !widget.is_visible() {
         return None;
@@ -470,8 +687,10 @@ fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
 // change the baseline deliberately.
 // ---------------------------------------------------------------------------
 
-const BASELINE: [(&str, usize); 11] = [
-    ("Open an existing file by name", 4),
+const BASELINE: [(&str, usize); 13] = [
+    // The Recent group sits above the folder tree, so the last row is still
+    // the last document: Ctrl+O End Enter opens it in three keys.
+    ("Open an existing file by name", 3),
     ("Create a new file", 12),
     ("Insert a quote with @", 7),
     ("Start a sync", 1),
@@ -482,7 +701,25 @@ const BASELINE: [(&str, usize); 11] = [
     ("Toggle focus mode with the command palette", 7),
     ("Set the theme to Sepia with the command palette", 7),
     ("Show the keyboard shortcuts", 1),
+    // --- UI round 6 (Files, issue #27) ---
+    ("Find and open a file by typing", 7),
+    ("Move a file into a folder", 5),
 ];
+
+fn key_for(character: char) -> (String, gdk::Key) {
+    let name = character.to_string();
+    match character {
+        '\n' => ("Enter".to_owned(), gdk::Key::Return),
+        ' ' => ("Space".to_owned(), gdk::Key::space),
+        '@' => ("@".to_owned(), gdk::Key::at),
+        other => (
+            other.to_string(),
+            gdk::Key::from_name(&name)
+                .or_else(|| gdk::Key::from_name(name.to_ascii_lowercase()))
+                .unwrap_or(gdk::Key::a),
+        ),
+    }
+}
 
 struct TestShell {
     root: PathBuf,
@@ -664,24 +901,23 @@ impl TestShell {
     fn type_text(&self, text: &str) {
         let palette_open = self.palette.is_open();
         for character in text.chars() {
-            let name = character.to_string();
-            let (label, key) = match character {
-                '\n' => ("Enter".to_owned(), gdk::Key::Return),
-                ' ' => ("Space".to_owned(), gdk::Key::space),
-                '@' => ("@".to_owned(), gdk::Key::at),
-                other => (
-                    other.to_string(),
-                    gdk::Key::from_name(&name)
-                        .or_else(|| gdk::Key::from_name(name.to_ascii_lowercase()))
-                        .unwrap_or(gdk::Key::a),
-                ),
-            };
+            let (label, key) = key_for(character);
             self.press(&label, key, gdk::ModifierType::empty());
             if !palette_open {
                 self.editor
                     .buffer()
                     .insert_at_cursor(&character.to_string());
             }
+        }
+        settle();
+    }
+
+    /// Type into a screen that reads keys itself (the Files search), without
+    /// a text view to receive the characters.
+    fn type_search(&self, text: &str) {
+        for character in text.chars() {
+            let (label, key) = key_for(character);
+            self.press(&label, key, gdk::ModifierType::empty());
         }
         settle();
     }
@@ -696,6 +932,14 @@ impl TestShell {
             .visible_child_name()
             .map(|name| name.to_string())
             .unwrap_or_default()
+    }
+
+    /// Whether a label on this shell's visible page reads `text`.
+    fn has_label(&self, text: &str) -> bool {
+        self.stack
+            .visible_child()
+            .map(|page| widget_has_label(&page, text))
+            .unwrap_or(false)
     }
 }
 
@@ -721,14 +965,13 @@ fn keystroke_baseline() {
         );
         shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
         settle();
-        for _ in 0..2 {
-            shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
-        }
+        // Recents are above the tree; End reaches the last document, Zebra.
+        shell.press("End", gdk::Key::End, gdk::ModifierType::empty());
         shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
         assert_eq!(
             shell.editor.current_rel().as_deref(),
             Some(Path::new("Zebra.md")),
-            "the third Files row opened"
+            "the last Files row opened"
         );
         assert!(contents(&shell.editor.buffer()).contains("# Zebra"));
         measured.push(("Open an existing file by name", shell.take_sequence()));
@@ -923,6 +1166,59 @@ fn keystroke_baseline() {
         assert!(shell.key_sheet.is_open());
         measured.push(("Show the keyboard shortcuts", shell.take_sequence()));
     }
+    // --- UI round 6 (Files, issue #27) ---
+
+    // Find and open a file by typing: no field to focus, just the letters and
+    // Enter. Zebra is the only match.
+    {
+        let shell = TestShell::new(
+            &[
+                ("Novel/Chapter one.md", "# Chapter one\n"),
+                ("Alpha.md", "# Alpha\n"),
+                ("Zebra.md", "# Zebra\n"),
+            ],
+            "Alpha.md",
+        );
+        shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        shell.type_search("zebra");
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Zebra.md")),
+            "the typed query opened Zebra"
+        );
+        measured.push(("Find and open a file by typing", shell.take_sequence()));
+    }
+
+    // Move a file into a folder: the Recent row has Alpha selected; Down twice
+    // reaches the folder's own Alpha, Shift+M opens the destinations and Enter
+    // moves it into Novel.
+    {
+        let shell = TestShell::new(
+            &[
+                ("Novel/Chapter one.md", "# Chapter one\n"),
+                ("Alpha.md", "# Alpha\n"),
+                ("Zebra.md", "# Zebra\n"),
+            ],
+            "Alpha.md",
+        );
+        shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        for _ in 0..2 {
+            shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+        }
+        shell.press("Shift+M", gdk::Key::m, gdk::ModifierType::SHIFT_MASK);
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        assert!(shell.root.join("Novel/Alpha.md").is_file());
+        assert!(!shell.root.join("Alpha.md").exists());
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Novel/Alpha.md")),
+            "the editor followed the moved document"
+        );
+        measured.push(("Move a file into a folder", shell.take_sequence()));
+    }
 
     finish_baseline(&measured);
 }
@@ -960,6 +1256,10 @@ fn finish_baseline(measured: &[(&str, Vec<String>)]) {
             sequence.join(" ")
         ));
     }
+    table.push_str(
+        "\n<!-- UI round 6 (Files, issue #27): \
+         \"Find and open a file by typing\" and \"Move a file into a folder\". -->\n",
+    );
     println!();
 
     let docs = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -997,6 +1297,25 @@ fn has_dialog_button(label: &str) -> bool {
         .iter()
         .filter(|window| window.is_visible())
         .any(|window| widget_has_button(window.upcast_ref(), label))
+}
+
+fn widget_has_label(widget: &gtk::Widget, text: &str) -> bool {
+    if !widget.is_visible() {
+        return false;
+    }
+    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+        if label.text() == text {
+            return true;
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if widget_has_label(&widget, text) {
+            return true;
+        }
+        child = widget.next_sibling();
+    }
+    false
 }
 
 fn wait_for_dialog_button(label: &str) {

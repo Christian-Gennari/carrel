@@ -10,6 +10,9 @@ use gtk::{gdk, glib, pango};
 use crate::settings::Theme;
 use crate::theme::{self, Palette};
 
+/// The action a three-answer card runs with the chosen button's index.
+type ChoiceAction = Rc<dyn Fn(usize)>;
+
 /// The max width of every non-editor screen. About the editor column at the
 /// default body size, so moving between the page and a screen does not change
 /// where the text lives.
@@ -61,6 +64,11 @@ pub struct Screen {
     accept: gtk::Button,
     accept_focused: Cell<bool>,
     action: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Three answers for a question that is not a plain confirmation (the
+    /// Files screen's conflict copies). Hidden for every other card.
+    choices: Vec<gtk::Button>,
+    choice_focus: Cell<usize>,
+    choice_action: RefCell<Option<ChoiceAction>>,
 }
 
 impl Screen {
@@ -114,6 +122,15 @@ impl Screen {
         actions.set_margin_top(8);
         actions.append(&cancel);
         actions.append(&accept);
+        let mut choices = Vec::new();
+        for _ in 0..3 {
+            let button = gtk::Button::new();
+            button.add_css_class("dialog-button");
+            button.set_size_request(104, -1);
+            button.set_visible(false);
+            actions.append(&button);
+            choices.push(button);
+        }
 
         let card = gtk::Box::new(gtk::Orientation::Vertical, 10);
         card.add_css_class("dialog-card");
@@ -154,6 +171,9 @@ impl Screen {
             accept,
             accept_focused: Cell::new(false),
             action: RefCell::new(None),
+            choices,
+            choice_focus: Cell::new(0),
+            choice_action: RefCell::new(None),
         });
         screen.install_dialog();
         screen.set_hints(&[]);
@@ -173,6 +193,14 @@ impl Screen {
                 screen.accept_dialog();
             }
         });
+        for (index, button) in self.choices.iter().enumerate() {
+            let weak = Rc::downgrade(self);
+            button.connect_clicked(move |_| {
+                if let Some(screen) = weak.upgrade() {
+                    screen.accept_choice(index);
+                }
+            });
+        }
     }
 
     pub fn focus_page(&self) {
@@ -242,14 +270,57 @@ impl Screen {
         accept: &str,
         action: impl Fn() + 'static,
     ) {
+        self.reset_choices();
         self.dialog_title.set_text(title);
         self.dialog_text.set_text(sentence);
         self.accept.set_label(accept);
         *self.action.borrow_mut() = Some(Rc::new(action));
         self.accept_focused.set(false);
+        self.cancel.set_visible(true);
+        self.accept.set_visible(true);
         self.scrim.set_visible(true);
         // Cancel is the safe button: Enter alone never destroys anything.
         self.cancel.grab_focus();
+    }
+
+    /// Show the same card with up to three answers instead of Cancel/accept.
+    /// Esc still leaves everything as it is. `focus` names the safest answer
+    /// (for a conflict copy, "Keep both"), and Left/Right/Tab move between
+    /// them. The Files screen uses this for sync conflict copies.
+    pub fn ask_choices(
+        self: &Rc<Self>,
+        title: &str,
+        sentence: &str,
+        labels: &[&str],
+        focus: usize,
+        action: impl Fn(usize) + 'static,
+    ) {
+        let count = labels.len().min(self.choices.len());
+        self.dialog_title.set_text(title);
+        self.dialog_text.set_text(sentence);
+        *self.action.borrow_mut() = None;
+        for (index, button) in self.choices.iter().enumerate() {
+            if index < count {
+                button.set_label(labels[index]);
+                button.set_visible(true);
+            } else {
+                button.set_visible(false);
+            }
+        }
+        *self.choice_action.borrow_mut() = Some(Rc::new(action));
+        self.choice_focus.set(focus.min(count.saturating_sub(1)));
+        self.cancel.set_visible(false);
+        self.accept.set_visible(false);
+        self.scrim.set_visible(true);
+        self.focus_choice(self.choice_focus.get());
+    }
+
+    fn reset_choices(&self) {
+        for button in &self.choices {
+            button.set_visible(false);
+        }
+        *self.choice_action.borrow_mut() = None;
+        self.choice_focus.set(0);
     }
 
     pub fn is_dialog_open(&self) -> bool {
@@ -259,6 +330,7 @@ impl Screen {
     fn close_dialog(self: &Rc<Self>) {
         self.scrim.set_visible(false);
         *self.action.borrow_mut() = None;
+        *self.choice_action.borrow_mut() = None;
         self.focus_page();
     }
 
@@ -267,6 +339,21 @@ impl Screen {
         self.close_dialog();
         if let Some(action) = action {
             action();
+        }
+    }
+
+    fn accept_choice(self: &Rc<Self>, index: usize) {
+        let action = self.choice_action.borrow_mut().take();
+        self.close_dialog();
+        if let Some(action) = action {
+            action(index);
+        }
+    }
+
+    fn focus_choice(&self, index: usize) {
+        self.choice_focus.set(index);
+        if let Some(button) = self.choices.get(index) {
+            button.grab_focus();
         }
     }
 
@@ -280,8 +367,8 @@ impl Screen {
         }
     }
 
-    /// Route a key to the open confirmation. Esc cancels, Enter activates the
-    /// focused button, Left/Right/Tab move between the two.
+    /// Route a key to the open card. Esc cancels, Enter activates the focused
+    /// button, Left/Right/Tab move between the buttons.
     pub fn dialog_key(
         self: &Rc<Self>,
         keyval: gdk::Key,
@@ -290,10 +377,17 @@ impl Screen {
         if !self.is_dialog_open() {
             return glib::Propagation::Proceed;
         }
+        let choice_count = self
+            .choices
+            .iter()
+            .filter(|button| button.is_visible())
+            .count();
         match keyval {
             gdk::Key::Escape => self.close_dialog(),
             gdk::Key::Return | gdk::Key::KP_Enter => {
-                if self.accept_focused.get() {
+                if choice_count > 0 {
+                    self.accept_choice(self.choice_focus.get());
+                } else if self.accept_focused.get() {
                     self.accept_dialog();
                 } else {
                     self.close_dialog();
@@ -303,7 +397,20 @@ impl Screen {
             | gdk::Key::Right
             | gdk::Key::Tab
             | gdk::Key::ISO_Left_Tab
-            | gdk::Key::KP_Tab => self.toggle_dialog_focus(),
+            | gdk::Key::KP_Tab => {
+                if choice_count > 0 {
+                    let backwards = matches!(keyval, gdk::Key::Left | gdk::Key::ISO_Left_Tab);
+                    let current = self.choice_focus.get().min(choice_count - 1);
+                    let next = if backwards {
+                        (current + choice_count - 1) % choice_count
+                    } else {
+                        (current + 1) % choice_count
+                    };
+                    self.focus_choice(next);
+                } else {
+                    self.toggle_dialog_focus();
+                }
+            }
             _ => {}
         }
         glib::Propagation::Stop

@@ -10,6 +10,7 @@ pub mod daemon;
 pub mod editor;
 pub mod export;
 pub mod files;
+pub mod files_conflict;
 pub mod first_run;
 pub mod focus;
 pub mod goal;

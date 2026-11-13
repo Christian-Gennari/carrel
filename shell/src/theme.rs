@@ -504,6 +504,17 @@ scrollbar {{
     color: {dim};
     font-size: {secondary}px;
 }}
+/* A conflict copy is a document with a small stamp, not an error: the ink and
+   the theme's hairline, never the accent (spec/03-ui.md keeps the accent for
+   the caret, the goal line and the selected row). */
+.conflict-tag {{
+    color: {text};
+    border: 1px solid {dim};
+    border-radius: 5px;
+    padding: 0 7px;
+    font-size: {hint}px;
+    font-weight: 600;
+}}
 /* A hint under the selected row sits on that row's tint, so it takes a
    little more ink to stay readable. */
 .file-row:selected .row-note,
