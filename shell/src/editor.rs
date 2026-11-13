@@ -1220,7 +1220,11 @@ impl EditorPage {
                 stats::format_number(u64::from(settings.daily_goal))
             ));
         }
-        parts.push(self.battery.label());
+        // A desktop or a virtual machine has no battery: say nothing rather
+        // than "No battery", which is only noise on a writing screen.
+        if self.battery.present() {
+            parts.push(self.battery.label());
+        }
         if settings.clock {
             if let Some(time) = local_time() {
                 parts.push(time);

@@ -288,10 +288,8 @@ impl QuotePalette {
         message.add_css_class("quote-message");
         message.set_visible(false);
 
-        let hint = crate::ui::hint_bar(&HINTS);
-        hint.add_css_class("card-hint-bar");
-        let message_hint = crate::ui::hint_bar(&[("Esc", "Close")]);
-        message_hint.add_css_class("card-hint-bar");
+        let hint = crate::ui::card_hint_bar(&HINTS);
+        let message_hint = crate::ui::card_hint_bar(&[("Esc", "Close")]);
         message_hint.set_visible(false);
 
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);

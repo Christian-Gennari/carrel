@@ -23,7 +23,13 @@ TTYVTDisallocate=no
 # switching disabled. `cage -s` would *allow* VT switching on cage 0.2, which
 # breaks rule 1, so it is deliberately not passed here. `-d` suppresses
 # client-side decorations so the single client owns the whole screen.
+# GPU or software drawing: session-env writes the environment before each
+# start, session-check falls back to software after a renderer failure. The
+# `+` runs both as root, because /run/carrel belongs to root.
+ExecStartPre=+/usr/lib/carrel/session-env
+EnvironmentFile=-/run/carrel/session.env
 ExecStart=/usr/bin/cage -d -- /usr/bin/carrel-shell
+ExecStopPost=+/usr/lib/carrel/session-check
 Restart=always
 RestartSec=1
 

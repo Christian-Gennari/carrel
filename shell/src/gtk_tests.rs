@@ -853,6 +853,11 @@ fn the_bottom_line_dims_while_typing_and_comes_back() {
     let line = shell.editor.bottom_line_text();
     assert!(line.contains("words"), "{line:?}");
     assert!(!line.contains('\n'), "the bottom line stays one line");
+    // The test shell has no battery (like a desktop or a VM): say nothing.
+    assert!(
+        !line.to_lowercase().contains("battery"),
+        "no battery word without a battery: {line:?}"
+    );
     pump(|| !shell.editor.chrome_dimmed());
     assert!(!shell.editor.chrome_dimmed(), "it comes back after a pause");
 }

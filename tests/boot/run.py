@@ -39,6 +39,7 @@ import sys
 import tempfile
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pefile
@@ -345,6 +346,21 @@ class QMP:
 # One QEMU process
 
 
+def next_noon_utc() -> str:
+    """QEMU's -rtc base for the next 12:00 UTC.
+
+    The default theme is Automatic: a night theme after dark. The screenshot
+    checks expect the day theme, so every VM wakes up at noon (the device's
+    default time zone is UTC). The next noon, not today's, so the clock is
+    never behind the release signatures made just before the test.
+    """
+    now = datetime.now(timezone.utc)
+    noon = now.replace(hour=12, minute=0, second=0, microsecond=0)
+    if noon <= now:
+        noon += timedelta(days=1)
+    return noon.strftime("%Y-%m-%dT%H:%M:%S")
+
+
 class Qemu:
     def __init__(self, name: str, out: Path, mode: str,
                  disks: list[dict], *, usb: dict | None = None,
@@ -378,6 +394,7 @@ class Qemu:
             "-smp", "2",
             "-display", "none",
             "-vga", "std",
+            "-rtc", f"base={next_noon_utc()}",
             "-boot", "order=c,menu=off",
             "-device", "virtio-rng-pci",
             "-serial", f"file:{self.serial}",
@@ -761,6 +778,18 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
     expect(" -s" not in exec_line, "session passes cage -s (VT switching)", failures)
     expect("Restart=always" in session, "session does not restart", failures)
     expect("User=writer" in session, "session does not run as writer", failures)
+    # Virtual GPUs (VirtualBox/VMware SVGA) refuse or crash cage's GL renderer;
+    # session-env and session-check switch the session to software drawing.
+    expect("ExecStartPre=+/usr/lib/carrel/session-env" in session,
+           "session does not choose its renderer before start", failures)
+    expect("EnvironmentFile=-/run/carrel/session.env" in session,
+           "session does not read the renderer choice", failures)
+    expect("ExecStopPost=+/usr/lib/carrel/session-check" in session,
+           "session does not fall back to software after a renderer failure", failures)
+    for helper in ("/usr/lib/carrel/session-env", "/usr/lib/carrel/session-check"):
+        path = root_file(helper)
+        expect(path.is_file() and path.stat().st_mode & 0o111 != 0,
+               f"{helper} is missing or not executable", failures)
 
     for unit in (
         "getty@.service", "serial-getty@.service", "console-getty.service",

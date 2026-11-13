@@ -628,6 +628,15 @@ pub fn hint_bar(hints: &[(&str, &str)]) -> gtk::Box {
     bar
 }
 
+/// The hint bar that ends a floating card (palette, Quotes, key sheet): the
+/// same keys, padded inside the card and with its rule across the full width.
+pub fn card_hint_bar(hints: &[(&str, &str)]) -> gtk::Box {
+    let bar = hint_bar(hints);
+    bar.add_css_class("card-hint-bar");
+    bar.set_halign(gtk::Align::Fill);
+    bar
+}
+
 pub fn line() -> gtk::Label {
     let label = gtk::Label::new(None);
     label.set_xalign(0.0);
