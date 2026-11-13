@@ -612,6 +612,7 @@ fn finish_baseline(measured: &[(&str, Vec<String>)]) {
     );
     table.push_str("A chord counts once. Every typed character counts once. ");
     table.push_str("A confirmation dialog counts the keys that reach its button.\n\n");
+    table.push_str("Regenerate with `dev/run.sh bash dev/ux-baseline.sh` (Xvfb, no GPU).\n\n");
     table.push_str("| Task | Keys pressed | Key sequence |\n");
     table.push_str("|---|---:|---|\n");
 

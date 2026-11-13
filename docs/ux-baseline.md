@@ -4,6 +4,8 @@ Measured by `shell/src/gtk_tests.rs` through the real pages and the window's key
 
 A chord counts once. Every typed character counts once. A confirmation dialog counts the keys that reach its button.
 
+Regenerate with `dev/run.sh bash dev/ux-baseline.sh` (Xvfb, no GPU).
+
 | Task | Keys pressed | Key sequence |
 |---|---:|---|
 | Open an existing file by name | 4 | Ctrl+O Down Down Enter |
