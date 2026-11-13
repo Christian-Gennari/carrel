@@ -384,6 +384,36 @@ pub fn is_document_name(name: &str) -> bool {
     lower.ends_with(".md") || lower.ends_with(".markdown") || lower.ends_with(".txt")
 }
 
+/// The name a screen shows for a document. The document extension is not part
+/// of the title: "The quiet morning", not "The quiet morning.md". Folders and
+/// other names are unchanged.
+pub fn display_name(name: &str) -> String {
+    if !is_document_name(name) {
+        return name.to_owned();
+    }
+    let lower = name.to_ascii_lowercase();
+    for extension in [".markdown", ".md", ".txt"] {
+        if lower.ends_with(extension) {
+            return name[..name.len() - extension.len()].to_owned();
+        }
+    }
+    name.to_owned()
+}
+
+/// A relative path with its final document name shown without extension.
+pub fn display_path(path: &Path) -> String {
+    let name = path
+        .file_name()
+        .map(|name| display_name(&name.to_string_lossy()))
+        .unwrap_or_default();
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => {
+            format!("{}/{}", parent.display(), name)
+        }
+        _ => name,
+    }
+}
+
 /// Recursively list document paths under `dir`, with paths relative to the
 /// writing root. Hidden entries (including `.carrel`) are skipped.
 fn collect_files(dir: &Path, rel: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {
@@ -566,5 +596,18 @@ mod tests {
                 .unwrap(),
             PathBuf::from("Untitled 2.md")
         );
+    }
+
+    #[test]
+    fn display_names_hide_the_document_extension() {
+        assert_eq!(display_name("The quiet morning.md"), "The quiet morning");
+        assert_eq!(display_name("Notes.markdown"), "Notes");
+        assert_eq!(display_name("Imported.txt"), "Imported");
+        assert_eq!(display_name("Novel"), "Novel");
+        assert_eq!(
+            display_path(Path::new("Novel/Chapter one.md")),
+            "Novel/Chapter one"
+        );
+        assert_eq!(display_path(Path::new("Notes.md")), "Notes");
     }
 }

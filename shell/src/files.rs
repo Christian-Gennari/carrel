@@ -10,7 +10,7 @@ use gtk::prelude::*;
 use gtk::{gdk, glib, pango};
 
 use crate::editor::EditorPage;
-use crate::store::{is_document_name, Entry, Store};
+use crate::store::{display_name, is_document_name, Entry, Store};
 use crate::ui;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,7 +49,7 @@ impl FilesPage {
 
         let list = ui::list();
         let list_scroller = ui::scroller(&list);
-        screen.content.append(&list_scroller);
+        screen.content.append(&ui::fade_top(&list_scroller));
 
         let page = Rc::new(Self {
             widget: screen.root.clone(),
@@ -342,7 +342,7 @@ impl FilesPage {
         let name = gtk::Label::new(Some(&if entry.is_dir {
             format!("{}/", entry.name)
         } else {
-            entry.name.clone()
+            display_name(&entry.name)
         }));
         name.set_xalign(0.0);
         name.set_hexpand(true);
@@ -527,14 +527,14 @@ impl FilesPage {
             return;
         };
         let sentence = if entry.is_dir {
-            "The folder and its files move to Carrel trash inside .carrel, so nothing is lost."
+            "The folder and its files move to the device's trash, so nothing is erased."
         } else {
-            "The file moves to Carrel trash inside .carrel, so nothing is lost."
+            "It moves to the device's trash, so nothing is erased."
         };
         let weak = Rc::downgrade(self);
         let rel = entry.rel.clone();
         self.screen.ask(
-            &format!("Delete “{}”?", entry.name),
+            &format!("Delete “{}”?", display_name(&entry.name)),
             sentence,
             "Delete",
             move || {
@@ -591,11 +591,7 @@ fn editable_name(entry: &Entry) -> String {
     if entry.is_dir {
         return entry.name.clone();
     }
-    Path::new(&entry.name)
-        .file_stem()
-        .map(|stem| stem.to_string_lossy().to_string())
-        .filter(|stem| !stem.is_empty())
-        .unwrap_or_else(|| entry.name.clone())
+    display_name(&entry.name)
 }
 
 /// Where an open document moves to when its file or parent folder is renamed.

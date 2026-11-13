@@ -3,6 +3,7 @@
 //! old text is applied as a new edit and committed afterwards.
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -11,6 +12,7 @@ use gtk::{gdk, glib};
 use crate::daemon::{Client, HistoryEntry};
 use crate::editor::EditorPage;
 use crate::nav::Navigator;
+use crate::store::display_path;
 use crate::ui;
 
 const HINTS: [(&str, &str); 3] = [("Enter", "Restore"), ("↑ ↓", "Versions"), ("Esc", "Back")];
@@ -179,7 +181,7 @@ impl HistoryPage {
 
         let columns = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         columns.set_vexpand(true);
-        columns.append(&list_scroller);
+        columns.append(&ui::fade_top(&list_scroller));
         columns.append(&preview_scroller);
         screen.content.append(&columns);
 
@@ -240,7 +242,7 @@ impl HistoryPage {
             return;
         }
         let path = path.to_string_lossy().to_string();
-        self.screen.set_status(&path);
+        self.screen.set_status(&display_path(Path::new(&path)));
         self.state.borrow_mut().path = path.clone();
         self.state.borrow_mut().notice.clear();
         self.state.borrow_mut().error = None;
@@ -486,10 +488,8 @@ impl HistoryPage {
         let when = ui::format_moment(entry.time);
         let weak = Rc::downgrade(self);
         self.screen.ask(
-            "Restore this version?",
-            &format!(
-                "The text from {when} replaces the current file, and the current text stays in history."
-            ),
+            &format!("Restore the version from {when}?"),
+            "Your current text is kept in History.",
             "Restore",
             move || {
                 if let Some(page) = weak.upgrade() {
