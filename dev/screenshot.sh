@@ -1,22 +1,39 @@
 #!/usr/bin/env bash
-# Headless screenshots of every screen for the WP5 gate.
+# Headless screenshots of every screen and state for the UI polish rounds.
 #
 # Runs inside the dev container after `cargo build --release -p carrel-shell`:
 #   dev/run.sh bash dev/screenshot.sh
 #
+# The whole set runs at the two review sizes, into out/shots/<size>/, and
+# out/shots/index.html is a contact sheet grouped by screen.
+#
+#   CARREL_SHOT_SIZES="1366x768 1920x1080"   the sizes to shoot (default)
+#   CARREL_SHOT_SIZE=1440x900                one size instead (optional)
+#   CARREL_SHOT_THEME_A / CARREL_SHOT_THEME_B   theme ids (default paper/night)
+#
+# Theme ids are deliberately just parameters: the theme round can rename them
+# without touching a shot. Use lowercase slugs, because they become file names.
+#
 # Xvfb is already part of dev/Dockerfile; no GPU, compositor or display is
 # needed. The shell runs with CARREL_FAKE_DAEMON=1, so every screen has
-# deterministic data and the daemon is never required.
+# deterministic data and the daemon is never required. A state that only the
+# keyboard reaches is named as CARREL_SHOT_KEYS ("Down,Down,Return").
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-out="$PWD/out"
-root="$out/screenshot-data"
-if [ ! -x target/release/carrel-shell ]; then
-    cargo build --release -p carrel-shell
+theme_a=${CARREL_SHOT_THEME_A:-paper}
+theme_b=${CARREL_SHOT_THEME_B:-night}
+if [ -n "${CARREL_SHOT_SIZE:-}" ]; then
+    sizes=${CARREL_SHOT_SIZES:-$CARREL_SHOT_SIZE}
+else
+    sizes=${CARREL_SHOT_SIZES:-"1366x768 1920x1080"}
 fi
-rm -rf "$root"
-mkdir -p "$root/.carrel" "$root/Novel"
+
+out="$PWD/out"
+shots="$out/shots"
+root="$out/screenshot-data"
+rm -rf "$shots" "$root"
+mkdir -p "$shots/logs" "$root/.carrel" "$root/Novel"
 
 cat > "$root/The quiet morning.md" <<'EOF'
 # The quiet morning
@@ -91,20 +108,38 @@ export GTK_A11Y=none
 export GSK_RENDERER=cairo
 export GDK_BACKEND=x11
 
-Xvfb :99 -screen 0 1280x800x24 -nolisten tcp >"$out/xvfb.log" 2>&1 &
-xvfb_pid=$!
+display=:99
+xvfb_pid=
+app_pid=
+size=
 cleanup() {
     if [ -n "${app_pid:-}" ]; then
         kill "$app_pid" 2>/dev/null || true
         wait "$app_pid" 2>/dev/null || true
     fi
-    kill "$xvfb_pid" 2>/dev/null || true
-    wait "$xvfb_pid" 2>/dev/null || true
+    if [ -n "${xvfb_pid:-}" ]; then
+        kill "$xvfb_pid" 2>/dev/null || true
+        wait "$xvfb_pid" 2>/dev/null || true
+    fi
 }
 trap cleanup EXIT
-sleep 1
+
+start_display() {
+    Xvfb "$display" -screen 0 "${size}x24" -nolisten tcp \
+        >"$shots/logs/xvfb-$size.log" 2>&1 &
+    xvfb_pid=$!
+    sleep 1
+}
+
+stop_display() {
+    kill "$xvfb_pid" 2>/dev/null || true
+    wait "$xvfb_pid" 2>/dev/null || true
+    xvfb_pid=
+}
 
 # shoot <name> <theme> <first-run true|false> <bottom-line true|false> <start> <battery> [extra env...]
+# CARREL_SHOT_KEYS, CARREL_SHOT_FOCUS and CARREL_SHOT_GOAL come from the
+# caller's environment, like the extra assignments below.
 shoot() {
     name=$1
     theme=$2
@@ -116,77 +151,202 @@ shoot() {
     write_settings "$theme" "$first_run" "$bottom_line"
     cp "$out/essay.orig" "$root/The quiet morning.md"
     rm -rf "$root/.carrel/journal"
-    env CARREL_WRITING_DIR="$root" DISPLAY=:99 \
+    rm -f "$root"/Untitled*.md "$root"/Chapter\ two.md
+    env CARREL_WRITING_DIR="$root" DISPLAY="$display" \
         CARREL_FAKE_DAEMON=1 CARREL_START_SCREEN="$start" CARREL_BATTERY="$battery" \
-        "$@" ./target/release/carrel-shell >"$out/app-$name.log" 2>&1 &
+        CARREL_WINDOW_SIZE="$size" \
+        "$@" ./target/release/carrel-shell \
+        >"$shots/logs/app-$size-$name.log" 2>&1 &
     app_pid=$!
     sleep 2.5
     if ! kill -0 "$app_pid" 2>/dev/null; then
-        echo "carrel-shell exited before $name; see out/app-$name.log" >&2
-        cat "$out/app-$name.log" >&2
+        echo "carrel-shell exited before $name at $size; see out/shots/logs/app-$size-$name.log" >&2
+        cat "$shots/logs/app-$size-$name.log" >&2
         exit 1
     fi
-    DISPLAY=:99 import -window root "$out/$name.png"
+    DISPLAY="$display" import -window root "$shots/$size/$name.png"
     kill "$app_pid" 2>/dev/null || true
     wait "$app_pid" 2>/dev/null || true
     app_pid=
 }
 
-# The editor, both themes, then focus mode and the hairline goal line.
-shoot editor-paper paper true true editor "" 
-shoot editor-night night true true editor ""
-CARREL_SHOT_FOCUS=true shoot editor-paper-focus paper true true editor ""
-CARREL_SHOT_GOAL=hairline shoot editor-night-hairline night true true editor ""
+shoot_all() {
+    echo "--- $size ---"
+    mkdir -p "$shots/$size"
 
-# History with a preview.
-shoot history-paper paper true true history ""
+    # The editor: both themes, the bottom line toggled with F1, focus mode,
+    # the hairline goal, and an empty new file (Ctrl+N).
+    shoot editor-$theme_a "$theme_a" true true editor ""
+    shoot editor-$theme_b "$theme_b" true true editor ""
+    CARREL_SHOT_KEYS="F1" shoot editor-$theme_a-bottom-off "$theme_a" true true editor ""
+    CARREL_SHOT_FOCUS=true shoot editor-$theme_a-focus "$theme_a" true true editor ""
+    CARREL_SHOT_GOAL=hairline shoot editor-$theme_a-hairline "$theme_a" true true editor ""
+    CARREL_SHOT_GOAL=hairline shoot editor-$theme_b-hairline "$theme_b" true true editor ""
+    CARREL_SHOT_KEYS="ctrl+n" shoot editor-$theme_a-empty "$theme_a" true true editor ""
 
-# Quotes palette: typing `@` in the editor opens it at the caret. The shell
-# types the text itself (CARREL_SHOT_QUOTE_TEXT), in both themes, then the two
-# empty states.
-q=$'\n\nNothing in the library says it better: @attention'
-shoot quotes-paper paper true true editor "" CARREL_SHOT_QUOTE_TEXT="$q"
-shoot quotes-night night true true editor "" CARREL_SHOT_QUOTE_TEXT="$q"
-shoot quotes-bare-paper paper true true editor "" CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
-shoot quotes-empty-paper paper true true editor "" CARREL_FAKE_LIBRARY=empty CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
-shoot quotes-unavailable-paper paper true true editor "" CARREL_FAKE_LIBRARY=unavailable CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
-shoot quotes-nomatch-paper paper true true editor "" CARREL_SHOT_QUOTE_TEXT=$'\n\n@zzzqx'
+    # Files: the list, the rename bar (F2) and the delete confirmation (Del).
+    shoot files-list-$theme_a "$theme_a" true true files ""
+    CARREL_SHOT_KEYS="Down,Down,F2" shoot files-rename-$theme_a "$theme_a" true true files ""
+    CARREL_SHOT_KEYS="Down,Down,Delete" shoot files-delete-$theme_a "$theme_a" true true files ""
 
-# Sync: the overview, then each pairing flow.
-shoot sync-paper paper true true sync ""
-shoot sync-pair-nostos-paper paper true true pair-nostos ""
-shoot sync-pair-selfhosted-paper paper true true pair-selfhosted ""
-shoot sync-pair-selfhosted-code-paper paper true true pair-selfhosted-code ""
-shoot sync-pair-gdrive-paper paper true true pair-gdrive ""
+    # History: the list with its preview, another version previewed, and the
+    # restore confirmation.
+    shoot history-list-$theme_a "$theme_a" true true history ""
+    CARREL_SHOT_KEYS="Down" shoot history-preview-$theme_a "$theme_a" true true history ""
+    CARREL_SHOT_KEYS="Return" shoot history-restore-$theme_a "$theme_a" true true history ""
 
-# Settings, Paper and Night.
-shoot settings-paper paper true true settings ""
-shoot settings-night night true true settings ""
-# The last rows (Update, About) must scroll into view at 800 px.
-shoot settings-last-paper paper true true settings "" CARREL_SETTINGS_SELECT=99
-shoot settings-last-night night true true settings "" CARREL_SETTINGS_SELECT=99
+    # Quotes palette: typing `@` in the editor opens it at the caret. The shell
+    # types the text itself (CARREL_SHOT_QUOTE_TEXT), in both themes, then the
+    # empty states.
+    q=$'\n\nNothing in the library says it better: @attention'
+    shoot quotes-$theme_a "$theme_a" true true editor "" CARREL_SHOT_QUOTE_TEXT="$q"
+    shoot quotes-$theme_b "$theme_b" true true editor "" CARREL_SHOT_QUOTE_TEXT="$q"
+    shoot quotes-bare-$theme_a "$theme_a" true true editor "" CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
+    shoot quotes-empty-$theme_a "$theme_a" true true editor "" CARREL_FAKE_LIBRARY=empty CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
+    shoot quotes-unavailable-$theme_a "$theme_a" true true editor "" CARREL_FAKE_LIBRARY=unavailable CARREL_SHOT_QUOTE_TEXT=$'\n\n@'
+    shoot quotes-nomatch-$theme_a "$theme_a" true true editor "" CARREL_SHOT_QUOTE_TEXT=$'\n\n@zzzqx'
 
-# Wi-Fi scan list.
-shoot wifi-paper paper true true wifi ""
+    # Sync: unpaired, paired idle, syncing, error, then each pairing flow.
+    shoot sync-unpaired-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=unpaired
+    shoot sync-idle-$theme_a "$theme_a" true true sync ""
+    shoot sync-syncing-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=syncing
+    shoot sync-error-$theme_a "$theme_a" true true sync "" CARREL_FAKE_SYNC=error
+    shoot sync-pair-nostos-$theme_a "$theme_a" true true pair-nostos ""
+    shoot sync-pair-selfhosted-$theme_a "$theme_a" true true pair-selfhosted ""
+    shoot sync-pair-selfhosted-code-$theme_a "$theme_a" true true pair-selfhosted-code ""
+    shoot sync-pair-gdrive-$theme_a "$theme_a" true true pair-gdrive ""
 
-# Export: with a drive, and with none.
-shoot export-paper paper true true export ""
-shoot export-drive-paper paper true true export-drive ""
-shoot export-empty-paper paper true true export-drive "" CARREL_FAKE_NO_DRIVE=1
+    # Wi-Fi: the scan list, the password bar (Down on a locked network, Enter)
+    # and the captive-portal error (Down, Down on Hotel Guest, Enter).
+    shoot wifi-scan-$theme_a "$theme_a" true true wifi ""
+    CARREL_SHOT_KEYS="Down,Return" shoot wifi-password-$theme_a "$theme_a" true true wifi ""
+    CARREL_SHOT_KEYS="Down,Down,Return" shoot wifi-error-$theme_a "$theme_a" true true wifi ""
 
-# First run.
-shoot first-run-paper paper false true first-run ""
-shoot first-run-night night false true first-run ""
+    # Export: each step, the export in progress, the finished .docx, no drive,
+    # and the import result.
+    shoot export-what-$theme_a "$theme_a" true true export ""
+    CARREL_SHOT_KEYS="Down,Return" shoot export-folder-$theme_a "$theme_a" true true export ""
+    CARREL_SHOT_KEYS="Return" shoot export-format-$theme_a "$theme_a" true true export ""
+    CARREL_SHOT_KEYS="Return,Return" shoot export-drive-$theme_a "$theme_a" true true export ""
+    CARREL_SHOT_KEYS="Return,Return,Return" shoot export-running-$theme_a "$theme_a" true true export "" CARREL_FAKE_SLOW_EXPORT=1
+    CARREL_SHOT_KEYS="Return,Down,Down,Return,Return" shoot export-docx-done-$theme_a "$theme_a" true true export ""
+    shoot export-no-drive-$theme_a "$theme_a" true true export-drive "" CARREL_FAKE_NO_DRIVE=1
+    CARREL_SHOT_KEYS="Down,Down,Down,Return,Return" shoot import-$theme_a "$theme_a" true true export ""
 
-# Battery: the bottom line charging, and the 5 s note with the line hidden.
-shoot battery-paper paper true true editor "18,charging"
-shoot battery-low-paper paper true false editor "10"
+    # Settings: the top, the middle rows, the update row and the last row.
+    shoot settings-top-$theme_a "$theme_a" true true settings ""
+    shoot settings-top-$theme_b "$theme_b" true true settings ""
+    CARREL_SETTINGS_SELECT=8 shoot settings-middle-$theme_a "$theme_a" true true settings ""
+    CARREL_SETTINGS_SELECT=15 shoot update-ready-$theme_a "$theme_a" true true settings ""
+    CARREL_SETTINGS_SELECT=99 shoot settings-last-$theme_a "$theme_a" true true settings ""
+
+    # First run: every step.
+    shoot first-run-$theme_a-language "$theme_a" false true first-run ""
+    CARREL_SHOT_KEYS="Return" shoot first-run-$theme_a-keyboard "$theme_a" false true first-run ""
+    CARREL_SHOT_KEYS="Return,Return" shoot first-run-$theme_a-timezone "$theme_a" false true first-run ""
+    CARREL_SHOT_KEYS="Return,Return,Return" shoot first-run-$theme_a-sync "$theme_a" false true first-run ""
+    shoot first-run-$theme_b-language "$theme_b" false true first-run ""
+
+    # Battery: charging on the bottom line, low on the line, low and critical
+    # with the line hidden (the note shows for 5 s at 10 % and 5 %).
+    shoot battery-charging-$theme_a "$theme_a" true true editor "18,charging"
+    shoot battery-low-line-$theme_a "$theme_a" true true editor "10"
+    shoot battery-low-hidden-$theme_a "$theme_a" true false editor "10"
+    shoot battery-critical-$theme_a "$theme_a" true false editor "5"
+}
+
+for size in $sizes; do
+    case "$size" in
+        [0-9]*x[0-9]*) ;;
+        *) echo "bad screen size: $size" >&2; exit 2 ;;
+    esac
+    start_display
+    shoot_all
+    stop_display
+done
+
+# Contact sheet: one section per screen, images from every size, file names as
+# captions. Relative paths keep it usable from the worktree.
+python3 - "$shots" <<'PY'
+import html, pathlib, sys
+
+shots = pathlib.Path(sys.argv[1])
+screens = [
+    "editor", "files", "history", "quotes", "sync", "wifi",
+    "export", "import", "settings", "first-run", "battery", "update",
+]
+preferred = ["1366x768", "1920x1080"]
+sizes = [name for name in preferred if (shots / name).is_dir()]
+sizes += sorted(
+    path.name for path in shots.iterdir()
+    if path.is_dir() and path.name != "logs" and path.name not in preferred
+)
+names = sorted({path.stem for size in sizes for path in (shots / size).glob("*.png")})
+
+def screen_of(name):
+    for screen in screens:
+        if name == screen or name.startswith(screen + "-"):
+            return screen
+    return "other"
+
+groups = {}
+for name in names:
+    groups.setdefault(screen_of(name), []).append(name)
+
+titles = {
+    "first-run": "First run", "wifi": "Wi-Fi", "update": "Update",
+}
+page = []
+page.append("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">")
+page.append("<title>Carrel screenshots</title>")
+page.append(
+    "<style>"
+    "body{background:#f6f4ee;color:#262523;font-family:system-ui,sans-serif;"
+    "margin:28px;line-height:1.4}"
+    "h1{font-weight:500;margin:0 0 4px}p.note{color:#6b6862;margin:0 0 18px}"
+    "h2{font-weight:500;margin:38px 0 10px;border-top:1px solid #d8d2c6;"
+    "padding-top:14px}"
+    ".shots{display:grid;grid-template-columns:repeat(auto-fill,minmax(430px,1fr));"
+    "gap:16px}"
+    "figure{margin:0}img{width:100%;height:auto;border:1px solid #d8d2c6;"
+    "display:block}"
+    "figcaption{font:12px ui-monospace,monospace;color:#6b6862;margin-top:4px}"
+    "</style></head><body>"
+)
+page.append("<h1>Carrel screenshots</h1>")
+page.append(
+    f"<p class=\"note\">{len(names)} states at {', '.join(sizes)}. "
+    "Generated by dev/screenshot.sh; every image is a full screen capture.</p>"
+)
+for screen in screens + ["other"]:
+    entries = groups.get(screen)
+    if not entries:
+        continue
+    page.append(f"<h2>{html.escape(titles.get(screen, screen.capitalize()))}</h2>")
+    page.append("<div class=\"shots\">")
+    for name in entries:
+        for size in sizes:
+            if not (shots / size / f"{name}.png").is_file():
+                continue
+            caption = html.escape(f"{size} · {name}.png")
+            page.append(
+                f"<figure><img src=\"{size}/{name}.png\" alt=\"{html.escape(name)}\" "
+                f"loading=\"lazy\"><figcaption>{caption}</figcaption></figure>"
+            )
+    page.append("</div>")
+page.append("</body></html>")
+(shots / "index.html").write_text("\n".join(page) + "\n", encoding="utf-8")
+print(f"contact sheet: {shots / 'index.html'} ({len(names)} states)")
+PY
 
 echo "wrote:"
-ls -1 "$out"/*.png
+for size in $sizes; do
+    echo "  out/shots/$size ($(find "$shots/$size" -name '*.png' | wc -l) images)"
+done
+echo "  out/shots/index.html"
 
 echo "--- app logs (empty is good) ---"
-for log in "$out"/app-*.log; do
+for log in "$shots"/logs/app-*.log; do
     [ -s "$log" ] && { echo "$log:"; cat "$log"; }
 done
 true
