@@ -21,8 +21,9 @@ does not ship.
 6. **Silence.** No pop-ups, toasts, badges, sounds or update prompts. The only
    modal dialogs are for destructive actions (erase disk, delete file, restore
    an old version over the current one).
-7. **One way to do each thing.** One editor, two themes, three fonts. No
-   plugins. No alternative editors.
+7. **One way to do each thing.** One editor, a small curated set of themes (the
+   Nostos themes plus High contrast), three fonts. No plugins. No alternative
+   editors.
 8. **Recovery is one key.** A failed update boots the previous system. A key at
    boot opens a recovery menu. A writer never needs a shell.
 9. **No AI writes for the user.** The device never generates text.

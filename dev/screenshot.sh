@@ -9,10 +9,11 @@
 #
 #   CARREL_SHOT_SIZES="1366x768 1920x1080"   the sizes to shoot (default)
 #   CARREL_SHOT_SIZE=1440x900                one size instead (optional)
-#   CARREL_SHOT_THEME_A / CARREL_SHOT_THEME_B   theme ids (default paper/night)
+#   CARREL_SHOT_THEME_A / CARREL_SHOT_THEME_B   theme ids (default light/study)
 #
-# Theme ids are deliberately just parameters: the theme round can rename them
-# without touching a shot. Use lowercase slugs, because they become file names.
+# Theme ids are deliberately just parameters: the theme round renames them
+# without touching a shot. Use lowercase slugs, because they become file names;
+# the editor and Settings are shot in all six themes in `shoot_all`.
 #
 # Xvfb is already part of dev/Dockerfile; no GPU, compositor or display is
 # needed. The shell runs with CARREL_FAKE_DAEMON=1, so every screen has
@@ -21,8 +22,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-theme_a=${CARREL_SHOT_THEME_A:-paper}
-theme_b=${CARREL_SHOT_THEME_B:-night}
+theme_a=${CARREL_SHOT_THEME_A:-light}
+theme_b=${CARREL_SHOT_THEME_B:-study}
 if [ -n "${CARREL_SHOT_SIZE:-}" ]; then
     sizes=${CARREL_SHOT_SIZES:-$CARREL_SHOT_SIZE}
 else
@@ -79,6 +80,8 @@ import json, sys
 root, theme, first_run, bottom_line, focus, goal = sys.argv[1:7]
 settings = {
     "theme": theme,
+    "day_theme": "light",
+    "night_theme": "dark",
     "font": "serif",
     "font_size": 19,
     "daily_goal": 500,
@@ -174,10 +177,11 @@ shoot_all() {
     echo "--- $size ---"
     mkdir -p "$shots/$size"
 
-    # The editor: both themes, the bottom line toggled with F1, focus mode,
-    # the hairline goal, and an empty new file (Ctrl+N).
-    shoot editor-$theme_a "$theme_a" true true editor ""
-    shoot editor-$theme_b "$theme_b" true true editor ""
+    # The editor in every theme, then the bottom line toggled with F1, focus
+    # mode, the hairline goal and an empty new file (Ctrl+N).
+    for slug in light sepia mist study dark high-contrast; do
+        shoot editor-$slug "$slug" true true editor ""
+    done
     CARREL_SHOT_KEYS="F1" shoot editor-$theme_a-bottom-off "$theme_a" true true editor ""
     CARREL_SHOT_FOCUS=true shoot editor-$theme_a-focus "$theme_a" true true editor ""
     CARREL_SHOT_GOAL=hairline shoot editor-$theme_a-hairline "$theme_a" true true editor ""
@@ -233,9 +237,12 @@ shoot_all() {
     shoot export-no-drive-$theme_a "$theme_a" true true export-drive "" CARREL_FAKE_NO_DRIVE=1
     CARREL_SHOT_KEYS="Down,Down,Down,Return,Return" shoot import-$theme_a "$theme_a" true true export ""
 
-    # Settings: the top, the middle rows, the update row and the last row.
-    shoot settings-top-$theme_a "$theme_a" true true settings ""
-    shoot settings-top-$theme_b "$theme_b" true true settings ""
+    # Settings: every theme, then Automatic with its day and night pickers, the
+    # middle rows, the update row and the last row.
+    for slug in light sepia mist study dark high-contrast; do
+        shoot settings-$slug "$slug" true true settings ""
+    done
+    shoot settings-automatic automatic true true settings ""
     CARREL_SETTINGS_SELECT=8 shoot settings-middle-$theme_a "$theme_a" true true settings ""
     CARREL_SETTINGS_SELECT=15 shoot update-ready-$theme_a "$theme_a" true true settings ""
     CARREL_SETTINGS_SELECT=99 shoot settings-last-$theme_a "$theme_a" true true settings ""
