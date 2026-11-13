@@ -18,6 +18,7 @@ use crate::export::ExportPage;
 use crate::files::FilesPage;
 use crate::first_run::FirstRunPage;
 use crate::history::HistoryPage;
+use crate::keys::Keys;
 use crate::nav::Navigator;
 use crate::quotes::QuotePalette;
 use crate::settings::{Settings, Theme};
@@ -62,6 +63,18 @@ pub fn run(application: &gtk::Application) {
         .default_height(800)
         .decorated(false)
         .build();
+    // Xvfb has no window manager to size a kiosk window; the screenshot
+    // script names the screen it wants. Unset on the device, where the
+    // compositor gives the one client the whole screen.
+    if let Ok(value) = std::env::var("CARREL_WINDOW_SIZE") {
+        if let Some((width, height)) = value.split_once('x') {
+            if let (Ok(width), Ok(height)) =
+                (width.trim().parse::<i32>(), height.trim().parse::<i32>())
+            {
+                window.set_default_size(width, height);
+            }
+        }
+    }
 
     let stack = gtk::Stack::builder()
         .transition_type(gtk::StackTransitionType::Crossfade)
@@ -181,66 +194,24 @@ pub fn run(application: &gtk::Application) {
     // Key events go to the focused widget, and the focused widget can change
     // (or disappear) when a screen does. A window-level capture controller
     // dispatches to the visible page, so keys never depend on focus luck.
+    let keys = Keys::new(
+        stack.clone(),
+        Rc::clone(&nav),
+        Rc::clone(&editor),
+        Rc::clone(&files),
+        Rc::clone(&history),
+        Rc::clone(&quotes),
+        Rc::clone(&sync),
+        Rc::clone(&settings_page),
+        Rc::clone(&wifi),
+        Rc::clone(&export),
+        Rc::clone(&first_run),
+    );
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
     {
-        let nav = Rc::clone(&nav);
-        let editor = Rc::clone(&editor);
-        let files = Rc::clone(&files);
-        let history = Rc::clone(&history);
-        let quotes = Rc::clone(&quotes);
-        let sync = Rc::clone(&sync);
-        let settings_page = Rc::clone(&settings_page);
-        let wifi = Rc::clone(&wifi);
-        let export = Rc::clone(&export);
-        let first_run = Rc::clone(&first_run);
-        let stack = stack.clone();
-        key.connect_key_pressed(move |_, keyval, _, state| {
-            let visible = stack
-                .visible_child_name()
-                .map(|name| name.to_string())
-                .unwrap_or_default();
-            let control = state.contains(gdk::ModifierType::CONTROL_MASK);
-            let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
-            let key = keyval.to_lower();
-
-            // The global keys from spec/03-ui.md. First run is a closed flow:
-            // only its own keys apply until the editor is reached.
-            if control && visible != "first_run" {
-                if key == gdk::Key::h {
-                    nav.show("history");
-                    return glib::Propagation::Stop;
-                }
-                if key == gdk::Key::s && shift {
-                    sync.sync_now();
-                    return glib::Propagation::Stop;
-                }
-                if key == gdk::Key::e {
-                    nav.show("export");
-                    return glib::Propagation::Stop;
-                }
-                if key == gdk::Key::comma {
-                    nav.show("settings");
-                    return glib::Propagation::Stop;
-                }
-            }
-
-            match visible.as_str() {
-                "files" => files.handle_key(keyval, state),
-                "history" => history.handle_key(keyval, state),
-                "sync" => sync.handle_key(keyval, state),
-                "settings" => settings_page.handle_key(keyval, state),
-                "wifi" => wifi.handle_key(keyval, state),
-                "export" => export.handle_key(keyval, state),
-                "first_run" => first_run.handle_key(keyval, state),
-                // The Quotes palette (Ctrl+' and the `@` trigger) lives in the
-                // editor, so it sees the editor's keys first.
-                _ => match quotes.handle_key(keyval, state) {
-                    glib::Propagation::Stop => glib::Propagation::Stop,
-                    glib::Propagation::Proceed => editor.handle_key(keyval, state),
-                },
-            }
-        });
+        let keys = Rc::clone(&keys);
+        key.connect_key_pressed(move |_, keyval, _, state| keys.handle(keyval, state));
     }
     window.add_controller(key);
 
@@ -292,6 +263,20 @@ pub fn run(application: &gtk::Application) {
         glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
             quotes.type_at_end(&text);
         });
+    }
+
+    // A state that only the keyboard reaches (a rename bar, a password field,
+    // a confirmation) is named as a short key script and dispatched through
+    // the same window dispatcher the writer uses.
+    if let Ok(script) = std::env::var("CARREL_SHOT_KEYS") {
+        let mut delay = 400u64;
+        for (keyval, state) in crate::keys::parse_script(&script) {
+            let keys = Rc::clone(&keys);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(delay), move || {
+                keys.handle(keyval, state);
+            });
+            delay += 160;
+        }
     }
 }
 
