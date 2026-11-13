@@ -809,10 +809,10 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         expect(result.returncode == 0, "root-b is not a valid erofs image", failures)
 
     for name in (
-        "payload/carrel-root-0.2.0.raw",
-        "payload/carrel-verity-0.2.0.raw",
-        "payload/carrel-verity-sig-0.2.0.sig",
-        "payload/carrel-b-0.2.0.conf",
+        "payload/carrel-root-0.3.0.raw",
+        "payload/carrel-verity-0.3.0.raw",
+        "payload/carrel-verity-sig-0.3.0.sig",
+        "payload/carrel-b-0.3.0.conf",
         "README",
     ):
         expect((update_dir / name).exists(), f"missing update fixture {name}", failures)
@@ -1188,13 +1188,13 @@ def scenario_online_update(disk: Path, release_dir: Path, out: Path,
                 qemu.powerdown()
 
     version = root_version(disk, "b", out)
-    if version != "0.2.0":
+    if version != "0.3.0":
         raise BootError(f"online update booted slot B but its version is {version!r}")
     parts = read_gpt(disk)
     label = part_by_uuid(parts, ROOT_B_UUID)["name"]
-    if "0.2.0" not in label:
+    if "0.3.0" not in label:
         raise BootError(f"online update did not relabel slot B: {label}")
-    print("online: PASS (bad signature rejected, good update booted 0.2.0)", flush=True)
+    print("online: PASS (bad signature rejected, good update booted 0.3.0)", flush=True)
 
 
 def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,

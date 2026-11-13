@@ -33,7 +33,7 @@ systemd-repart creates the table from `mkosi.repart/`:
 | data | ≥ 2 GiB | ext4 | grows to fill the disk |
 
 The two root slots are labelled `carrel-root-<version>`
-(`carrel-root-0.1.0` and `carrel-root-0` in a fresh image). The version in the
+(`carrel-root-0.2.0` and `carrel-root-0` in a fresh image). The version in the
 label is what systemd-sysupdate compares; both slots deliberately share the
 same label prefix so sysupdate can pick the older one. The data and hash
 partition UUIDs are fixed (`1111…`/`2222…` for roots, `5555…`/`6666…` for
@@ -229,7 +229,7 @@ Private keys never enter git:
   slots, writes `SHA256SUMS` and signs it as `SHA256SUMS.gpg` with the update
   key. It also builds the file users flash (next section). `make
   release-test` builds a fixture one version higher (`out/release-test/`,
-  `TEST_RELEASE_VERSION`, default 0.2.0) that only the online-update boot test
+  `TEST_RELEASE_VERSION`, default 0.3.0) that only the online-update boot test
   serves; it is never published.
 
 The daemon checks and downloads updates only inside a sync session's radio
@@ -339,9 +339,9 @@ Boot, BIOS) with QMP:
   again and assert the text reached `/data/writing`;
 - stage the offline update, apply it with sysupdate, make the new slot fail
   three times and assert the previous slot boots, on UEFI **and** BIOS;
-- serve `out/release-test/` (payloads at 0.2.0) over HTTP inside QEMU, reject a bad manifest
+- serve `out/release-test/` (payloads at 0.3.0) over HTTP inside QEMU, reject a bad manifest
   signature, then stage the good release through the daemon, call
-  `ApplyUpdate` over D-Bus, reboot into 0.2.0 and assert the new slot label;
+  `ApplyUpdate` over D-Bus, reboot into 0.3.0 and assert the new slot label;
 - `secureboot`: boot the image, install it to a blank disk and boot the
   installed disk with OVMF's Microsoft keys enrolled and Secure Boot enforcing;
   assert the installer made Carrel the first UEFI boot entry;

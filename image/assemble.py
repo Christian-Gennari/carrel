@@ -70,8 +70,8 @@ BASE_CMDLINE = (
     "console=tty0 console=ttyS0,115200 systemd.getty_auto=no "
     "ro rootfstype=erofs"
 )
-VERSION = os.environ.get("CARREL_VERSION", "0.1.0")
-UPDATE_VERSION = os.environ.get("CARREL_UPDATE_VERSION", "0.2.0")
+VERSION = os.environ.get("CARREL_VERSION", "0.2.0")
+UPDATE_VERSION = os.environ.get("CARREL_UPDATE_VERSION", "0.3.0")
 
 SYSTEMD_REPART = "/usr/bin/systemd-repart"
 VERITYSETUP = "/usr/sbin/veritysetup"
