@@ -309,7 +309,7 @@ fn the_command_palette_finds_every_action() {
     shell.type_text("focus");
     assert_eq!(
         shell.palette.selected_label().as_deref(),
-        Some("Focus mode on")
+        Some("Turn focus mode on")
     );
     shell.press("Enter", gdk::Key::Return, none);
     settle();
@@ -579,7 +579,13 @@ impl TestShell {
             Rc::clone(&nav),
             Rc::clone(&sync),
         );
-        let key_sheet = KeySheet::new();
+        let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        dim.add_css_class("overlay-dim");
+        dim.set_hexpand(true);
+        dim.set_vexpand(true);
+        dim.set_can_target(true);
+        dim.set_visible(false);
+        let key_sheet = KeySheet::new(dim.clone());
         let palette = CommandPalette::new(
             client.clone(),
             store.clone(),
@@ -591,6 +597,7 @@ impl TestShell {
             Rc::clone(&sync),
             Rc::clone(&settings_page),
             Rc::clone(&key_sheet),
+            dim.clone(),
         );
 
         stack.add_named(&editor.widget, Some("editor"));
@@ -604,6 +611,7 @@ impl TestShell {
         stack.set_visible_child_name("editor");
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(&stack));
+        overlay.add_overlay(&dim);
         overlay.add_overlay(&palette.widget);
         overlay.add_overlay(&key_sheet.widget);
         window.set_child(Some(&overlay));
@@ -878,7 +886,7 @@ fn keystroke_baseline() {
         shell.type_text("focus");
         assert_eq!(
             shell.palette.selected_label().as_deref(),
-            Some("Focus mode on")
+            Some("Turn focus mode on")
         );
         shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
         settle();

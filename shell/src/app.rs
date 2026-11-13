@@ -162,7 +162,16 @@ pub fn run(application: &gtk::Application) {
         Rc::clone(&nav),
         Rc::clone(&sync),
     );
-    let key_sheet = KeySheet::new();
+    // A paper layer at 60 % draws the page behind the palette and the key
+    // sheet at about 40 %, the same dim as focus mode.
+    let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    dim.add_css_class("overlay-dim");
+    dim.set_hexpand(true);
+    dim.set_vexpand(true);
+    dim.set_can_target(true);
+    dim.set_visible(false);
+
+    let key_sheet = KeySheet::new(dim.clone());
     let palette = CommandPalette::new(
         client.clone(),
         store.clone(),
@@ -174,6 +183,7 @@ pub fn run(application: &gtk::Application) {
         Rc::clone(&sync),
         Rc::clone(&settings_page),
         Rc::clone(&key_sheet),
+        dim.clone(),
     );
 
     stack.add_named(&editor.widget, Some("editor"));
@@ -190,6 +200,7 @@ pub fn run(application: &gtk::Application) {
     // siblings of the stack rather than part of one page.
     let overlay = gtk::Overlay::new();
     overlay.set_child(Some(&stack));
+    overlay.add_overlay(&dim);
     overlay.add_overlay(&palette.widget);
     overlay.add_overlay(&key_sheet.widget);
     window.set_child(Some(&overlay));

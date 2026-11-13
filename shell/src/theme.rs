@@ -317,6 +317,7 @@ pub fn css(settings: &Settings) -> String {
     let focus = palette.focus_ring();
     let scrim = palette.scrim();
     let shadow = palette.shadow();
+    let overlay_dim = rgba_css(background, 0.60);
     let background_clear = rgba_css(background, 0.0);
     let family = settings.font.css_family();
     let size = settings.font_size;
@@ -380,11 +381,16 @@ scrollbar {{
     font-size: {size}px;
 }}
 /* The command palette: the Quotes palette's sheet, centred near the top of
-   the editor column. */
+   the editor column. It carries the shared card shadow, and the page behind
+   it is drawn at about 40 % (paper over the page), like focus mode. */
+.overlay-dim {{
+    background-color: {overlay_dim};
+}}
 .command-palette {{
     background-color: {background};
     color: {text};
     border: 1px solid {border};
+    box-shadow: 0 18px 48px {shadow};
 }}
 .command-query-row {{
     padding: 14px 16px 12px 16px;
@@ -725,6 +731,7 @@ popover.quote-popover > contents {{
         focus = focus,
         scrim = scrim,
         shadow = shadow,
+        overlay_dim = overlay_dim,
         background_clear = background_clear,
         family = family,
         size = size,

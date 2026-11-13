@@ -98,9 +98,9 @@ pub fn actions(settings: &Settings, update: Option<&str>) -> Vec<PaletteRow> {
     add("History", "Ctrl+H", Action::History);
     add(
         if settings.focus_mode {
-            "Focus mode off"
+            "Turn focus mode off"
         } else {
-            "Focus mode on"
+            "Turn focus mode on"
         },
         "F2",
         Action::ToggleFocus,
@@ -123,20 +123,23 @@ pub fn actions(settings: &Settings, update: Option<&str>) -> Vec<PaletteRow> {
         Action::ToggleBottomLine,
     );
     add(
-        "Goal progress: Hairline",
+        if settings.goal_display == GoalDisplay::Hairline {
+            "Use word count goal"
+        } else {
+            "Use hairline goal"
+        },
         "",
-        Action::SetGoal(GoalDisplay::Hairline),
-    );
-    add(
-        "Goal progress: Numbers",
-        "",
-        Action::SetGoal(GoalDisplay::Numbers),
+        Action::SetGoal(if settings.goal_display == GoalDisplay::Hairline {
+            GoalDisplay::Numbers
+        } else {
+            GoalDisplay::Hairline
+        }),
     );
     add(
         if settings.typewriter_mode {
-            "Typewriter mode off"
+            "Turn typewriter mode off"
         } else {
-            "Typewriter mode on"
+            "Turn typewriter mode on"
         },
         "",
         Action::ToggleTypewriter,
@@ -306,6 +309,8 @@ pub struct CommandPalette {
     key_sheet: Rc<KeySheet>,
     store: Store,
     client: Client,
+    /// The paper layer that draws the page behind the sheet at about 40 %.
+    dim: gtk::Box,
     update_wire: RefCell<String>,
 }
 
@@ -322,6 +327,7 @@ impl CommandPalette {
         sync: Rc<SyncPage>,
         settings_page: Rc<SettingsPage>,
         key_sheet: Rc<KeySheet>,
+        dim: gtk::Box,
     ) -> Rc<Self> {
         let query_label = gtk::Label::new(None);
         query_label.set_xalign(0.0);
@@ -387,6 +393,7 @@ impl CommandPalette {
             key_sheet,
             store,
             client,
+            dim,
             update_wire: RefCell::new(String::new()),
         });
         palette.render_query();
@@ -427,6 +434,7 @@ impl CommandPalette {
         *self.files.borrow_mut() = self.store.document_paths();
         self.load_update();
         self.rebuild();
+        self.dim.set_visible(true);
         self.widget.set_visible(true);
     }
 
@@ -435,6 +443,7 @@ impl CommandPalette {
             return;
         }
         self.open.set(false);
+        self.dim.set_visible(false);
         self.widget.set_visible(false);
         self.query.borrow_mut().clear();
         self.rows.borrow_mut().clear();
@@ -758,11 +767,7 @@ const FILES: &[(&str, &str)] = &[
     ("Del", "Delete"),
 ];
 
-const SYNC_AND_EXPORT: &[(&str, &str)] = &[
-    ("Ctrl+Shift+S", "Sync now"),
-    ("Ctrl+E", "Export"),
-    ("Enter", "Continue"),
-];
+const SYNC_AND_EXPORT: &[(&str, &str)] = &[("Ctrl+Shift+S", "Sync now"), ("Ctrl+E", "Export")];
 
 const SCREENS: &[(&str, &str)] = &[
     ("Ctrl+H", "History"),
@@ -783,10 +788,11 @@ const GROUPS: [(&str, &[(&str, &str)]); 4] = [
 pub struct KeySheet {
     pub widget: gtk::Box,
     open: Cell<bool>,
+    dim: gtk::Box,
 }
 
 impl KeySheet {
-    pub fn new() -> Rc<Self> {
+    pub fn new(dim: gtk::Box) -> Rc<Self> {
         let title = gtk::Label::new(Some("Keyboard shortcuts"));
         title.set_xalign(0.0);
         title.add_css_class("key-sheet-title");
@@ -818,6 +824,7 @@ impl KeySheet {
         Rc::new(Self {
             widget,
             open: Cell::new(false),
+            dim,
         })
     }
 
@@ -827,11 +834,13 @@ impl KeySheet {
 
     pub fn open(&self) {
         self.open.set(true);
+        self.dim.set_visible(true);
         self.widget.set_visible(true);
     }
 
     pub fn close(&self) {
         self.open.set(false);
+        self.dim.set_visible(false);
         self.widget.set_visible(false);
     }
 
@@ -901,7 +910,7 @@ mod tests {
                 "Sync now",
                 "Export…",
                 "History",
-                "Focus mode on",
+                "Turn focus mode on",
                 "Theme…",
                 "Settings",
                 "Keyboard shortcuts",
@@ -925,10 +934,7 @@ mod tests {
             let wanted = format!("Font: {}", font.label());
             assert!(rows.iter().any(|row| row.label == wanted), "{wanted}");
         }
-        assert!(rows
-            .iter()
-            .any(|row| row.label == "Goal progress: Hairline"));
-        assert!(rows.iter().any(|row| row.label == "Goal progress: Numbers"));
+        assert!(rows.iter().any(|row| row.label == "Use hairline goal"));
         assert!(rows
             .iter()
             .any(|row| row.label == "Back to the editor" && row.keys == "Esc"));
@@ -962,15 +968,32 @@ mod tests {
     fn toggles_say_what_enter_will_do() {
         let mut settings = settings();
         let rows = actions(&settings, None);
-        assert!(rows.iter().any(|row| row.label == "Focus mode on"));
+        assert!(rows.iter().any(|row| row.label == "Turn focus mode on"));
         assert!(rows.iter().any(|row| row.label == "Hide bottom line"));
+        assert!(rows
+            .iter()
+            .any(|row| row.label == "Turn typewriter mode on"));
+        assert!(rows.iter().any(|row| row.label == "Use hairline goal"));
+
         settings.focus_mode = true;
         settings.show_bottom_line = false;
         settings.typewriter_mode = true;
+        settings.goal_display = GoalDisplay::Hairline;
         let rows = actions(&settings, None);
-        assert!(rows.iter().any(|row| row.label == "Focus mode off"));
+        assert!(rows.iter().any(|row| row.label == "Turn focus mode off"));
         assert!(rows.iter().any(|row| row.label == "Show bottom line"));
-        assert!(rows.iter().any(|row| row.label == "Typewriter mode off"));
+        assert!(rows
+            .iter()
+            .any(|row| row.label == "Turn typewriter mode off"));
+        assert!(rows.iter().any(|row| row.label == "Use word count goal"));
+
+        // Enter on the goal row switches to the other goal, not just repeats
+        // the current one.
+        let row = rows
+            .iter()
+            .find(|row| row.label == "Use word count goal")
+            .expect("the goal row");
+        assert_eq!(row.action, Action::SetGoal(GoalDisplay::Numbers));
     }
 
     #[test]
