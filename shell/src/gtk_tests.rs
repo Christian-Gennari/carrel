@@ -687,7 +687,7 @@ fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
 // change the baseline deliberately.
 // ---------------------------------------------------------------------------
 
-const BASELINE: [(&str, usize); 13] = [
+const BASELINE: [(&str, usize); 15] = [
     // The Recent group sits above the folder tree, so the last row is still
     // the last document: Ctrl+O End Enter opens it in three keys.
     ("Open an existing file by name", 3),
@@ -704,6 +704,9 @@ const BASELINE: [(&str, usize); 13] = [
     // --- UI round 6 (Files, issue #27) ---
     ("Find and open a file by typing", 7),
     ("Move a file into a folder", 5),
+    // --- Settings in groups and first run (issue #28) ---
+    ("First run to editor with defaults", 2),
+    ("Change font size in Settings", 6),
 ];
 
 fn key_for(character: char) -> (String, gdk::Key) {
@@ -730,6 +733,8 @@ struct TestShell {
     palette: Rc<CommandPalette>,
     key_sheet: Rc<KeySheet>,
     keys: Rc<Keys>,
+    nav: Rc<Navigator>,
+    first_run: Rc<FirstRunPage>,
     settings: Rc<RefCell<Settings>>,
     daemon: Arc<FakeDaemon>,
     sequence: RefCell<Vec<String>>,
@@ -858,7 +863,7 @@ impl TestShell {
 
         let keys = Keys::new(
             stack.clone(),
-            nav,
+            Rc::clone(&nav),
             Rc::clone(&editor),
             files,
             history,
@@ -867,7 +872,7 @@ impl TestShell {
             settings_page,
             wifi,
             export,
-            first_run,
+            Rc::clone(&first_run),
             Rc::clone(&palette),
             Rc::clone(&key_sheet),
         );
@@ -881,6 +886,8 @@ impl TestShell {
             palette,
             key_sheet,
             keys,
+            nav,
+            first_run,
             settings,
             daemon,
             sequence: RefCell::new(Vec::new()),
@@ -1089,6 +1096,8 @@ fn keystroke_baseline() {
     // Change the theme: Settings opens on its first row, Right changes it.
     {
         let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        // Up to date, so the top row is Theme and nothing above it takes a key.
+        shell.daemon.set_update("none");
         let before = shell.settings.borrow().theme;
         shell.press("Ctrl+,", gdk::Key::comma, gdk::ModifierType::CONTROL_MASK);
         settle();
@@ -1220,6 +1229,47 @@ fn keystroke_baseline() {
         measured.push(("Move a file into a folder", shell.take_sequence()));
     }
 
+    // --- Settings in groups and first run (issue #28) ---
+
+    // First run with the answers the image already guessed: Enter on "Start
+    // writing", then Enter on "Not now". Two keys from power-on to the editor.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.settings.borrow_mut().first_run_complete = false;
+        shell.first_run.start();
+        shell.nav.show("first_run");
+        settle();
+        assert_eq!(shell.visible(), "first_run");
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        settle();
+        assert_eq!(shell.visible(), "first_run", "the sync step comes next");
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        settle();
+        assert_eq!(shell.visible(), "editor", "the editor is reached");
+        assert!(shell.settings.borrow().first_run_complete);
+        measured.push(("First run to editor with defaults", shell.take_sequence()));
+    }
+
+    // Change the font size: Settings opens on Theme; Up and Down step over the
+    // group labels, so four Downs is Size. Right makes the text larger.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.daemon.set_update("none");
+        let before = shell.settings.borrow().font_size;
+        shell.press("Ctrl+,", gdk::Key::comma, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        for _ in 0..4 {
+            shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+        }
+        shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+        assert_eq!(
+            shell.settings.borrow().font_size,
+            before + 1,
+            "the size changed in place"
+        );
+        measured.push(("Change font size in Settings", shell.take_sequence()));
+    }
+
     finish_baseline(&measured);
 }
 
@@ -1261,6 +1311,13 @@ fn finish_baseline(measured: &[(&str, Vec<String>)]) {
          \"Find and open a file by typing\" and \"Move a file into a folder\". -->\n",
     );
     println!();
+
+    // UI round 7 (issue #28): the Settings and first-run rows above were added
+    // by that round; later workers keep their own block below this note.
+    table.push_str(
+        "\n<!-- UI round 7 (issue #28): \"First run to editor with defaults\" and \
+         \"Change font size in Settings\" are the Settings and first-run rows. -->\n",
+    );
 
     let docs = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

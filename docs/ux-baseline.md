@@ -21,5 +21,9 @@ Regenerate with `dev/run.sh bash dev/ux-baseline.sh` (Xvfb, no GPU).
 | Show the keyboard shortcuts | 1 | Ctrl+/ |
 | Find and open a file by typing | 7 | Ctrl+O z e b r a Enter |
 | Move a file into a folder | 5 | Ctrl+O Down Down Shift+M Enter |
+| First run to editor with defaults | 2 | Enter Enter |
+| Change font size in Settings | 6 | Ctrl+, Down Down Down Down Right |
 
 <!-- UI round 6 (Files, issue #27): "Find and open a file by typing" and "Move a file into a folder". -->
+
+<!-- UI round 7 (issue #28): "First run to editor with defaults" and "Change font size in Settings" are the Settings and first-run rows. -->
