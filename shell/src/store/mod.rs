@@ -24,6 +24,10 @@ pub use text::EditOutOfRange;
 
 pub const DEFAULT_ROOT: &str = "/data/writing";
 
+/// How many documents the Files screen's Recent group remembers. The store
+/// keeps the same number, so the screen never has to trim a longer list.
+pub const RECENT_LIMIT: usize = 5;
+
 /// The writing root: `CARREL_WRITING_DIR`, else `/data/writing`.
 pub fn root_from_env() -> PathBuf {
     std::env::var_os("CARREL_WRITING_DIR")
@@ -358,10 +362,31 @@ impl Store {
             .filter(|rel| self.resolve(rel).is_ok() && self.root.join(rel).is_file())
     }
 
+    /// The last [`RECENT_LIMIT`] documents the writer opened, newest first.
+    /// Missing files are skipped, so a rename or delete never leaves a ghost
+    /// in the Files screen's Recent group.
+    pub fn recent_files(&self) -> Vec<PathBuf> {
+        self.load_shell_state()
+            .recent
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|rel| self.resolve(rel).is_ok() && self.root.join(rel).is_file())
+            .take(RECENT_LIMIT)
+            .collect()
+    }
+
+    /// Remember the open document: `rel` is both the last file and the newest
+    /// recent one. Opening the same file again moves it to the front rather
+    /// than duplicating it.
     pub fn set_last_file(&self, rel: Option<&Path>) -> io::Result<()> {
-        let state = ShellState {
-            last_file: rel.map(|rel| rel.to_string_lossy().to_string()),
-        };
+        let mut state = self.load_shell_state();
+        state.last_file = rel.map(|rel| rel.to_string_lossy().to_string());
+        if let Some(rel) = rel {
+            let recent = rel.to_string_lossy().to_string();
+            state.recent.retain(|item| item != &recent);
+            state.recent.insert(0, recent);
+            state.recent.truncate(RECENT_LIMIT);
+        }
         let json = serde_json::to_vec_pretty(&state).map_err(io::Error::other)?;
         atomic_write(&self.carrel_dir().join("state.json"), &json)
     }
@@ -397,6 +422,9 @@ impl Store {
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct ShellState {
     last_file: Option<String>,
+    /// Newest first. `state.json` written by an older build has no key.
+    #[serde(default)]
+    recent: Vec<String>,
 }
 
 pub fn is_document_name(name: &str) -> bool {
@@ -623,6 +651,65 @@ mod tests {
         assert_eq!(store.last_file(), Some(PathBuf::from("one.md")));
         store.delete(Path::new("one.md")).unwrap();
         assert_eq!(store.last_file(), None);
+    }
+
+    #[test]
+    fn recent_files_are_newest_first_and_never_ghosts() {
+        let (_dir, store) = store();
+        for name in [
+            "one.md", "two.md", "three.md", "four.md", "five.md", "six.md",
+        ] {
+            store.create_file(Path::new(name)).unwrap();
+        }
+        for name in ["one.md", "two.md", "three.md", "four.md", "five.md"] {
+            store.set_last_file(Some(Path::new(name))).unwrap();
+        }
+        assert_eq!(
+            store.recent_files(),
+            ["five.md", "four.md", "three.md", "two.md", "one.md"]
+                .map(PathBuf::from)
+                .to_vec()
+        );
+
+        // Opening a recent again moves it to the front, once.
+        store.set_last_file(Some(Path::new("three.md"))).unwrap();
+        assert_eq!(
+            store.recent_files(),
+            ["three.md", "five.md", "four.md", "two.md", "one.md"]
+                .map(PathBuf::from)
+                .to_vec()
+        );
+
+        // The sixth open pushes the oldest one out.
+        store.set_last_file(Some(Path::new("six.md"))).unwrap();
+        assert_eq!(
+            store.recent_files(),
+            ["six.md", "three.md", "five.md", "four.md", "two.md"]
+                .map(PathBuf::from)
+                .to_vec()
+        );
+
+        // A deleted file has no ghost row.
+        store.delete(Path::new("four.md")).unwrap();
+        assert_eq!(
+            store.recent_files(),
+            ["six.md", "three.md", "five.md", "two.md"]
+                .map(PathBuf::from)
+                .to_vec()
+        );
+    }
+
+    #[test]
+    fn state_from_an_older_build_has_no_recents() {
+        let (dir, store) = store();
+        fs::write(
+            dir.path().join(".carrel/state.json"),
+            br#"{"last_file": "one.md"}"#,
+        )
+        .unwrap();
+        store.create_file(Path::new("one.md")).unwrap();
+        assert_eq!(store.last_file(), Some(PathBuf::from("one.md")));
+        assert!(store.recent_files().is_empty());
     }
 
     #[test]
