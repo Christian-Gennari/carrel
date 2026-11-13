@@ -479,6 +479,38 @@ scrollbar {{
     color: {text};
     font-size: {row}px;
 }}
+/* One important action on the Export screen, and one quiet alternative. */
+.export-action {{
+    padding: 11px 18px;
+}}
+.action-word {{
+    color: {text};
+    font-size: {row}px;
+}}
+.quiet-action,
+.quiet-action:hover,
+.quiet-action:active {{
+    background: none;
+    background-image: none;
+    border: none;
+    box-shadow: none;
+    outline-style: none;
+    padding: 2px 0;
+}}
+.quiet-word {{
+    color: {muted};
+    font-size: {secondary}px;
+}}
+.action-disabled,
+.action-disabled label {{
+    color: {muted};
+}}
+.action-disabled {{
+    opacity: 0.55;
+}}
+button:disabled, button:disabled label {{
+    color: {muted};
+}}
 .file-row:hover, .setting-row:hover, .quote-row:hover, .ui-row:hover {{
     background-color: {hover};
 }}
@@ -545,6 +577,7 @@ scrollbar {{
 }}
 button {{
     background-color: {surface};
+    background-image: none;
     color: {text};
     border: 1px solid {border};
     border-radius: 6px;
@@ -632,6 +665,13 @@ entry:focus, entry:focus-within {{
     font-size: {hint}px;
 }}
 .preview-text {{
+    color: {text};
+    font-size: {preview}px;
+}}
+/* The History preview compares an old version with the text as it is now:
+   added text sits on a quiet tint, removed text is dim and struck. */
+.diff-view, .diff-view text {{
+    background-color: transparent;
     color: {text};
     font-size: {preview}px;
 }}

@@ -1,40 +1,48 @@
-//! Export and import: what, format, USB drive, progress, "Safe to remove".
+//! Export and import: one screen with what, format and destination, one
+//! action, then progress and the result in the same frame.
 //!
 //! The shell never mounts or copies anything itself (rule 2 and the USB rules
-//! live in the daemon). This screen only collects the three answers and shows
-//! the path the daemon returns.
+//! live in the daemon). This screen only collects the three answers, remembers
+//! them, and shows the path the daemon returns.
 
-use std::cell::RefCell;
-use std::path::Path;
+use std::cell::{Cell, RefCell};
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::Duration;
 
 use gtk::prelude::*;
 use gtk::{gdk, glib};
+use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Client, Drive};
 use crate::editor::EditorPage;
 use crate::nav::Navigator;
-use crate::store::{display_path, Store};
+use crate::store::{atomic_write, display_path, Store};
 use crate::ui;
 
-const HINTS: [(&str, &str); 3] = [("Enter", "Next"), ("↑ ↓", "Move"), ("Esc", "Back")];
-const DRIVE_HINTS: [(&str, &str); 4] = [
+const EXPORT_HINTS: [(&str, &str); 4] = [
     ("Enter", "Export"),
-    ("R", "Scan"),
-    ("↑ ↓", "Move"),
+    ("← →", "Change"),
+    ("↑ ↓", "Row"),
     ("Esc", "Back"),
 ];
-const IMPORT_HINTS: [(&str, &str); 4] = [
-    ("Enter", "Import"),
-    ("R", "Scan"),
-    ("↑ ↓", "Move"),
-    ("Esc", "Back"),
-];
-const DONE_HINTS: [(&str, &str); 2] = [("Enter", "Again"), ("Esc", "Back")];
+const EXPORT_NO_DRIVE_HINTS: [(&str, &str); 3] =
+    [("← →", "Change"), ("↑ ↓", "Row"), ("Esc", "Back")];
+const IMPORT_HINTS: [(&str, &str); 2] = [("Enter", "Import"), ("Esc", "Back")];
+const IMPORT_NO_DRIVE_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
 const RUNNING_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
+const DONE_EXPORT_HINTS: [(&str, &str); 3] = [
+    ("Enter", "Done"),
+    ("E", "Export something else"),
+    ("Esc", "Back"),
+];
+const DONE_IMPORT_HINTS: [(&str, &str); 3] = [
+    ("Enter", "Done"),
+    ("I", "Import something else"),
+    ("Esc", "Back"),
+];
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum ExportFormat {
     #[default]
     Markdown,
@@ -69,6 +77,19 @@ impl ExportFormat {
         }
     }
 
+    /// The extension of the file the writer finds on the drive.
+    pub fn extension(self) -> &'static str {
+        match self {
+            Self::Markdown => "md",
+            Self::Text => "txt",
+            Self::Docx => "docx",
+            Self::Odt => "odt",
+            Self::Pdf => "pdf",
+            Self::Html => "html",
+            Self::Epub => "epub",
+        }
+    }
+
     /// The value `Export(selection, format, drive_id)` receives.
     pub fn wire(self) -> &'static str {
         match self {
@@ -83,29 +104,56 @@ impl ExportFormat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum What {
+/// The answer to "What": one file, one folder, or everything.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ExportTarget {
+    #[default]
     Current,
-    Folder(String),
+    Folder,
     Everything,
+}
+
+impl ExportTarget {
+    pub const ALL: [Self; 3] = [Self::Current, Self::Folder, Self::Everything];
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ExportMode {
+    #[default]
+    Export,
     Import,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ExportStep {
     #[default]
-    What,
-    Folder,
-    Format,
-    Drive,
+    Configure,
     Running,
     Done,
 }
 
+/// One of the screen's compact rows. The Folder row appears only when What is
+/// "A folder…", so the other choices stay three rows tall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportRow {
+    What,
+    Folder,
+    Format,
+    To,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportOutcome {
-    Exported { path: String },
-    Imported { paths: Vec<String> },
+    Exported {
+        path: String,
+        drive: String,
+        file: Option<String>,
+    },
+    Imported {
+        paths: Vec<String>,
+        drive: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,78 +165,138 @@ pub struct ExportRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExportEffect {
-    ListDrives,
-    Export(ExportRequest),
-    Import { drive_id: String },
+    Export {
+        request: ExportRequest,
+        drive: String,
+        file: Option<String>,
+    },
+    Import {
+        drive_id: String,
+        drive: String,
+    },
+}
+
+/// The choices Carrel remembers between exports, in `.carrel/export.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ExportPrefs {
+    pub what: ExportTarget,
+    pub folder: String,
+    pub format: ExportFormat,
+    pub drive_id: String,
+}
+
+impl Default for ExportPrefs {
+    fn default() -> Self {
+        Self {
+            what: ExportTarget::Current,
+            folder: String::new(),
+            format: ExportFormat::Markdown,
+            drive_id: String::new(),
+        }
+    }
+}
+
+impl ExportPrefs {
+    pub fn load(root: &Path) -> Self {
+        std::fs::read(prefs_path(root))
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save(&self, root: &Path) {
+        let Ok(json) = serde_json::to_vec_pretty(self) else {
+            return;
+        };
+        if let Err(error) = atomic_write(&prefs_path(root), &json) {
+            eprintln!("carrel: could not remember the export choices: {error}");
+        }
+    }
+}
+
+fn prefs_path(root: &Path) -> PathBuf {
+    root.join(".carrel").join("export.json")
 }
 
 /// The pure Export screen state.
 #[derive(Debug, Default)]
 pub struct ExportState {
+    pub mode: ExportMode,
     pub step: ExportStep,
-    pub selected: usize,
-    pub what: Option<What>,
+    pub row: usize,
+    pub target: ExportTarget,
     pub format: ExportFormat,
+    pub folder: String,
     pub folders: Vec<String>,
-    pub folder_selected: usize,
     pub drives: Vec<Drive>,
-    pub drive_selected: usize,
+    pub drive_id: String,
     pub current_file: Option<String>,
+    pub running_drive: String,
     pub outcome: Option<ExportOutcome>,
     pub error: Option<String>,
 }
 
 impl ExportState {
-    pub fn reset(&mut self) {
-        self.step = ExportStep::What;
-        self.selected = 0;
-        self.what = None;
+    /// Show the screen with the choices Carrel remembers.
+    pub fn open(
+        &mut self,
+        prefs: &ExportPrefs,
+        current_file: Option<String>,
+        folders: Vec<String>,
+    ) {
+        self.mode = ExportMode::Export;
+        self.step = ExportStep::Configure;
+        self.row = 0;
+        self.target = prefs.what;
+        self.folder = prefs.folder.clone();
+        self.folders = folders;
+        self.format = prefs.format;
+        self.drive_id = prefs.drive_id.clone();
+        self.current_file = current_file;
+        self.running_drive.clear();
         self.outcome = None;
         self.error = None;
-        self.drive_selected = 0;
-        self.folder_selected = 0;
+        self.normalize();
     }
 
-    pub fn rows(&self) -> Vec<String> {
-        match self.step {
-            ExportStep::What => vec![
-                match &self.current_file {
-                    Some(path) => {
-                        format!("Current file · {}", display_path(Path::new(path)))
-                    }
-                    None => "Current file · no file open".to_owned(),
-                },
-                "A folder…".to_owned(),
-                "Everything".to_owned(),
-                "Import from a USB drive".to_owned(),
-            ],
-            ExportStep::Folder => self.folder_rows(),
-            ExportStep::Format => ExportFormat::ALL
-                .iter()
-                .map(|format| format.label().to_owned())
-                .collect(),
-            ExportStep::Drive => {
-                if self.drives.is_empty() {
-                    vec!["Insert a USB drive".to_owned()]
-                } else {
-                    self.drives
-                        .iter()
-                        .map(|drive| {
-                            format!("{} · {} free", drive.label, free_space(drive.free_bytes))
-                        })
-                        .collect()
-                }
-            }
-            ExportStep::Running | ExportStep::Done => Vec::new(),
+    pub fn prefs(&self) -> ExportPrefs {
+        ExportPrefs {
+            what: self.target,
+            folder: self.folder.clone(),
+            format: self.format,
+            drive_id: self.drive_id.clone(),
         }
     }
 
-    fn folder_rows(&self) -> Vec<String> {
-        let mut rows = vec!["Writing".to_owned()];
-        for folder in &self.folders {
-            rows.push(folder.clone());
+    fn normalize(&mut self) {
+        if !self.folders.iter().any(|folder| folder == &self.folder) {
+            self.folder.clear();
         }
+    }
+
+    pub fn rows(&self) -> Vec<ExportRow> {
+        if self.mode == ExportMode::Import {
+            return vec![ExportRow::To];
+        }
+        let mut rows = vec![ExportRow::What];
+        if self.target == ExportTarget::Folder {
+            rows.push(ExportRow::Folder);
+        }
+        rows.push(ExportRow::Format);
+        rows.push(ExportRow::To);
         rows
+    }
+
+    pub fn selected_row(&self) -> ExportRow {
+        self.rows()
+            .get(self.row)
+            .copied()
+            .unwrap_or(ExportRow::What)
+    }
+
+    pub fn select(&mut self, index: usize) {
+        self.row = index.min(self.rows().len().saturating_sub(1));
     }
 
     pub fn move_by(&mut self, delta: i32) {
@@ -196,210 +304,282 @@ impl ExportState {
         if rows == 0 {
             return;
         }
-        match self.step {
-            ExportStep::Folder => {
-                self.folder_selected =
-                    ((self.folder_selected as i32 + delta).rem_euclid(rows)) as usize;
+        self.row = ((self.row as i32 + delta).rem_euclid(rows)) as usize;
+    }
+
+    /// Change the selected row's value. Left/Right in the screen.
+    pub fn cycle(&mut self, delta: i32) {
+        match self.selected_row() {
+            ExportRow::What => {
+                self.target = cycle(&ExportTarget::ALL, &self.target, delta);
+                self.normalize();
+                self.row = self.row.min(self.rows().len().saturating_sub(1));
             }
-            _ => {
-                self.selected = ((self.selected as i32 + delta).rem_euclid(rows)) as usize;
+            ExportRow::Folder => {
+                let choices = self.folder_choices();
+                let current = self.folder.clone();
+                self.folder = cycle(&choices, &current, delta);
             }
+            ExportRow::Format => {
+                self.format = cycle(&ExportFormat::ALL, &self.format, delta);
+            }
+            ExportRow::To => self.cycle_drive(delta),
         }
     }
 
-    pub fn selected_row(&self) -> usize {
-        match self.step {
-            ExportStep::Folder => self.folder_selected,
-            _ => self.selected,
+    /// "Writing" for the root, then one entry per folder. Stored as the folder
+    /// relative path; the empty string is the whole writing folder.
+    pub fn folder_choices(&self) -> Vec<String> {
+        let mut choices = vec![String::new()];
+        choices.extend(self.folders.iter().cloned());
+        choices
+    }
+
+    pub fn folder_label(&self) -> String {
+        if self.folder.is_empty() {
+            "Writing".to_owned()
+        } else {
+            self.folder.clone()
         }
     }
 
-    pub fn select(&mut self, index: usize) {
-        let max = self.rows().len().saturating_sub(1);
-        match self.step {
-            ExportStep::Folder => self.folder_selected = index.min(max),
-            _ => self.selected = index.min(max),
-        }
+    pub fn current_drive(&self) -> Option<&Drive> {
+        self.drives
+            .iter()
+            .find(|drive| drive.id == self.drive_id)
+            .or_else(|| self.drives.first())
     }
 
-    /// Enter on the current step.
-    pub fn choose(&mut self) -> Option<ExportEffect> {
-        self.error = None;
-        match self.step {
-            ExportStep::What => {
-                let what = match self.selected {
-                    0 => {
-                        if self.current_file.is_none() {
-                            self.error = Some("Open a file first.".to_owned());
-                            return None;
-                        }
-                        What::Current
-                    }
-                    1 => {
-                        self.step = ExportStep::Folder;
-                        self.folder_selected = 0;
-                        return None;
-                    }
-                    2 => What::Everything,
-                    _ => What::Import,
-                };
-                self.what = Some(what.clone());
-                match what {
-                    What::Import => {
-                        self.step = ExportStep::Drive;
-                        self.selected = 0;
-                        Some(ExportEffect::ListDrives)
-                    }
-                    _ => {
-                        self.step = ExportStep::Format;
-                        self.selected = 0;
-                        None
-                    }
-                }
-            }
-            ExportStep::Folder => {
-                let folder = if self.folder_selected == 0 {
-                    String::new()
-                } else {
-                    self.folders[self.folder_selected - 1].clone()
-                };
-                self.what = Some(What::Folder(folder));
-                self.step = ExportStep::Format;
-                self.selected = 0;
-                None
-            }
-            ExportStep::Format => {
-                self.format = ExportFormat::ALL[self.selected.min(ExportFormat::ALL.len() - 1)];
-                self.step = ExportStep::Drive;
-                self.selected = 0;
-                Some(ExportEffect::ListDrives)
-            }
-            ExportStep::Drive => {
-                if self.drives.is_empty() {
-                    return Some(ExportEffect::ListDrives);
-                }
-                let drive = self.drives[self.drive_selected.min(self.drives.len() - 1)].clone();
-                match self.what.clone() {
-                    Some(What::Import) => Some(ExportEffect::Import { drive_id: drive.id }),
-                    Some(what) => {
-                        let request = ExportRequest {
-                            selection: self.selection(&what),
-                            format: self.format.wire().to_owned(),
-                            drive_id: drive.id,
-                        };
-                        Some(ExportEffect::Export(request))
-                    }
-                    None => None,
-                }
-            }
-            ExportStep::Running => None,
-            ExportStep::Done => {
-                self.reset();
-                None
-            }
+    fn cycle_drive(&mut self, delta: i32) {
+        if self.drives.len() < 2 {
+            return;
         }
-    }
-
-    fn selection(&self, what: &What) -> Vec<String> {
-        match what {
-            What::Current => self
-                .current_file
-                .clone()
-                .map(|path| vec![format!("current:{path}")])
-                .unwrap_or_default(),
-            What::Folder(path) => vec![format!("folder:{path}")],
-            What::Everything => vec!["all".to_owned()],
-            What::Import => Vec::new(),
-        }
+        let current = self
+            .current_drive()
+            .map(|drive| drive.id.clone())
+            .unwrap_or_default();
+        let ids: Vec<String> = self.drives.iter().map(|drive| drive.id.clone()).collect();
+        self.drive_id = cycle(&ids, &current, delta);
     }
 
     pub fn on_drives(&mut self, drives: Vec<Drive>) {
         self.drives = drives;
-        self.drive_selected = self.drive_selected.min(self.drives.len().saturating_sub(1));
+        // The remembered drive keeps its turn while it is unplugged; the
+        // first drive answers until it comes back.
     }
 
-    pub fn on_exported(&mut self, path: String) {
-        self.step = ExportStep::Done;
-        self.outcome = Some(ExportOutcome::Exported { path });
+    /// The action is enabled exactly when there is somewhere to write.
+    pub fn can_export(&self) -> bool {
+        self.step == ExportStep::Configure && self.current_drive().is_some()
+    }
+
+    /// Enter on the configured screen.
+    pub fn choose(&mut self) -> Option<ExportEffect> {
+        if !self.can_export() {
+            return None;
+        }
+        self.error = None;
+        let drive = self.current_drive()?.clone();
+        if self.mode == ExportMode::Import {
+            return Some(ExportEffect::Import {
+                drive_id: drive.id,
+                drive: drive.label,
+            });
+        }
+        if self.target == ExportTarget::Current && self.current_file.is_none() {
+            self.error = Some("Open a file first.".to_owned());
+            return None;
+        }
+        Some(ExportEffect::Export {
+            request: ExportRequest {
+                selection: self.selection(),
+                format: self.format.wire().to_owned(),
+                drive_id: drive.id,
+            },
+            drive: drive.label,
+            file: self.exported_file(),
+        })
+    }
+
+    fn selection(&self) -> Vec<String> {
+        match self.target {
+            ExportTarget::Current => self
+                .current_file
+                .clone()
+                .map(|path| vec![format!("current:{path}")])
+                .unwrap_or_default(),
+            ExportTarget::Folder => vec![format!("folder:{}", self.folder)],
+            ExportTarget::Everything => vec!["all".to_owned()],
+        }
+    }
+
+    /// The name of the file the writer will find on the drive, with its new
+    /// extension. Nothing for a folder or everything.
+    pub fn exported_file(&self) -> Option<String> {
+        if self.target != ExportTarget::Current {
+            return None;
+        }
+        let path = self.current_file.as_ref()?;
+        let stem = Path::new(path).file_stem()?.to_string_lossy();
+        Some(format!("{stem}.{}", self.format.extension()))
+    }
+
+    pub fn on_running(&mut self, drive: String) {
+        self.step = ExportStep::Running;
+        self.running_drive = drive;
         self.error = None;
     }
 
-    pub fn on_imported(&mut self, paths: Vec<String>) {
+    pub fn on_exported(&mut self, path: String, drive: String, file: Option<String>) {
         self.step = ExportStep::Done;
-        self.outcome = Some(ExportOutcome::Imported { paths });
+        self.outcome = Some(ExportOutcome::Exported { path, drive, file });
+        self.error = None;
+    }
+
+    pub fn on_imported(&mut self, paths: Vec<String>, drive: String) {
+        self.step = ExportStep::Done;
+        self.outcome = Some(ExportOutcome::Imported { paths, drive });
         self.error = None;
     }
 
     pub fn on_error(&mut self, message: String) {
-        self.step = ExportStep::Drive;
+        self.step = ExportStep::Configure;
         self.error = Some(message);
     }
 
-    pub fn step_title(&self) -> &'static str {
-        match self.step {
-            ExportStep::What => "What to export",
-            ExportStep::Folder => "Choose a folder",
-            ExportStep::Format => "Format",
-            ExportStep::Drive => "Destination",
-            ExportStep::Running => "Exporting",
-            ExportStep::Done => "Finished",
+    /// The one-line status under the title, or the error in its place.
+    pub fn status(&self, dated_folder: &str) -> String {
+        if let Some(error) = &self.error {
+            return error.clone();
         }
-    }
-
-    pub fn note(&self, dated_folder: &str) -> String {
         match self.step {
-            ExportStep::What => {
-                "Nothing leaves the device. A USB drive needs no network or account.".to_owned()
+            ExportStep::Configure if self.current_drive().is_none() => {
+                "Plug in a drive; this screen notices it as soon as it appears.".to_owned()
             }
-            ExportStep::Folder => "The folder keeps its structure inside the export.".to_owned(),
-            ExportStep::Format => {
-                "Citations become footnotes in .docx, .odt, PDF and EPUB.".to_owned()
+            ExportStep::Configure if self.mode == ExportMode::Import => {
+                "Copies .md and .txt files from the USB drive into Imported/.".to_owned()
             }
-            ExportStep::Drive => {
-                if self.drives.is_empty() {
-                    "Plug it in; this screen notices it and lists it here.".to_owned()
-                } else if self.what == Some(What::Import) {
-                    "Copies .md and .txt into Writing/Imported/.".to_owned()
-                } else if self.what == Some(What::Everything) {
-                    format!("Everything goes into “Carrel export {dated_folder}/”.")
-                } else {
-                    "The drive is unmounted and powered off when the export finishes.".to_owned()
+            ExportStep::Configure => match self.target {
+                ExportTarget::Current => {
+                    "Nothing leaves the device. A USB drive needs no network or account.".to_owned()
                 }
-            }
-            ExportStep::Running => "Writing files. Do not remove the drive.".to_owned(),
-            ExportStep::Done => outcome_text(self.outcome.as_ref()),
+                ExportTarget::Folder => {
+                    format!(
+                        "“{}” keeps its structure inside the export.",
+                        self.folder_label()
+                    )
+                }
+                ExportTarget::Everything => {
+                    format!("Everything goes into “Carrel export {dated_folder}/”.")
+                }
+            },
+            ExportStep::Running | ExportStep::Done => String::new(),
         }
     }
 
-    pub fn done_heading(&self) -> Option<&'static str> {
-        match self.outcome {
-            Some(ExportOutcome::Exported { .. }) => Some("Safe to remove"),
-            // The import result is one line; it is not repeated as a heading.
-            Some(ExportOutcome::Imported { .. }) | None => None,
+    pub fn progress_heading(&self) -> String {
+        if self.mode == ExportMode::Import {
+            format!("Copying from {}…", self.running_drive)
+        } else {
+            format!("Exporting to {}…", self.running_drive)
         }
     }
 
-    pub fn outcome_detail(&self) -> Option<String> {
+    pub fn progress_line(&self) -> &'static str {
+        if self.mode == ExportMode::Import {
+            "Copying files. Do not remove the drive."
+        } else {
+            "Writing files. Do not remove the drive."
+        }
+    }
+
+    pub fn outcome_heading(&self) -> Option<String> {
         match &self.outcome {
-            Some(ExportOutcome::Exported { path }) => Some(path.clone()),
-            Some(ExportOutcome::Imported { .. }) | None => None,
+            Some(ExportOutcome::Exported { drive, .. }) => Some(format!("Exported to {drive}")),
+            Some(ExportOutcome::Imported { paths, drive }) => {
+                Some(imported_heading(paths.len(), drive))
+            }
+            None => None,
         }
+    }
+
+    /// The result, one line per fact: where it went, then the file and the
+    /// safe-to-remove sentence. The import result names the drive in its
+    /// heading and says where the files are in one detail line.
+    pub fn outcome_lines(&self) -> Vec<String> {
+        match &self.outcome {
+            Some(ExportOutcome::Exported { path, file, .. }) => {
+                let mut lines = Vec::new();
+                if let Some(folder) = export_location(path) {
+                    lines.push(folder);
+                }
+                lines.push(match file {
+                    Some(file) => format!("{file}. Safe to remove."),
+                    None => "Safe to remove.".to_owned(),
+                });
+                lines
+            }
+            Some(ExportOutcome::Imported { .. }) => {
+                vec!["Saved in Imported/. Safe to remove.".to_owned()]
+            }
+            None => Vec::new(),
+        }
+    }
+
+    /// What a finished export says it did, for tests and the result screen.
+    pub fn is_import(&self) -> bool {
+        self.mode == ExportMode::Import
+            || matches!(self.outcome, Some(ExportOutcome::Imported { .. }))
     }
 }
 
-/// One sentence for a finished import, shown once under the title.
-pub fn imported_text(count: usize) -> String {
-    let files = if count == 1 { "file" } else { "files" };
-    format!("{count} {files} imported into Imported.")
+fn cycle<T: Clone + PartialEq>(list: &[T], current: &T, delta: i32) -> T {
+    if list.is_empty() {
+        return current.clone();
+    }
+    let len = list.len() as i32;
+    let index = list.iter().position(|item| item == current).unwrap_or(0) as i32;
+    list[((index + delta).rem_euclid(len)) as usize].clone()
 }
 
-pub fn outcome_text(outcome: Option<&ExportOutcome>) -> String {
-    match outcome {
-        Some(ExportOutcome::Exported { path }) => {
-            format!("Exported to {path}. Safe to remove the drive.")
-        }
-        Some(ExportOutcome::Imported { paths }) => imported_text(paths.len()),
-        None => String::new(),
+/// The folder a finished export went into. The daemon may return the folder
+/// itself or the file it wrote; both read as the last real folder name.
+pub fn export_location(path: &str) -> Option<String> {
+    let trimmed = path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let name = trimmed.rsplit('/').next()?;
+    let looks_like_file = name
+        .rsplit_once('.')
+        .map(|(stem, extension)| {
+            !stem.is_empty()
+                && !extension.is_empty()
+                && extension.len() <= 6
+                && !extension.contains(' ')
+        })
+        .unwrap_or(false);
+    let folder = if looks_like_file {
+        trimmed
+            .rsplit_once('/')
+            .map(|(parent, _)| parent.rsplit('/').next().unwrap_or_default())?
+    } else {
+        name
+    };
+    if folder.is_empty() || folder == "media" || folder == "carrel" {
+        None
+    } else {
+        Some(folder.to_owned())
+    }
+}
+
+/// The import result headline, matching "Exported to …": who did what, and
+/// from which drive.
+pub fn imported_heading(files: usize, drive: &str) -> String {
+    match files {
+        0 => format!("No files imported from {drive}"),
+        1 => format!("Imported 1 file from {drive}"),
+        count => format!("Imported {count} files from {drive}"),
     }
 }
 
@@ -415,17 +595,28 @@ fn free_space(bytes: u64) -> String {
 pub struct ExportPage {
     pub widget: gtk::Overlay,
     screen: Rc<ui::Screen>,
-    list: gtk::ListBox,
-    list_scroller: gtk::ScrolledWindow,
-    list_fade: gtk::Overlay,
-    note: gtk::Label,
-    done_heading: gtk::Label,
-    done_detail: gtk::Label,
+    rows: gtk::ListBox,
+    configure: gtk::Box,
+    action: gtk::Button,
+    action_cap: gtk::Label,
+    action_word: gtk::Label,
+    quiet: gtk::Button,
+    quiet_cap: gtk::Label,
+    quiet_word: gtk::Label,
+    progress: gtk::Box,
+    progress_heading: gtk::Label,
+    progress_line: gtk::Label,
+    result: gtk::Box,
+    result_heading: gtk::Label,
+    result_location: gtk::Label,
+    result_detail: gtk::Label,
     state: RefCell<ExportState>,
+    prefs: RefCell<ExportPrefs>,
     client: Client,
     nav: Rc<Navigator>,
     editor: Rc<EditorPage>,
     store: Store,
+    updating: Cell<bool>,
 }
 
 impl ExportPage {
@@ -436,44 +627,83 @@ impl ExportPage {
         store: Store,
     ) -> Rc<Self> {
         let screen = ui::Screen::new("Export");
-        screen.set_hints(&HINTS);
+        screen.set_hints(&EXPORT_HINTS);
 
-        let list = ui::list();
-        let list_scroller = ui::scroller(&list);
-        let list_fade = ui::fade_top(&list_scroller);
-        screen.content.append(&list_fade);
+        let rows = ui::list();
+        rows.set_selection_mode(gtk::SelectionMode::Single);
 
-        let note = gtk::Label::new(None);
-        note.set_xalign(0.0);
-        note.set_wrap(true);
-        note.add_css_class("notice-line");
-        screen.content.append(&note);
+        let (action, action_cap, action_word) =
+            action_button("Enter", "Export", "export-action", "action-word");
+        action.set_margin_top(22);
+        let (quiet, quiet_cap, quiet_word) =
+            action_button("I", "Import from a USB drive", "quiet-action", "quiet-word");
+        quiet.set_margin_top(12);
 
-        let done_heading = gtk::Label::new(None);
-        done_heading.set_xalign(0.0);
-        done_heading.add_css_class("done-heading");
-        screen.content.append(&done_heading);
-        let done_detail = gtk::Label::new(None);
-        done_detail.set_xalign(0.0);
-        done_detail.set_wrap(true);
-        done_detail.add_css_class("row-note");
-        done_detail.set_visible(false);
-        screen.content.append(&done_detail);
+        let configure = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        configure.append(&rows);
+        configure.append(&action);
+        configure.append(&quiet);
+        screen.content.append(&configure);
 
+        let progress_heading = gtk::Label::new(None);
+        progress_heading.set_xalign(0.0);
+        progress_heading.set_wrap(true);
+        progress_heading.add_css_class("step-title");
+        let progress_line = gtk::Label::new(None);
+        progress_line.set_xalign(0.0);
+        progress_line.set_wrap(true);
+        progress_line.add_css_class("row-note");
+        let progress = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        progress.set_margin_top(22);
+        progress.append(&progress_heading);
+        progress.append(&progress_line);
+        screen.content.append(&progress);
+
+        let result_heading = gtk::Label::new(None);
+        result_heading.set_xalign(0.0);
+        result_heading.set_wrap(true);
+        result_heading.add_css_class("step-title");
+        let result_location = gtk::Label::new(None);
+        result_location.set_xalign(0.0);
+        result_location.set_wrap(true);
+        result_location.add_css_class("row-note");
+        let result_detail = gtk::Label::new(None);
+        result_detail.set_xalign(0.0);
+        result_detail.set_wrap(true);
+        result_detail.add_css_class("file-name");
+        let result = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        result.set_margin_top(22);
+        result.append(&result_heading);
+        result.append(&result_location);
+        result.append(&result_detail);
+        screen.content.append(&result);
+
+        let prefs = ExportPrefs::load(store.root());
         let page = Rc::new(Self {
             widget: screen.root.clone(),
             screen,
-            list,
-            list_scroller,
-            list_fade,
-            note,
-            done_heading,
-            done_detail,
+            rows,
+            configure,
+            action,
+            action_cap,
+            action_word,
+            quiet,
+            quiet_cap,
+            quiet_word,
+            progress,
+            progress_heading,
+            progress_line,
+            result,
+            result_heading,
+            result_location,
+            result_detail,
             state: RefCell::new(ExportState::default()),
+            prefs: RefCell::new(prefs),
             client,
             nav,
             editor,
             store,
+            updating: Cell::new(false),
         });
         page.install();
         page
@@ -481,10 +711,34 @@ impl ExportPage {
 
     fn install(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
-        self.list.connect_row_activated(move |_, row| {
+        self.rows.connect_row_selected(move |_, row| {
+            if let Some(page) = weak.upgrade() {
+                if page.updating.get() {
+                    return;
+                }
+                if let Some(row) = row {
+                    page.state.borrow_mut().select(row.index().max(0) as usize);
+                }
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.rows.connect_row_activated(move |_, row| {
             if let Some(page) = weak.upgrade() {
                 page.state.borrow_mut().select(row.index().max(0) as usize);
+                page.state.borrow_mut().cycle(1);
+                page.refresh();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.action.connect_clicked(move |_| {
+            if let Some(page) = weak.upgrade() {
                 page.choose();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.quiet.connect_clicked(move |_| {
+            if let Some(page) = weak.upgrade() {
+                page.quiet_action();
             }
         });
         let weak = Rc::downgrade(self);
@@ -494,49 +748,107 @@ impl ExportPage {
                 page.screen.focus_page();
             }
         });
+
+        // A drive can arrive at any moment. Two quiet checks a second are
+        // enough for the To row to turn into the drive while the writer
+        // watches, and they stop as soon as the screen is hidden.
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(2, move || {
+            let Some(page) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if page.widget.is_mapped() && page.state.borrow().step == ExportStep::Configure {
+                page.load_drives();
+            }
+            glib::ControlFlow::Continue
+        });
     }
 
-    /// Show the destination step directly, as if "Everything" and a format
-    /// had been chosen. Used by the screenshot script; harmless otherwise.
+    /// Open the screen with the choices it remembers. Used when Ctrl+E is
+    /// pressed while the finished result is already on screen.
+    pub fn reopen(self: &Rc<Self>) {
+        if self.state.borrow().step == ExportStep::Running {
+            return;
+        }
+        self.prefs.borrow_mut().what = self.state.borrow().target;
+        self.prefs.borrow_mut().folder = self.state.borrow().folder.clone();
+        self.prefs.borrow_mut().format = self.state.borrow().format;
+        {
+            let mut state = self.state.borrow_mut();
+            state.mode = ExportMode::Export;
+            state.step = ExportStep::Configure;
+            state.row = 0;
+            state.outcome = None;
+            state.error = None;
+            state.normalize();
+        }
+        self.refresh();
+        self.load_drives();
+    }
+
+    /// Show the destination directly, as if "Everything" had been chosen.
+    /// Used by the screenshot script; harmless otherwise.
     pub fn start_at_drive(self: &Rc<Self>) {
         self.nav.show("export");
         {
             let mut state = self.state.borrow_mut();
-            state.reset();
-            state.what = Some(What::Everything);
-            state.step = ExportStep::Drive;
+            state.open(
+                &self.prefs.borrow(),
+                self.state_current_file(),
+                self.state_folders(),
+            );
+            state.target = ExportTarget::Everything;
         }
         self.refresh();
         self.load_drives();
     }
 
     fn on_open(self: &Rc<Self>) {
+        let current_file = self
+            .editor
+            .current_rel()
+            .map(|path| path.to_string_lossy().to_string());
+        let folders = self
+            .store
+            .list(Path::new(""))
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|entry| entry.is_dir)
+                    .map(|entry| entry.name)
+                    .collect()
+            })
+            .unwrap_or_default();
         {
             let mut state = self.state.borrow_mut();
-            state.current_file = self
-                .editor
-                .current_rel()
-                .map(|path| path.to_string_lossy().to_string());
-            state.folders = self
-                .store
-                .list(std::path::Path::new(""))
-                .map(|entries| {
-                    entries
-                        .into_iter()
-                        .filter(|entry| entry.is_dir)
-                        .map(|entry| entry.name)
-                        .collect()
-                })
-                .unwrap_or_default();
-            if matches!(state.step, ExportStep::Done | ExportStep::Running) {
-                state.reset();
+            // A running export keeps its progress screen if the writer comes
+            // back to it; anything else starts fresh with the remembered
+            // choices.
+            if state.step != ExportStep::Running {
+                state.open(&self.prefs.borrow(), current_file, folders);
             }
         }
         self.refresh();
-        let step = self.state.borrow().step;
-        if step == ExportStep::Drive {
-            self.load_drives();
-        }
+        self.load_drives();
+    }
+
+    fn state_current_file(&self) -> Option<String> {
+        self.editor
+            .current_rel()
+            .map(|path| path.to_string_lossy().to_string())
+    }
+
+    fn state_folders(&self) -> Vec<String> {
+        self.store
+            .list(Path::new(""))
+            .map(|entries| {
+                entries
+                    .into_iter()
+                    .filter(|entry| entry.is_dir)
+                    .map(|entry| entry.name)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn load_drives(self: &Rc<Self>) {
@@ -548,50 +860,65 @@ impl ExportPage {
                     return;
                 };
                 match result {
-                    Ok(drives) => {
-                        page.state.borrow_mut().on_drives(drives);
-                        page.refresh();
-                        let empty = page.state.borrow().drives.is_empty();
-                        let step = page.state.borrow().step;
-                        if empty && step == ExportStep::Drive {
-                            page.schedule_drive_rescan();
-                        }
-                    }
-                    Err(error) => {
-                        page.state.borrow_mut().error = Some(error.message);
-                        page.refresh();
-                    }
+                    Ok(drives) => page.state.borrow_mut().on_drives(drives),
+                    Err(error) => page.state.borrow_mut().error = Some(error.message),
                 }
+                page.refresh();
             },
         );
     }
 
-    fn schedule_drive_rescan(self: &Rc<Self>) {
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_local_once(Duration::from_secs(2), move || {
-            if let Some(page) = weak.upgrade() {
-                if page.state.borrow().step == ExportStep::Drive
-                    && page.state.borrow().drives.is_empty()
-                {
-                    page.load_drives();
-                }
-            }
-        });
-    }
-
     fn choose(self: &Rc<Self>) {
         let effect = self.state.borrow_mut().choose();
-        self.refresh();
+        if effect.is_none() {
+            self.refresh();
+            return;
+        }
+        let prefs = self.state.borrow().prefs();
+        prefs.save(self.store.root());
+        *self.prefs.borrow_mut() = prefs;
         if let Some(effect) = effect {
             self.run_effect(effect);
         }
     }
 
+    fn quiet_action(self: &Rc<Self>) {
+        if self.state.borrow().step == ExportStep::Running {
+            return;
+        }
+        let to_import = self.state.borrow().mode == ExportMode::Export;
+        self.show_mode(if to_import {
+            ExportMode::Import
+        } else {
+            ExportMode::Export
+        });
+    }
+
+    /// One screen, two jobs: the three export rows or the import row.
+    fn show_mode(self: &Rc<Self>, mode: ExportMode) {
+        {
+            let mut state = self.state.borrow_mut();
+            state.mode = mode;
+            state.step = ExportStep::Configure;
+            state.row = 0;
+            state.outcome = None;
+            state.error = None;
+        }
+        self.refresh();
+        self.load_drives();
+    }
+
     fn run_effect(self: &Rc<Self>, effect: ExportEffect) {
         match effect {
-            ExportEffect::ListDrives => self.load_drives(),
-            ExportEffect::Export(request) => {
-                self.state.borrow_mut().step = ExportStep::Running;
+            ExportEffect::Export {
+                request,
+                drive,
+                file,
+            } => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.on_running(drive.clone());
+                }
                 self.refresh();
                 let weak = Rc::downgrade(self);
                 self.client.spawn(
@@ -607,15 +934,24 @@ impl ExportPage {
                             return;
                         };
                         match result {
-                            Ok(path) => page.state.borrow_mut().on_exported(path),
+                            Ok(path) => {
+                                page.state.borrow_mut().on_exported(
+                                    path,
+                                    drive.clone(),
+                                    file.clone(),
+                                );
+                            }
                             Err(error) => page.state.borrow_mut().on_error(error.message),
                         }
                         page.refresh();
                     },
                 );
             }
-            ExportEffect::Import { drive_id } => {
-                self.state.borrow_mut().step = ExportStep::Running;
+            ExportEffect::Import { drive_id, drive } => {
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.on_running(drive.clone());
+                }
                 self.refresh();
                 let weak = Rc::downgrade(self);
                 self.client.spawn(
@@ -625,7 +961,9 @@ impl ExportPage {
                             return;
                         };
                         match result {
-                            Ok(paths) => page.state.borrow_mut().on_imported(paths),
+                            Ok(paths) => {
+                                page.state.borrow_mut().on_imported(paths, drive.clone());
+                            }
                             Err(error) => page.state.borrow_mut().on_error(error.message),
                         }
                         page.refresh();
@@ -633,6 +971,13 @@ impl ExportPage {
                 );
             }
         }
+    }
+
+    /// Whether the action is enabled, for the GTK scenario that plugs a drive
+    /// in after the screen opened.
+    #[cfg(test)]
+    pub(crate) fn can_export(&self) -> bool {
+        self.state.borrow().can_export()
     }
 
     pub(crate) fn handle_key(
@@ -649,22 +994,44 @@ impl ExportPage {
                 self.nav.show_editor();
                 glib::Propagation::Stop
             }
-            _ if keyval.to_lower() == gdk::Key::r && step == ExportStep::Drive => {
-                self.load_drives();
-                glib::Propagation::Stop
-            }
-            gdk::Key::Up if !matches!(step, ExportStep::Running | ExportStep::Done) => {
+            gdk::Key::Up if step == ExportStep::Configure => {
                 self.state.borrow_mut().move_by(-1);
                 self.refresh();
                 glib::Propagation::Stop
             }
-            gdk::Key::Down if !matches!(step, ExportStep::Running | ExportStep::Done) => {
+            gdk::Key::Down if step == ExportStep::Configure => {
                 self.state.borrow_mut().move_by(1);
                 self.refresh();
                 glib::Propagation::Stop
             }
+            gdk::Key::Left if step == ExportStep::Configure => {
+                self.state.borrow_mut().cycle(-1);
+                self.refresh();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Right if step == ExportStep::Configure => {
+                self.state.borrow_mut().cycle(1);
+                self.refresh();
+                glib::Propagation::Stop
+            }
             gdk::Key::Return | gdk::Key::KP_Enter => {
-                self.choose();
+                match step {
+                    ExportStep::Configure => self.choose(),
+                    ExportStep::Done => self.nav.show_editor(),
+                    ExportStep::Running => {}
+                }
+                glib::Propagation::Stop
+            }
+            _ if keyval.to_lower() == gdk::Key::i && step != ExportStep::Running => {
+                // I is always "Import": the quiet action on the export rows,
+                // and "Import something else" on the finished result.
+                self.show_mode(ExportMode::Import);
+                glib::Propagation::Stop
+            }
+            _ if keyval.to_lower() == gdk::Key::e && step != ExportStep::Running => {
+                // E is always "Export": the quiet action while importing, and
+                // "Export something else" on the finished result.
+                self.show_mode(ExportMode::Export);
                 glib::Propagation::Stop
             }
             _ => glib::Propagation::Proceed,
@@ -672,90 +1039,192 @@ impl ExportPage {
     }
 
     fn refresh(self: &Rc<Self>) {
-        while let Some(child) = self.list.first_child() {
-            self.list.remove(&child);
+        let (step, error, import) = {
+            let state = self.state.borrow();
+            (state.step, state.error.clone(), state.is_import())
+        };
+        self.screen
+            .set_title(if import { "Import" } else { "Export" });
+        let status = self.state.borrow().status(&ui::local_date());
+        if error.is_some() {
+            self.screen.set_status_error(&status);
+        } else {
+            self.screen.set_status(&status);
         }
-        let (step, rows, selected, note, error, done_heading, done_detail) = {
+
+        self.configure.set_visible(step == ExportStep::Configure);
+        self.progress.set_visible(step == ExportStep::Running);
+        self.result.set_visible(step == ExportStep::Done);
+
+        match step {
+            ExportStep::Configure => {
+                self.rebuild_rows();
+                let state = self.state.borrow();
+                let exporting = state.mode == ExportMode::Export;
+                self.action_cap.set_text("Enter");
+                self.action_word
+                    .set_text(if exporting { "Export" } else { "Import" });
+                let can = state.can_export();
+                self.action.set_sensitive(can);
+                if can {
+                    self.action.remove_css_class("action-disabled");
+                } else {
+                    self.action.add_css_class("action-disabled");
+                }
+                self.quiet_cap.set_text(if exporting { "I" } else { "E" });
+                self.quiet_word.set_text(if exporting {
+                    "Import from a USB drive"
+                } else {
+                    "Export instead"
+                });
+                let hints = match (exporting, can) {
+                    (true, true) => &EXPORT_HINTS[..],
+                    (true, false) => &EXPORT_NO_DRIVE_HINTS[..],
+                    (false, true) => &IMPORT_HINTS[..],
+                    (false, false) => &IMPORT_NO_DRIVE_HINTS[..],
+                };
+                drop(state);
+                self.screen.set_hints(hints);
+            }
+            ExportStep::Running => {
+                self.progress_heading
+                    .set_text(&self.state.borrow().progress_heading());
+                self.progress_line
+                    .set_text(self.state.borrow().progress_line());
+                self.screen.set_hints(&RUNNING_HINTS);
+            }
+            ExportStep::Done => {
+                let state = self.state.borrow();
+                let heading = state.outcome_heading().unwrap_or_default();
+                let lines = state.outcome_lines();
+                self.result_heading.set_text(&heading);
+                self.result_heading.set_visible(!heading.is_empty());
+                let (location, detail) = match lines.as_slice() {
+                    [] => (None, None),
+                    [only] => (None, Some(only.as_str())),
+                    [location, detail, ..] => (Some(location.as_str()), Some(detail.as_str())),
+                };
+                self.result_location.set_text(location.unwrap_or_default());
+                self.result_location.set_visible(location.is_some());
+                self.result_detail.set_text(detail.unwrap_or_default());
+                self.result_detail.set_visible(detail.is_some());
+                let hints = if state.is_import() {
+                    &DONE_IMPORT_HINTS[..]
+                } else {
+                    &DONE_EXPORT_HINTS[..]
+                };
+                drop(state);
+                self.screen.set_hints(hints);
+            }
+        }
+    }
+
+    fn rebuild_rows(self: &Rc<Self>) {
+        while let Some(child) = self.rows.first_child() {
+            self.rows.remove(&child);
+        }
+        self.updating.set(true);
+        let (row, target, format, folder, drive, has_file, current_path, folder_count, drive_count) = {
             let state = self.state.borrow();
             (
-                state.step,
-                state.rows(),
-                state.selected_row(),
-                state.note(&ui::local_date()),
-                state.error.clone(),
-                state.done_heading(),
-                state.outcome_detail(),
+                state.row,
+                state.target,
+                state.format,
+                state.folder_label(),
+                state.current_drive().map(|drive| {
+                    format!("{} · {} free", drive.label, free_space(drive.free_bytes))
+                }),
+                state.current_file.is_some(),
+                state.current_file.clone(),
+                state.folders.len(),
+                state.drives.len(),
             )
         };
-        {
-            let state = self.state.borrow();
-            let importing = state.what == Some(What::Import)
-                || matches!(state.outcome.as_ref(), Some(ExportOutcome::Imported { .. }));
-            self.screen
-                .set_title(if importing { "Import" } else { "Export" });
-        }
-        let import_done = {
-            let state = self.state.borrow();
-            state.step == ExportStep::Done
-                && matches!(state.outcome.as_ref(), Some(ExportOutcome::Imported { .. }))
-        };
-        if import_done {
-            // One line under the title, once: no "Finished", no heading, no
-            // second sentence.
-            self.screen.set_status("");
-        } else {
-            self.screen.set_status(self.state.borrow().step_title());
-        }
-        for (index, row) in rows.iter().enumerate() {
+        for kind in self.state.borrow().rows() {
+            let (name, value, dim, changeable) = match kind {
+                ExportRow::What => (
+                    "What",
+                    match target {
+                        ExportTarget::Current if has_file => format!(
+                            "Current file · {}",
+                            display_path(Path::new(current_path.as_deref().unwrap_or_default()))
+                        ),
+                        ExportTarget::Current => "Current file · no file open".to_owned(),
+                        ExportTarget::Folder => "A folder…".to_owned(),
+                        ExportTarget::Everything => "Everything".to_owned(),
+                    },
+                    target == ExportTarget::Current && !has_file,
+                    true,
+                ),
+                ExportRow::Folder => ("Folder", folder.clone(), false, folder_count > 0),
+                ExportRow::Format => ("Format", format.label().to_owned(), false, true),
+                ExportRow::To => (
+                    "To",
+                    drive
+                        .clone()
+                        .unwrap_or_else(|| "Insert a USB drive".to_owned()),
+                    drive.is_none(),
+                    drive_count > 1,
+                ),
+            };
             let element = gtk::ListBoxRow::new();
             element.add_css_class("ui-row");
             element.add_css_class("file-row");
-            let label = gtk::Label::new(Some(row));
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            let label = gtk::Label::new(Some(name));
             label.set_xalign(0.0);
-            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            label.add_css_class("file-name");
-            if step == ExportStep::Drive && self.state.borrow().drives.is_empty() {
-                label.add_css_class("row-note");
-            }
-            element.set_child(Some(&label));
-            self.list.append(&element);
-            let _ = index;
+            label.set_size_request(86, -1);
+            label.add_css_class("setting-value");
+            let value = gtk::Label::new(Some(&value));
+            value.set_xalign(0.0);
+            value.set_hexpand(true);
+            value.set_ellipsize(gtk::pango::EllipsizeMode::End);
+            value.add_css_class(if dim { "row-note" } else { "file-name" });
+            let arrows = gtk::Label::new(Some("‹ ›"));
+            arrows.add_css_class("row-note");
+            arrows.set_visible(changeable);
+            line.append(&label);
+            line.append(&value);
+            line.append(&arrows);
+            element.set_child(Some(&line));
+            self.rows.append(&element);
         }
-        self.list.set_visible(!rows.is_empty());
-        self.list_scroller.set_visible(!rows.is_empty());
-        self.list_fade.set_visible(!rows.is_empty());
-        ui::select(&self.list, selected);
-        if let Some(row) = self.list.row_at_index(selected as i32) {
-            ui::scroll_to_row(&self.list_scroller, &self.list, &row);
-        }
-        self.note.set_text(&error.clone().unwrap_or(note));
-        if error.is_some() {
-            self.note.add_css_class("error-text");
-        } else {
-            self.note.remove_css_class("error-text");
-        }
-        self.done_heading.set_text(done_heading.unwrap_or(""));
-        self.done_heading.set_visible(done_heading.is_some());
-        self.done_detail
-            .set_text(&done_detail.clone().unwrap_or_default());
-        self.done_detail.set_visible(done_detail.is_some());
-
-        match step {
-            ExportStep::Drive if self.state.borrow().what == Some(What::Import) => {
-                self.screen.set_hints(&IMPORT_HINTS);
-            }
-            ExportStep::Drive => self.screen.set_hints(&DRIVE_HINTS),
-            ExportStep::Running => self.screen.set_hints(&RUNNING_HINTS),
-            ExportStep::Done => self.screen.set_hints(&DONE_HINTS),
-            _ => self.screen.set_hints(&HINTS),
-        }
+        ui::select(&self.rows, row);
+        self.updating.set(false);
     }
+}
+
+/// A button that reads as a key cap and its action, not as chrome.
+fn action_button(
+    cap: &str,
+    word: &str,
+    class: &str,
+    word_class: &str,
+) -> (gtk::Button, gtk::Label, gtk::Label) {
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    content.set_halign(gtk::Align::Start);
+    let cap = gtk::Label::new(Some(cap));
+    cap.add_css_class("key-cap");
+    cap.set_valign(gtk::Align::Center);
+    let word = gtk::Label::new(Some(word));
+    word.add_css_class(word_class);
+    word.set_valign(gtk::Align::Center);
+    content.append(&cap);
+    content.append(&word);
+    let button = gtk::Button::new();
+    button.set_child(Some(&content));
+    button.add_css_class(class);
+    // The page owns the keyboard; a click still works.
+    button.set_focusable(false);
+    button.set_can_focus(false);
+    (button, cap, word)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::daemon::{DaemonClient, FakeDaemon};
+    use tempfile::tempdir;
 
     fn drive() -> Drive {
         Drive {
@@ -766,12 +1235,14 @@ mod tests {
     }
 
     fn state_with_file() -> ExportState {
-        ExportState {
-            current_file: Some("The quiet morning.md".into()),
-            folders: vec!["Novel".into(), "Notes".into()],
-            drives: vec![drive()],
-            ..ExportState::default()
-        }
+        let mut state = ExportState::default();
+        state.open(
+            &ExportPrefs::default(),
+            Some("The quiet morning.md".into()),
+            vec!["Novel".into(), "Notes".into()],
+        );
+        state.on_drives(vec![drive()]);
+        state
     }
 
     #[test]
@@ -793,111 +1264,304 @@ mod tests {
             ]
         );
         assert_eq!(ExportFormat::Docx.wire(), "docx");
+        assert_eq!(ExportFormat::Docx.extension(), "docx");
+        assert_eq!(ExportFormat::Text.extension(), "txt");
     }
 
     #[test]
-    fn current_file_goes_format_drive_export() {
+    fn the_screen_opens_as_one_compact_set_of_rows() {
+        let state = state_with_file();
+        assert_eq!(
+            state.rows(),
+            vec![ExportRow::What, ExportRow::Format, ExportRow::To]
+        );
+        assert_eq!(state.selected_row(), ExportRow::What);
+        assert_eq!(state.target, ExportTarget::Current);
+        assert_eq!(state.format, ExportFormat::Markdown);
+        assert_eq!(state.current_drive().unwrap().label, "CARREL USB");
+    }
+
+    #[test]
+    fn a_folder_adds_one_row_and_keeps_its_name() {
         let mut state = state_with_file();
-        assert_eq!(state.step, ExportStep::What);
-        assert_eq!(state.choose(), None);
-        assert_eq!(state.step, ExportStep::Format);
-        state.select(2); // Word .docx
-        assert_eq!(state.choose(), Some(ExportEffect::ListDrives));
-        assert_eq!(state.step, ExportStep::Drive);
+        state.cycle(1);
+        assert_eq!(state.target, ExportTarget::Folder);
+        assert_eq!(
+            state.rows(),
+            vec![
+                ExportRow::What,
+                ExportRow::Folder,
+                ExportRow::Format,
+                ExportRow::To
+            ]
+        );
+        state.move_by(1);
+        assert_eq!(state.selected_row(), ExportRow::Folder);
+        state.cycle(1);
+        assert_eq!(state.folder, "Novel");
+        assert_eq!(state.folder_label(), "Novel");
+        state.cycle(-1);
+        assert_eq!(state.folder, "");
+        assert_eq!(state.folder_label(), "Writing");
+    }
+
+    #[test]
+    fn left_and_right_change_format_and_drive_without_a_list_screen() {
+        let mut state = state_with_file();
+        state.move_by(1);
+        assert_eq!(state.selected_row(), ExportRow::Format);
+        state.cycle(1);
+        assert_eq!(state.format, ExportFormat::Text);
+        state.cycle(1);
+        assert_eq!(state.format, ExportFormat::Docx);
+        state.cycle(-1);
+        assert_eq!(state.format, ExportFormat::Text);
+        state.cycle(3);
+        assert_eq!(state.format, ExportFormat::Pdf);
+
+        state.on_drives(vec![
+            drive(),
+            Drive {
+                id: "usb-2".into(),
+                label: "ARCHIVE".into(),
+                free_bytes: 2_000_000_000,
+            },
+        ]);
+        state.move_by(1);
+        assert_eq!(state.selected_row(), ExportRow::To);
+        state.cycle(1);
+        assert_eq!(state.current_drive().unwrap().id, "usb-2");
+        state.cycle(1);
+        assert_eq!(state.current_drive().unwrap().id, "usb-1");
+    }
+
+    #[test]
+    fn enter_exports_the_current_file_in_the_chosen_format() {
+        let mut state = state_with_file();
+        state.move_by(1);
+        state.cycle(1);
+        state.cycle(1); // Word .docx
         let effect = state.choose().unwrap();
         assert_eq!(
             effect,
-            ExportEffect::Export(ExportRequest {
-                selection: vec!["current:The quiet morning.md".into()],
-                format: "docx".into(),
-                drive_id: "usb-1".into(),
-            })
+            ExportEffect::Export {
+                request: ExportRequest {
+                    selection: vec!["current:The quiet morning.md".into()],
+                    format: "docx".into(),
+                    drive_id: "usb-1".into(),
+                },
+                drive: "CARREL USB".into(),
+                file: Some("The quiet morning.docx".into()),
+            }
         );
     }
 
     #[test]
     fn everything_is_one_selection_and_a_dated_folder() {
         let mut state = state_with_file();
-        state.select(2);
-        state.choose();
-        state.choose(); // format -> drive
-        let ExportEffect::Export(request) = state.choose().unwrap() else {
+        state.cycle(1);
+        state.cycle(1); // Everything
+        assert_eq!(state.target, ExportTarget::Everything);
+        let ExportEffect::Export { request, file, .. } = state.choose().unwrap() else {
             panic!("expected an export");
         };
         assert_eq!(request.selection, vec!["all"]);
+        assert_eq!(file, None);
         assert!(state
-            .note("2026-11-12")
+            .status("2026-11-12")
             .contains("Carrel export 2026-11-12/"));
     }
 
     #[test]
-    fn a_folder_keeps_its_path() {
+    fn a_folder_keeps_its_path_in_the_selection() {
         let mut state = state_with_file();
-        state.select(1);
-        state.choose();
-        assert_eq!(state.step, ExportStep::Folder);
-        assert_eq!(state.rows(), vec!["Writing", "Novel", "Notes"]);
+        state.cycle(1);
         state.move_by(1);
-        state.choose();
-        assert_eq!(state.what, Some(What::Folder("Novel".into())));
-        assert_eq!(state.step, ExportStep::Format);
+        state.cycle(1);
+        let ExportEffect::Export { request, .. } = state.choose().unwrap() else {
+            panic!("expected an export");
+        };
+        assert_eq!(request.selection, vec!["folder:Novel"]);
     }
 
     #[test]
-    fn no_drive_says_insert_a_usb_drive_and_asks_again() {
+    fn no_drive_says_insert_and_disables_the_action() {
         let mut state = state_with_file();
-        state.drives.clear();
-        state.choose();
-        state.choose();
-        assert_eq!(state.step, ExportStep::Drive);
-        assert_eq!(state.rows(), vec!["Insert a USB drive"]);
-        assert_eq!(state.choose(), Some(ExportEffect::ListDrives));
+        state.on_drives(Vec::new());
+        assert!(!state.can_export());
+        assert_eq!(state.choose(), None);
+        assert!(state.status("2026-11-13").contains("Plug in a drive"));
     }
 
     #[test]
-    fn import_asks_for_a_drive_then_reports_the_copied_files() {
+    fn a_drive_that_appears_updates_the_state_without_moving_the_file() {
         let mut state = state_with_file();
-        state.select(3);
-        assert_eq!(state.choose(), Some(ExportEffect::ListDrives));
-        assert_eq!(state.step, ExportStep::Drive);
-        assert_eq!(
-            state.choose(),
-            Some(ExportEffect::Import {
-                drive_id: "usb-1".into()
-            })
-        );
-        state.on_imported(vec!["Imported/one.md".into(), "Imported/two.txt".into()]);
-        assert_eq!(state.step, ExportStep::Done);
-        assert_eq!(state.note("2026-11-12"), "2 files imported into Imported.");
-        assert_eq!(state.outcome_detail(), None, "the result is shown once");
-        assert_eq!(state.done_heading(), None);
-        assert_eq!(
-            imported_text(1),
-            "1 file imported into Imported.",
-            "one file reads as a single file"
-        );
-    }
-
-    #[test]
-    fn a_finished_export_shows_the_path_and_safe_to_remove() {
-        let mut state = state_with_file();
-        state.on_exported("/media/usb/Carrel export 2026-11-12/".into());
-        assert_eq!(state.step, ExportStep::Done);
-        assert_eq!(state.done_heading(), Some("Safe to remove"));
-        assert!(state
-            .outcome_detail()
-            .unwrap()
-            .contains("Carrel export 2026-11-12"));
-    }
-
-    #[test]
-    fn an_export_error_returns_to_the_drive_step_with_one_line() {
-        let mut state = state_with_file();
-        state.step = ExportStep::Drive;
+        state.on_drives(Vec::new());
+        assert!(!state.can_export());
         state.on_drives(vec![drive()]);
+        assert!(state.can_export());
+        assert_eq!(state.current_drive().unwrap().label, "CARREL USB");
+    }
+
+    #[test]
+    fn the_result_names_the_drive_the_folder_and_the_file() {
+        let mut state = state_with_file();
+        state.on_exported(
+            "/media/carrel/usb-1/Carrel export 2026-11-13/".into(),
+            "CARREL USB".into(),
+            Some("The quiet morning.docx".into()),
+        );
+        assert_eq!(
+            state.outcome_heading().as_deref(),
+            Some("Exported to CARREL USB")
+        );
+        assert_eq!(
+            state.outcome_lines(),
+            vec![
+                "Carrel export 2026-11-13".to_owned(),
+                "The quiet morning.docx. Safe to remove.".to_owned()
+            ]
+        );
+        assert_eq!(state.step, ExportStep::Done);
+    }
+
+    #[test]
+    fn a_file_path_still_yields_the_folder_above_it() {
+        assert_eq!(
+            export_location("/media/carrel/usb-1/Carrel export 2026-11-13/").as_deref(),
+            Some("Carrel export 2026-11-13")
+        );
+        assert_eq!(
+            export_location("/media/carrel/usb-1/The quiet morning.docx").as_deref(),
+            Some("usb-1")
+        );
+        assert_eq!(export_location(""), None);
+    }
+
+    #[test]
+    fn the_import_result_is_said_once() {
+        let mut state = state_with_file();
+        state.mode = ExportMode::Import;
+        assert_eq!(state.rows(), vec![ExportRow::To]);
+        let effect = state.choose().unwrap();
+        assert_eq!(
+            effect,
+            ExportEffect::Import {
+                drive_id: "usb-1".into(),
+                drive: "CARREL USB".into(),
+            }
+        );
+        state.on_imported(
+            vec!["Imported/one.md".into(), "Imported/two.txt".into()],
+            "CARREL USB".into(),
+        );
+        assert_eq!(
+            state.outcome_heading().as_deref(),
+            Some("Imported 2 files from CARREL USB")
+        );
+        assert_eq!(
+            state.outcome_lines(),
+            vec!["Saved in Imported/. Safe to remove.".to_owned()]
+        );
+        assert!(state.is_import());
+        assert_eq!(
+            imported_heading(1, "CARREL USB"),
+            "Imported 1 file from CARREL USB"
+        );
+        assert_eq!(
+            imported_heading(0, "CARREL USB"),
+            "No files imported from CARREL USB"
+        );
+    }
+
+    #[test]
+    fn an_export_error_returns_to_the_configured_screen_with_one_line() {
+        let mut state = state_with_file();
+        state.on_running("CARREL USB".into());
         state.on_error("the drive was removed".into());
-        assert_eq!(state.step, ExportStep::Drive);
+        assert_eq!(state.step, ExportStep::Configure);
         assert_eq!(state.error.as_deref(), Some("the drive was removed"));
+        assert_eq!(state.status("2026-11-13"), "the drive was removed");
+    }
+
+    #[test]
+    fn the_choices_are_remembered_in_the_writing_folder() {
+        let dir = tempdir().unwrap();
+        let prefs = ExportPrefs {
+            what: ExportTarget::Everything,
+            folder: "Novel".into(),
+            format: ExportFormat::Epub,
+            drive_id: "usb-1".into(),
+        };
+        prefs.save(dir.path());
+        assert_eq!(ExportPrefs::load(dir.path()), prefs);
+
+        let mut state = ExportState::default();
+        state.open(&prefs, Some("Draft.md".into()), vec!["Novel".into()]);
+        assert_eq!(state.target, ExportTarget::Everything);
+        assert_eq!(state.format, ExportFormat::Epub);
+        assert_eq!(state.drive_id, "usb-1");
+        state.on_drives(vec![drive()]);
+        assert_eq!(state.current_drive().unwrap().id, "usb-1");
+
+        // A missing file is simply the spec defaults.
+        let empty = tempdir().unwrap();
+        assert_eq!(ExportPrefs::load(empty.path()), ExportPrefs::default());
+    }
+
+    #[test]
+    fn a_remembered_folder_that_is_gone_falls_back_to_writing() {
+        let prefs = ExportPrefs {
+            what: ExportTarget::Folder,
+            folder: "Gone".into(),
+            ..ExportPrefs::default()
+        };
+        let mut state = ExportState::default();
+        state.open(&prefs, Some("Draft.md".into()), Vec::new());
+        assert_eq!(state.target, ExportTarget::Folder);
+        assert_eq!(state.folder, "");
+        assert_eq!(state.folder_label(), "Writing");
+    }
+
+    #[test]
+    fn open_a_file_first_is_the_only_error_left_on_the_screen() {
+        let mut state = ExportState::default();
+        state.open(&ExportPrefs::default(), None, Vec::new());
+        state.on_drives(vec![drive()]);
+        assert!(state.can_export());
+        assert_eq!(state.choose(), None);
+        assert_eq!(state.error.as_deref(), Some("Open a file first."));
+    }
+
+    #[test]
+    fn the_remembered_drive_is_used_again_when_it_comes_back() {
+        let prefs = ExportPrefs {
+            drive_id: "usb-2".into(),
+            ..ExportPrefs::default()
+        };
+        let mut state = ExportState::default();
+        state.open(&prefs, Some("Draft.md".into()), Vec::new());
+        state.on_drives(vec![drive()]);
+        assert_eq!(
+            state.current_drive().unwrap().id,
+            "usb-1",
+            "the first drive answers while the remembered one is away"
+        );
+        state.on_drives(vec![
+            drive(),
+            Drive {
+                id: "usb-2".into(),
+                label: "ARCHIVE".into(),
+                free_bytes: 2_000_000_000,
+            },
+        ]);
+        assert_eq!(state.current_drive().unwrap().label, "ARCHIVE");
+    }
+
+    #[test]
+    fn free_space_is_readable() {
+        assert_eq!(free_space(12_400_000_000), "12.4 GB");
+        assert_eq!(free_space(620_000_000), "620 MB");
     }
 
     #[test]
@@ -912,11 +1576,5 @@ mod tests {
             vec![(vec!["all".into()], "epub".into(), "usb-1".into())]
         );
         assert_eq!(fake.list_drives().unwrap(), vec![drive()]);
-    }
-
-    #[test]
-    fn free_space_is_readable() {
-        assert_eq!(free_space(12_400_000_000), "12.4 GB");
-        assert_eq!(free_space(620_000_000), "620 MB");
     }
 }
