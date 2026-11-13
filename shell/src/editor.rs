@@ -15,7 +15,7 @@ use crate::focus::{self, Lines};
 use crate::goal;
 use crate::markdown::{self, Kind};
 use crate::settings::{GoalDisplay, Settings};
-use crate::store::{naming, stats, DailyStats, Document, Store};
+use crate::store::{display_name, naming, stats, DailyStats, Document, Store};
 use crate::theme;
 
 /// Line height of body text: 1.6 (spec/03-ui.md).
@@ -24,8 +24,18 @@ const LINE_HEIGHT: f64 = 1.6;
 /// 60–75; Pango's approximate width runs a little wide, so 66 measured
 /// characters lands around 70 real ones in the serif.
 const COLUMN_CHARACTERS: f64 = 66.0;
-/// The comfortable margin above the first line of a file.
+/// The comfortable margin above the first line of a file at the default
+/// 1366×768 window (spec/03-ui.md: 96 px). Larger windows get a little more
+/// air, up to [`EDITOR_TOP_MARGIN_MAX`], so the page keeps its proportions.
 const EDITOR_TOP_MARGIN: i32 = 96;
+const EDITOR_TOP_MARGIN_MAX: i32 = 152;
+/// The band above the page that carries the open document's name. It is paper,
+/// not a bar: there is no edge, no shadow and no second surface.
+const DOCUMENT_NAME_BAND: i32 = 54;
+/// The caret line rests here once it is past the middle of the page.
+const TYPEWRITER_LINE: f64 = 0.5;
+/// How long the bottom line and the document name stay dim after a key.
+const TYPING_DIM: Duration = Duration::from_millis(1400);
 /// The one quiet line an empty document shows, where the text will begin.
 pub const START_HINT: &str = "Start writing. Ctrl+K for everything else.";
 
@@ -36,12 +46,18 @@ pub struct EditorPage {
     scroller: gtk::ScrolledWindow,
     status: gtk::Label,
     bottom: gtk::Box,
+    /// The open document's name, without its extension: one quiet line above
+    /// the page, never a bar or a tab.
+    document_name: gtk::Label,
     start_hint: gtk::Label,
     note: gtk::Label,
     hairline: gtk::DrawingArea,
     hairline_fraction: Rc<Cell<f64>>,
     hairline_color: Rc<RefCell<(f64, f64, f64)>>,
     note_generation: Cell<u64>,
+    /// The bottom line and the name dim while this generation is current;
+    /// the last key's timeout clears the class.
+    typing_generation: Cell<u64>,
     battery_hint: RefCell<BatteryHint>,
     store: Store,
     settings: Rc<RefCell<Settings>>,
@@ -115,6 +131,9 @@ impl EditorPage {
 
         let status = gtk::Label::new(None);
         status.set_xalign(0.0);
+        status.set_hexpand(true);
+        status.set_single_line_mode(true);
+        status.set_ellipsize(pango::EllipsizeMode::End);
         status.add_css_class("bottom-line");
 
         // The bottom line ends with a dim Ctrl+K key cap, so the palette is
@@ -124,9 +143,29 @@ impl EditorPage {
         cap.set_valign(gtk::Align::Center);
         let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         bottom.add_css_class("bottom-line-row");
+        bottom.set_halign(gtk::Align::Center);
         bottom.append(&status);
         bottom.append(&cap);
         bottom.set_visible(settings.borrow().show_bottom_line);
+
+        // The document's name, quiet, in the page's top margin. The band is
+        // the same paper as the page: no edge, no shadow, no second surface.
+        let document_name = gtk::Label::new(None);
+        document_name.add_css_class("document-name");
+        document_name.set_halign(gtk::Align::Center);
+        document_name.set_valign(gtk::Align::Center);
+        document_name.set_hexpand(true);
+        document_name.set_max_width_chars(48);
+        document_name.set_ellipsize(pango::EllipsizeMode::Middle);
+        document_name.set_can_target(false);
+        document_name.set_focusable(false);
+        document_name.set_visible(false);
+        let name_band = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        name_band.add_css_class("document-name-band");
+        name_band.set_height_request(DOCUMENT_NAME_BAND);
+        name_band.set_valign(gtk::Align::Start);
+        name_band.set_vexpand(false);
+        name_band.append(&document_name);
 
         // Where the text will begin: one quiet line in an empty document. It
         // sits exactly over the first character and leaves with the first
@@ -146,6 +185,27 @@ impl EditorPage {
         view_overlay.set_hexpand(false);
         view_overlay.set_vexpand(true);
         view_overlay.add_overlay(&start_hint);
+
+        // A page that is scrolled fades its top edge, so a line is never cut
+        // in half under the document's name. It appears only while scrolled.
+        let fade = gtk::DrawingArea::new();
+        fade.set_content_height(30);
+        fade.set_vexpand(false);
+        fade.set_valign(gtk::Align::Start);
+        fade.set_halign(gtk::Align::Fill);
+        fade.set_can_target(false);
+        fade.set_focusable(false);
+        fade.add_css_class("scroll-fade-top");
+        fade.set_visible(false);
+        view_overlay.add_overlay(&fade);
+        {
+            let fade = fade.clone();
+            scroller
+                .vadjustment()
+                .connect_value_changed(move |adjustment| {
+                    fade.set_visible(adjustment.value() > 1.0);
+                });
+        }
 
         let note = gtk::Label::new(None);
         note.set_xalign(0.5);
@@ -185,12 +245,13 @@ impl EditorPage {
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.add_css_class("carrel-page");
+        widget.append(&name_band);
         widget.append(&view_overlay);
         widget.append(&note);
         widget.append(&bottom);
         widget.append(&hairline);
 
-        let tags = Tags::new(&buffer, &palette);
+        let tags = Tags::new(&buffer, &palette, settings.borrow().font_size);
 
         let today = local_date();
         let stats = store.load_stats(&today);
@@ -201,12 +262,14 @@ impl EditorPage {
             scroller,
             status,
             bottom,
+            document_name,
             start_hint,
             note,
             hairline,
             hairline_fraction,
             hairline_color,
             note_generation: Cell::new(0),
+            typing_generation: Cell::new(0),
             battery_hint: RefCell::new(BatteryHint::default()),
             store,
             settings,
@@ -390,8 +453,35 @@ impl EditorPage {
 
     fn note_edit(self: &Rc<Self>) {
         self.last_edit_at.set(Instant::now());
+        self.dim_chrome();
         self.schedule_restyle();
         self.schedule_status();
+        // Typing inserts after the cursor, so the insert mark itself does not
+        // move; the page still has to follow the line as it travels.
+        self.scroll_to_cursor();
+    }
+
+    /// The bottom line and the document's name step back while the writer
+    /// types, and come back once the keys pause. A dim, not an animation:
+    /// the page never moves and nothing fades in or out of existence.
+    fn dim_chrome(self: &Rc<Self>) {
+        let generation = self.typing_generation.get().wrapping_add(1);
+        self.typing_generation.set(generation);
+        if !self.bottom.has_css_class("typing") {
+            self.bottom.add_css_class("typing");
+        }
+        if !self.document_name.has_css_class("typing") {
+            self.document_name.add_css_class("typing");
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(TYPING_DIM, move || {
+            if let Some(page) = weak.upgrade() {
+                if page.typing_generation.get() == generation {
+                    page.bottom.remove_css_class("typing");
+                    page.document_name.remove_css_class("typing");
+                }
+            }
+        });
     }
 
     fn schedule_restyle(self: &Rc<Self>) {
@@ -538,6 +628,22 @@ impl EditorPage {
         if self.scroller.width_request() != width {
             self.scroller.set_width_request(width);
         }
+        // The bottom line sits under the text column, not at the window edge,
+        // so the words and the counts share one vertical line.
+        if self.bottom.width_request() != width {
+            self.bottom.set_width_request(width);
+        }
+    }
+
+    /// The margin above the first line: 96 px at 1366×768, a little more on a
+    /// taller page, so the text keeps the same proportion of the screen.
+    fn editor_top_margin(&self) -> i32 {
+        // The page, not the text view, so the proportion is of the window.
+        let height = self.widget.height();
+        if height < 200 {
+            return EDITOR_TOP_MARGIN;
+        }
+        ((f64::from(height) / 8.0).round() as i32).clamp(EDITOR_TOP_MARGIN, EDITOR_TOP_MARGIN_MAX)
     }
 
     /// The first line always keeps its top margin; below the text there is
@@ -547,12 +653,19 @@ impl EditorPage {
         if height < 100 {
             return;
         }
+        // The top margin is measured from the top of the page, the name band
+        // included, so the first line sits 96 px down at the default size.
+        let top = (self.editor_top_margin() - DOCUMENT_NAME_BAND).max(24);
         let bottom = (height / 2).max(80);
-        if self.view.top_margin() != EDITOR_TOP_MARGIN {
-            self.view.set_top_margin(EDITOR_TOP_MARGIN);
+        if self.view.top_margin() != top {
+            self.view.set_top_margin(top);
         }
         if self.view.bottom_margin() != bottom {
             self.view.set_bottom_margin(bottom);
+        }
+        // The empty state's one line sits exactly where the text will begin.
+        if self.start_hint.margin_top() != top {
+            self.start_hint.set_margin_top(top);
         }
     }
 
@@ -788,6 +901,59 @@ impl EditorPage {
         self.doc.borrow().is_some()
     }
 
+    /// The document's name, without its extension, plus its folder when it
+    /// has one. It is the only name on the editor screen.
+    fn update_document_name(&self) {
+        let Some(current) = self.current.borrow().clone() else {
+            self.document_name.set_text("");
+            self.document_name.set_visible(false);
+            return;
+        };
+        let file = current
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let mut text = display_name(&file);
+        if let Some(folder) = current.parent().filter(|path| !path.as_os_str().is_empty()) {
+            text = format!("{} / {text}", folder.to_string_lossy());
+        }
+        self.document_name.set_text(&text);
+        self.document_name.set_visible(true);
+    }
+
+    /// Select a range of characters (screenshots, and tests for the selection
+    /// colour). A zero `length` places the caret instead.
+    pub fn select_range(&self, start: i32, length: i32) {
+        let count = self.buffer.char_count();
+        let start = start.clamp(0, count);
+        let end = (start.saturating_add(length.max(0))).min(count);
+        if length > 0 {
+            self.buffer.select_range(
+                &self.buffer.iter_at_offset(start),
+                &self.buffer.iter_at_offset(end),
+            );
+        } else {
+            self.buffer.place_cursor(&self.buffer.iter_at_offset(start));
+        }
+    }
+
+    /// The screenshot script selects a range or places the caret, so the
+    /// selection colour and the typewriter height can be photographed:
+    /// `CARREL_SHOT_SELECT="start:length"`.
+    fn apply_shot_selection(&self) {
+        let Ok(spec) = std::env::var("CARREL_SHOT_SELECT") else {
+            return;
+        };
+        let Some((start, length)) = spec.split_once(':') else {
+            return;
+        };
+        let (Ok(start), Ok(length)) = (start.trim().parse::<i32>(), length.trim().parse::<i32>())
+        else {
+            return;
+        };
+        self.select_range(start, length);
+    }
+
     /// The start hint is on screen only in an open, still empty document whose
     /// first key has not been typed.
     fn update_start_hint(&self) {
@@ -800,6 +966,21 @@ impl EditorPage {
     #[cfg(test)]
     pub(crate) fn start_hint_visible(&self) -> bool {
         self.start_hint.is_visible()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn document_name_text(&self) -> String {
+        self.document_name.text().to_string()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn bottom_line_text(&self) -> String {
+        self.status.text().to_string()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn chrome_dimmed(&self) -> bool {
+        self.bottom.has_css_class("typing")
     }
 
     pub fn open_rel(&self, rel: &Path) -> Result<(), String> {
@@ -832,6 +1013,10 @@ impl EditorPage {
         self.start_hint_dismissed.set(!text.is_empty());
         let end = self.buffer.end_iter();
         self.buffer.place_cursor(&end);
+        // A document opens where the writing stopped: at its end. The tests
+        // and the screenshot script may move the caret or select a phrase.
+        self.apply_shot_selection();
+        self.update_document_name();
         self.restyle_now();
         self.update_status(false);
         self.scroll_to_cursor();
@@ -946,6 +1131,8 @@ impl EditorPage {
             }
         }
         *self.current.borrow_mut() = None;
+        self.document_name.set_text("");
+        self.document_name.set_visible(false);
     }
 
     /// Close the open document if `path` is it, or is a folder containing it.
@@ -1100,6 +1287,7 @@ impl EditorPage {
         let palette = theme::palette(&self.settings.borrow());
         theme::apply(&self.css, &self.settings.borrow());
         self.tags.update_colors(&palette);
+        self.tags.update_metrics(self.settings.borrow().font_size);
         *self.hairline_color.borrow_mut() = theme::rgb(palette.accent);
         self.bottom
             .set_visible(self.settings.borrow().show_bottom_line);
@@ -1154,26 +1342,17 @@ pub fn place_block(buffer: &sourceview::Buffer, range: Option<(i32, i32)>, block
     buffer.end_user_action();
 }
 
+/// Keep the caret line at the same height once it is past the middle of the
+/// page: the text travels under it, the line stays put. GTK validates the
+/// layout before it applies this scroll, so a line that was just inserted
+/// counts, and aligning at half the page clamps to the top for the first half
+/// of a file — the first line keeps its margin without a special case.
 fn scroll_to_cursor(view: &sourceview::View, buffer: &sourceview::Buffer) {
     let view = view.clone();
     let buffer = buffer.clone();
     glib::idle_add_local_once(move || {
         let mark = buffer.get_insert();
-        let iter = buffer.iter_at_mark(&mark);
-        // A file that fits the page never scrolls at all, so its first line
-        // keeps the top margin. Longer files stay at the top until the caret
-        // passes the middle, then follow the typewriter rule.
-        let height = view.height();
-        let end = buffer.end_iter();
-        let fits = height > 0 && view.iter_location(&end).y() + 24 < height;
-        let near_top = height > 0 && view.iter_location(&iter).y() < height / 2;
-        if fits || near_top {
-            if let Some(adjustment) = view.vadjustment() {
-                adjustment.set_value(0.0);
-            }
-        } else {
-            view.scroll_to_mark(&mark, 0.0, true, 0.0, 0.55);
-        }
+        view.scroll_to_mark(&mark, 0.0, true, 0.0, TYPEWRITER_LINE);
     });
 }
 
@@ -1208,7 +1387,7 @@ struct Tags {
 }
 
 impl Tags {
-    fn new(buffer: &sourceview::Buffer, palette: &theme::Palette) -> Self {
+    fn new(buffer: &sourceview::Buffer, palette: &theme::Palette, font_size: u32) -> Self {
         let table = buffer.tag_table();
         let make = |name: &str| {
             let tag = gtk::TextTag::new(Some(name));
@@ -1227,12 +1406,20 @@ impl Tags {
 
         let quote = make("carrel-quote");
         // A tag's left margin replaces the view's (32 px), so add the quote
-        // indent to it; wrapped lines then line up with the first line.
-        quote.set_left_margin(32 + 28);
+        // indent to it; wrapped lines then line up with the first line. The
+        // right margin keeps the block a little narrower than the page, and
+        // the tint makes it read as one quiet block. Italic marks the quoted
+        // voice without changing the size of the text.
+        quote.set_left_margin(32 + 30);
+        quote.set_right_margin(20);
+        quote.set_style(pango::Style::Italic);
+        quote.set_paragraph_background(Some(&palette.surface()));
 
         let cite = make("carrel-cite");
-        cite.set_scale(0.72);
-        cite.set_rise(7);
+        // Small and raised, but a full digit: at 0.72 the marker reads as a
+        // stray mark at 19 px.
+        cite.set_scale(0.78);
+        cite.set_rise(6);
         // Citation markers use the dim text colour, not the accent.
         cite.set_foreground(Some(&palette.dim()));
 
@@ -1252,8 +1439,6 @@ impl Tags {
             let tag = make(&format!("carrel-heading-{}", index + 1));
             tag.set_scale(*scale);
             tag.set_weight(700);
-            tag.set_pixels_above_lines(if index < 2 { 18 } else { 12 });
-            tag.set_pixels_below_lines(6);
             headings.push(tag);
         }
 
@@ -1273,7 +1458,7 @@ impl Tags {
         dim.set_priority(9);
         focus.set_priority(11);
 
-        Self {
+        let tags = Self {
             bold,
             italic,
             dim,
@@ -1283,6 +1468,19 @@ impl Tags {
             hidden,
             headings,
             focus,
+        };
+        tags.update_metrics(font_size);
+        tags
+    }
+
+    /// Heading space is measured in body pixels, so a heading keeps the same
+    /// rhythm at 16 px and at 24 px.
+    fn update_metrics(&self, font_size: u32) {
+        for (index, tag) in self.headings.iter().enumerate() {
+            let above = f64::from(font_size) * if index < 2 { 1.0 } else { 0.7 };
+            let below = f64::from(font_size) * 0.35;
+            tag.set_pixels_above_lines(above.round() as i32);
+            tag.set_pixels_below_lines(below.round() as i32);
         }
     }
 
@@ -1290,6 +1488,8 @@ impl Tags {
         self.dim.set_foreground(Some(&palette.dim()));
         self.cite.set_foreground(Some(&palette.dim()));
         self.cite_text.set_foreground(Some(&palette.dim()));
+        self.quote
+            .set_paragraph_background(Some(&palette.surface()));
         self.focus.set_foreground_rgba(Some(&palette.focus_text()));
     }
 
@@ -1334,7 +1534,6 @@ impl Tags {
                 Kind::Italic => &self.italic,
                 Kind::Marker => &self.dim,
                 Kind::Quote => &self.quote,
-                Kind::Cite => &self.cite,
                 Kind::Heading(level) => &self.headings[usize::from(level.clamp(1, 6) - 1)],
             };
             let from = buffer.iter_at_offset(span.start as i32);

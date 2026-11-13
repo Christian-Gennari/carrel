@@ -434,6 +434,94 @@ PY
     CARREL_SHOT_KEYS="Return" shoot first-run-sync-$theme_b "$theme_b" false true first-run ""
     # --- end UI round 7 (issue #28) ---
 
+    # --- UI round 5 (Editor, issue #32) ---
+    # The writing surface: an existing file, an empty one, a selected phrase,
+    # Markdown markers and lists, citations, a quote and the typewriter line.
+    # Light (theme_a) and Writer's Study (theme_b), plus selection in High
+    # contrast.
+    set_editor_file() {
+        python3 - "$root" "$1" <<'PY'
+import json, sys
+path = f"{sys.argv[1]}/.carrel/state.json"
+try:
+    with open(path, encoding="utf-8") as handle:
+        state = json.load(handle)
+except (OSError, ValueError):
+    state = {}
+state["last_file"] = sys.argv[2]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle)
+PY
+    }
+    cat > "$root/Markers.md" <<'EOF'
+# Markers, all of them
+
+The **first sentence** is bold, the *second* is soft, and a _careful_ word keeps its underscores. A long paragraph gives the page its rhythm and shows where a line wraps at the column's edge, which is the measure the eye follows down the page.
+
+- buy ink
+- fix the back gate
+1. sharpen every pencil
+2. fill the inkwell
+
+> A sentence is a small room. You walk in, close the door, and look around.
+EOF
+    python3 - "$root/Long.md" <<'PY'
+import sys
+parts = ["# A long morning", ""]
+for index in range(1, 61):
+    parts.append(
+        f"Paragraph {index}. The kettle clicks off at six and the house is still asleep "
+        "while the first sentence arrives under the floorboards, as if it had been "
+        "waiting there all night."
+    )
+    parts.append("")
+open(sys.argv[1], "w", encoding="utf-8").write("\n".join(parts))
+PY
+    long_middle=$(python3 - "$root/Long.md" <<'PY'
+import sys
+text = open(sys.argv[1], encoding="utf-8").read()
+print(text.index("Paragraph 30."))
+PY
+)
+
+    set_editor_file "The quiet morning.md"
+    shoot editor-existing-$theme_a "$theme_a" true true editor ""
+    shoot editor-existing-$theme_b "$theme_b" true true editor ""
+
+    CARREL_SHOT_KEYS="ctrl+n" shoot editor-empty-$theme_a "$theme_a" true true editor ""
+    CARREL_SHOT_KEYS="ctrl+n" shoot editor-empty-$theme_b "$theme_b" true true editor ""
+
+    CARREL_SHOT_SELECT="21:29" shoot editor-selection-$theme_a "$theme_a" true true editor ""
+    CARREL_SHOT_SELECT="21:29" shoot editor-selection-$theme_b "$theme_b" true true editor ""
+    CARREL_SHOT_SELECT="21:29" shoot editor-selection-high-contrast high-contrast true true editor ""
+
+    set_editor_file "Markers.md"
+    CARREL_SHOT_SELECT="0:0" shoot editor-markdown-$theme_a "$theme_a" true true editor ""
+    CARREL_SHOT_SELECT="0:0" shoot editor-markdown-$theme_b "$theme_b" true true editor ""
+    shoot editor-quote-$theme_a "$theme_a" true true editor ""
+    shoot editor-quote-$theme_b "$theme_b" true true editor ""
+
+    cat > "$root/Citations.md" <<'EOF'
+# Citations
+
+The kettle clicks off at six.[^1](nostos:cite/quiet-mornings-42)
+
+An imported file may carry a bare target: nostos:cite/field-notes-12.
+
+A quoted source keeps its words [a sentence is a small room](nostos:cite/small-room-7) and the marker stays quiet.
+EOF
+    set_editor_file "Citations.md"
+    shoot editor-citations-$theme_a "$theme_a" true true editor ""
+    shoot editor-citations-$theme_b "$theme_b" true true editor ""
+
+    set_editor_file "Long.md"
+    CARREL_SHOT_SELECT="$long_middle:0" shoot editor-typewriter-$theme_a "$theme_a" true true editor ""
+    CARREL_SHOT_SELECT="$long_middle:0" shoot editor-typewriter-$theme_b "$theme_b" true true editor ""
+
+    # Back to the essay, so the battery shots below see the same page.
+    set_editor_file "The quiet morning.md"
+    # --- end UI round 5 (Editor, issue #32) ---
+
     # Battery: charging on the bottom line, low on the line, low and critical
     # with the line hidden (the note shows for 5 s at 10 % and 5 %).
     shoot battery-charging-$theme_a "$theme_a" true true editor "18,charging"

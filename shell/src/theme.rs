@@ -359,11 +359,24 @@ scrollbar {{
     min-height: 2px;
 }}
 .bottom-line-row {{
-    padding: 8px 24px 14px 24px;
+    /* Under the text column: the words and the counts share one edge. */
+    padding: 10px 32px 16px 32px;
 }}
 .bottom-line {{
     color: {muted};
     font-size: {bottom_line}px;
+    padding: 0;
+}}
+/* The bottom line and the document's name step back while the writer types.
+   A dim, not an animation: nothing moves and nothing appears. */
+.bottom-line-row.typing,
+.document-name.typing {{
+    opacity: 0.42;
+}}
+/* The open document's name, quiet above the page. Never a bar or a tab. */
+.document-name {{
+    color: {muted};
+    font-size: {secondary}px;
     padding: 0;
 }}
 /* The bottom line ends with the palette's key, quiet and dim. */
@@ -1052,6 +1065,37 @@ mod tests {
         assert!(sheet.contains("scrollbar"));
         assert!(sheet.contains("opacity: 0"));
     }
+
+    // --- UI round 5 (Editor, issue #32) ---
+    #[test]
+    fn selected_text_stays_readable_in_every_theme() {
+        // The selection is a transient surface over the paper; the ink on it
+        // still clears the WCAG AA floor, and it is visibly distinct from the
+        // paper so the range can be found.
+        for theme in Theme::ALL {
+            let palette = Palette::of(theme);
+            let ratio = contrast_ratio(palette.text, &palette.text_selection());
+            let distinct = contrast_ratio(&palette.text_selection(), palette.background);
+            assert!(
+                ratio >= 4.5,
+                "{}: selected text is only {ratio:.2}:1",
+                theme.label()
+            );
+            assert!(
+                distinct >= 1.4,
+                "{}: the selection is nearly the paper ({distinct:.2}:1)",
+                theme.label()
+            );
+            // The caret itself must be easy to find on the paper.
+            let caret = contrast_ratio(palette.accent, palette.background);
+            assert!(
+                caret >= 3.0,
+                "{}: the caret is only {caret:.2}:1 against the page",
+                theme.label()
+            );
+        }
+    }
+    // --- end UI round 5 (Editor, issue #32) ---
 
     #[test]
     fn focus_text_is_ink_at_thirty_five_percent() {

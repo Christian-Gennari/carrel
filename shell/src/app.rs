@@ -54,6 +54,7 @@ pub fn run(application: &gtk::Application) {
         gtk_settings.set_gtk_application_prefer_dark_theme(theme::prefers_dark(&settings.borrow()));
         // spec/03-ui.md: no caret animation, no keystroke sounds.
         gtk_settings.set_gtk_cursor_blink(false);
+        gtk_settings.set_gtk_enable_animations(false);
         gtk_settings.set_gtk_enable_event_sounds(false);
         gtk_settings.set_gtk_enable_input_feedback_sounds(false);
     }
