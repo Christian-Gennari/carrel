@@ -16,6 +16,7 @@ pub mod goal;
 #[cfg(test)]
 mod gtk_tests;
 pub mod history;
+pub mod keys;
 pub mod locale;
 pub mod markdown;
 pub mod nav;
