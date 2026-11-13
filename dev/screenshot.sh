@@ -315,22 +315,36 @@ PY
     shoot export-no-drive-$theme_a "$theme_a" true true export-drive "" CARREL_FAKE_NO_DRIVE=1
     CARREL_SHOT_KEYS="Down,Down,Down,Return,Return" shoot import-$theme_a "$theme_a" true true export ""
 
-    # Settings: every theme, then Automatic with its day and night pickers, the
-    # middle rows, the update row and the last row.
+    # --- UI round 7 (issue #28): Settings in groups, update ready, first run ---
+    # Settings: every theme at the top (Look group, Theme row), then the
+    # middle and the bottom rows and the ready update row, light and dark.
     for slug in light sepia mist study dark high-contrast; do
-        shoot settings-$slug "$slug" true true settings ""
+        CARREL_SETTINGS_SELECT=1 shoot settings-$slug "$slug" true true settings ""
     done
-    shoot settings-automatic automatic true true settings ""
-    CARREL_SETTINGS_SELECT=8 shoot settings-middle-$theme_a "$theme_a" true true settings ""
-    CARREL_SETTINGS_SELECT=15 shoot update-ready-$theme_a "$theme_a" true true settings ""
-    CARREL_SETTINGS_SELECT=99 shoot settings-last-$theme_a "$theme_a" true true settings ""
+    CARREL_SETTINGS_SELECT=1 shoot settings-automatic automatic true true settings ""
+    CARREL_SETTINGS_SELECT=0 shoot update-ready-$theme_a "$theme_a" true true settings ""
+    CARREL_SETTINGS_SELECT=0 shoot update-ready-$theme_b "$theme_b" true true settings ""
+    CARREL_SETTINGS_SELECT=7 shoot settings-middle-$theme_a "$theme_a" true true settings ""
+    CARREL_SETTINGS_SELECT=7 shoot settings-middle-$theme_b "$theme_b" true true settings ""
+    CARREL_SETTINGS_SELECT=99 shoot settings-bottom-$theme_a "$theme_a" true true settings ""
+    CARREL_SETTINGS_SELECT=99 shoot settings-bottom-$theme_b "$theme_b" true true settings ""
+    # The Look sample follows a font and size change at once: Mono at 24 px.
+    CARREL_SHOT_KEYS="Right,Right,Down,Right,Right,Right,Right,Right" \
+        CARREL_SETTINGS_SELECT=2 shoot settings-look-mono-large-$theme_a "$theme_a" true true settings ""
 
-    # First run: every step.
-    shoot first-run-$theme_a-language "$theme_a" false true first-run ""
-    CARREL_SHOT_KEYS="Return" shoot first-run-$theme_a-keyboard "$theme_a" false true first-run ""
-    CARREL_SHOT_KEYS="Return,Return" shoot first-run-$theme_a-timezone "$theme_a" false true first-run ""
-    CARREL_SHOT_KEYS="Return,Return,Return" shoot first-run-$theme_a-sync "$theme_a" false true first-run ""
-    shoot first-run-$theme_b-language "$theme_b" false true first-run ""
+    # First run: the welcome screen with its prefilled answers, the sync step,
+    # and each list opened from a row, light and dark.
+    shoot first-run-welcome-$theme_a "$theme_a" false true first-run ""
+    shoot first-run-welcome-$theme_b "$theme_b" false true first-run ""
+    CARREL_SHOT_KEYS="Home,Return" shoot first-run-language-$theme_a "$theme_a" false true first-run ""
+    CARREL_SHOT_KEYS="Home,Return" shoot first-run-language-$theme_b "$theme_b" false true first-run ""
+    CARREL_SHOT_KEYS="Home,Down,Return" shoot first-run-keyboard-$theme_a "$theme_a" false true first-run ""
+    CARREL_SHOT_KEYS="Home,Down,Return" shoot first-run-keyboard-$theme_b "$theme_b" false true first-run ""
+    CARREL_SHOT_KEYS="Home,Down,Down,Return" shoot first-run-timezone-$theme_a "$theme_a" false true first-run ""
+    CARREL_SHOT_KEYS="Home,Down,Down,Return" shoot first-run-timezone-$theme_b "$theme_b" false true first-run ""
+    CARREL_SHOT_KEYS="Return" shoot first-run-sync-$theme_a "$theme_a" false true first-run ""
+    CARREL_SHOT_KEYS="Return" shoot first-run-sync-$theme_b "$theme_b" false true first-run ""
+    # --- end UI round 7 (issue #28) ---
 
     # Battery: charging on the bottom line, low on the line, low and critical
     # with the line hidden (the note shows for 5 s at 10 % and 5 %).

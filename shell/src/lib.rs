@@ -12,6 +12,7 @@ pub mod export;
 pub mod files;
 pub mod files_conflict;
 pub mod first_run;
+pub mod first_run_defaults;
 pub mod focus;
 pub mod goal;
 #[cfg(test)]
