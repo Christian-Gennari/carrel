@@ -661,11 +661,25 @@ entry:focus, entry:focus-within {{
 .pairing-code {{
     color: {text};
     font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-    font-size: 36px;
+    font-size: 44px;
 }}
-.pairing-url {{
+.pairing-sentence {{
     color: {muted};
-    font-size: {secondary}px;
+    font-size: 17px;
+}}
+/* The Sync screen's one state line: the largest text on the device, because
+   the state is what the writer came to see. */
+.sync-state {{
+    color: {text};
+    font-size: 40px;
+    font-weight: 600;
+}}
+.sync-state.error-text {{
+    color: {danger};
+}}
+/* The one prominent action on the Sync screen. */
+.sync-now {{
+    font-weight: 600;
 }}
 .wifi-signal, .wifi-signal-off {{
     font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;

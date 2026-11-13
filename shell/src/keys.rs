@@ -89,6 +89,7 @@ impl Keys {
         match self.visible().as_str() {
             "files" => self.files.is_dialog_open(),
             "history" => self.history.is_dialog_open(),
+            "sync" => self.sync.is_dialog_open(),
             "wifi" => self.wifi.is_dialog_open(),
             _ => false,
         }

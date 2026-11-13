@@ -17,6 +17,7 @@ pub mod focus;
 pub mod goal;
 #[cfg(test)]
 mod gtk_tests;
+pub mod handoff;
 pub mod history;
 pub mod keys;
 pub mod locale;

@@ -19,11 +19,12 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 use crate::battery::SharedBattery;
-use crate::daemon::{Client, FakeDaemon};
+use crate::daemon::{Client, DaemonEvent, FakeDaemon};
 use crate::editor::{place_block, EditorPage};
 use crate::export::ExportPage;
 use crate::files::FilesPage;
 use crate::first_run::FirstRunPage;
+use crate::handoff::WifiHandoff;
 use crate::history::HistoryPage;
 use crate::keys::Keys;
 use crate::nav::Navigator;
@@ -32,7 +33,7 @@ use crate::quotes::QuotePalette;
 use crate::settings::Settings;
 use crate::settings_page::SettingsPage;
 use crate::store::Store;
-use crate::sync::SyncPage;
+use crate::sync::{Row, SyncPage};
 use crate::wifi::WifiPage;
 
 #[test]
@@ -55,6 +56,7 @@ fn gtk_scenarios() {
     new_file_from_files_lands_in_the_selected_folder();
     a_conflict_copy_offers_three_ways();
     keystroke_baseline();
+    the_wifi_fix_returns_to_sync_and_syncs();
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.
@@ -655,6 +657,25 @@ fn a_conflict_copy_offers_three_ways() {
     }
 }
 
+/// The entry the writer can actually type into: hidden stack children keep
+/// their own `visible` flag, so mapped is the question that matters.
+fn mapped_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
+    if !widget.is_mapped() {
+        return None;
+    }
+    if let Some(entry) = widget.downcast_ref::<gtk::Entry>() {
+        return Some(entry.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(found) = mapped_entry(&widget) {
+            return Some(found);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
 fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
     if !widget.is_visible() {
         return None;
@@ -687,7 +708,7 @@ fn visible_entry(widget: &gtk::Widget) -> Option<gtk::Entry> {
 // change the baseline deliberately.
 // ---------------------------------------------------------------------------
 
-const BASELINE: [(&str, usize); 15] = [
+const BASELINE: [(&str, usize); 17] = [
     // The Recent group sits above the folder tree, so the last row is still
     // the last document: Ctrl+O End Enter opens it in three keys.
     ("Open an existing file by name", 3),
@@ -707,6 +728,9 @@ const BASELINE: [(&str, usize); 15] = [
     // --- Settings in groups and first run (issue #28) ---
     ("First run to editor with defaults", 2),
     ("Change font size in Settings", 6),
+    // Sync and Wi-Fi from the editor (issue #29).
+    ("Pair with Nostos from the editor", 2),
+    ("Sync when Wi-Fi is not set up yet", 2),
 ];
 
 fn key_for(character: char) -> (String, gdk::Key) {
@@ -732,6 +756,8 @@ struct TestShell {
     quotes: Rc<QuotePalette>,
     palette: Rc<CommandPalette>,
     key_sheet: Rc<KeySheet>,
+    sync: Rc<SyncPage>,
+    wifi: Rc<WifiPage>,
     keys: Rc<Keys>,
     nav: Rc<Navigator>,
     first_run: Rc<FirstRunPage>,
@@ -796,8 +822,14 @@ impl TestShell {
         let files = FilesPage::new(store.clone(), Rc::clone(&editor), stack.clone());
         let history = HistoryPage::new(client.clone(), Rc::clone(&nav), Rc::clone(&editor));
         let quotes = QuotePalette::new(client.clone(), Rc::clone(&editor));
-        let sync = SyncPage::new(client.clone(), Rc::clone(&nav));
-        let wifi = WifiPage::new(client.clone(), Rc::clone(&nav));
+        let handoff = WifiHandoff::new();
+        let sync = SyncPage::new(
+            client.clone(),
+            Rc::clone(&nav),
+            handoff.clone(),
+            root.clone(),
+        );
+        let wifi = WifiPage::new(client.clone(), Rc::clone(&nav), handoff);
         let restyle: Rc<dyn Fn()> = {
             let editor = Rc::clone(&editor);
             Rc::new(move || editor.reapply_style())
@@ -857,6 +889,21 @@ impl TestShell {
         overlay.add_overlay(&palette.widget);
         overlay.add_overlay(&key_sheet.widget);
         window.set_child(Some(&overlay));
+
+        // The same signal wiring `app::run` installs: Sync draws the daemon's
+        // progress and pairing signals (issue #29 moved the flows onto them).
+        {
+            let sync = Rc::clone(&sync);
+            client.subscribe(move |event| match event {
+                DaemonEvent::Sync(info) => sync.on_sync(info),
+                DaemonEvent::Pair {
+                    state,
+                    code,
+                    message,
+                } => sync.on_pair_status(&state, &code, message),
+                DaemonEvent::Battery(_) => {}
+            });
+        }
         editor.open_rel(Path::new(open)).expect("open fixture");
         window.present();
         settle();
@@ -868,9 +915,9 @@ impl TestShell {
             files,
             history,
             Rc::clone(&quotes),
-            sync,
+            Rc::clone(&sync),
             settings_page,
-            wifi,
+            Rc::clone(&wifi),
             export,
             Rc::clone(&first_run),
             Rc::clone(&palette),
@@ -885,6 +932,8 @@ impl TestShell {
             quotes,
             palette,
             key_sheet,
+            sync,
+            wifi,
             keys,
             nav,
             first_run,
@@ -1270,7 +1319,82 @@ fn keystroke_baseline() {
         measured.push(("Change font size in Settings", shell.take_sequence()));
     }
 
+    // -------------------------------------------------------------------
+    // Sync and Wi-Fi from the editor (issue #29).
+    // -------------------------------------------------------------------
+
+    // Pair with Nostos from the editor: the chord opens Sync, which offers the
+    // three services because nothing is paired; Enter starts the pairing and
+    // the code appears. Two keys, no hunting.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.daemon.set_unpaired(true);
+        shell.press(
+            "Ctrl+Shift+S",
+            gdk::Key::s,
+            gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+        );
+        pump(|| shell.sync.hero() == "Not connected yet");
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        pump(|| shell.sync.pairing_code() == "K7Q-4MZ");
+        assert_eq!(shell.visible(), "sync");
+        assert_eq!(shell.daemon.pairs(), 1, "the pairing reached the daemon");
+        measured.push(("Pair with Nostos from the editor", shell.take_sequence()));
+    }
+
+    // Sync when Wi-Fi is not set up yet: the chord shows the failure with its
+    // one action first, and Enter goes straight to the Wi-Fi screen.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.daemon.set_wifi_down(true);
+        shell.press(
+            "Ctrl+Shift+S",
+            gdk::Key::s,
+            gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+        );
+        pump(|| shell.sync.actions().first() == Some(&Row::ChooseNetwork));
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        settle();
+        assert_eq!(shell.visible(), "wifi", "the fix is one key away");
+        measured.push(("Sync when Wi-Fi is not set up yet", shell.take_sequence()));
+    }
+
     finish_baseline(&measured);
+}
+
+/// The whole repair, without counting keys: no Wi-Fi, choose it, connect, and
+/// Sync comes back and finishes the sync by itself (issue #29).
+fn the_wifi_fix_returns_to_sync_and_syncs() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    shell.daemon.set_wifi_down(true);
+    shell.press(
+        "Ctrl+Shift+S",
+        gdk::Key::s,
+        gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+    );
+    pump(|| shell.sync.actions().first() == Some(&Row::ChooseNetwork));
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    assert_eq!(shell.visible(), "wifi");
+    pump(|| shell.wifi.network_count() > 0);
+
+    // The connected network is first; Enter opens its password field.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    let entry = gtk::Window::list_toplevels()
+        .iter()
+        .find_map(|window| mapped_entry(window.upcast_ref()))
+        .expect("the password field is open");
+    entry.set_text("quiet");
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    pump(|| shell.visible() == "sync");
+    pump(|| shell.daemon.synced() >= 2);
+    pump(|| shell.sync.hero() == "Up to date");
+    assert_eq!(
+        shell.sync.hero(),
+        "Up to date",
+        "the sync finished after the connection"
+    );
 }
 
 /// Print and write the table; fail when a count moved away from the baseline.
@@ -1318,6 +1442,8 @@ fn finish_baseline(measured: &[(&str, Vec<String>)]) {
         "\n<!-- UI round 7 (issue #28): \"First run to editor with defaults\" and \
          \"Change font size in Settings\" are the Settings and first-run rows. -->\n",
     );
+    // Sync and Wi-Fi from the editor (issue #29): the last two rows above.
+    table.push_str("\n<!-- Sync and Wi-Fi from the editor (issue #29): the last two rows. -->\n");
 
     let docs = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

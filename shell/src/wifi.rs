@@ -4,6 +4,11 @@
 //! blocks it again afterwards (rule 2). Captive portals cannot be shown, so
 //! the daemon reports one and this screen prints the one sentence from the
 //! spec.
+//!
+//! Everything that belongs to one network stays under that network: the
+//! password field and any error sit in a row of their own, right below the
+//! selected name. When Sync opened this screen to fix a failed sync, a
+//! connection hands the writer back to Sync (see [`crate::handoff`]).
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,6 +17,7 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 use crate::daemon::{Client, DaemonError, DaemonErrorKind, WifiNetwork};
+use crate::handoff::WifiHandoff;
 use crate::nav::Navigator;
 use crate::ui;
 
@@ -53,8 +59,13 @@ pub struct WifiState {
     pub selected: usize,
     pub mode: WifiMode,
     pub password: String,
+    /// The status line under the page title: scanning, connected, forgot.
     pub message: String,
+    /// True when the status line is an error (a scan that failed).
     pub error: bool,
+    /// The sentence under the selected network: a refused password, a captive
+    /// portal, a missing name. Always about that one network.
+    pub inline: Option<String>,
     pub loading: bool,
 }
 
@@ -74,16 +85,19 @@ impl WifiState {
     pub fn move_by(&mut self, delta: i32) {
         let len = self.row_count() as i32;
         self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
+        self.inline = None;
     }
 
     pub fn select(&mut self, index: usize) {
         self.selected = index.min(self.row_count().saturating_sub(1));
+        self.inline = None;
     }
 
-    /// Enter in the list: open the password bar or connect straight away.
+    /// Enter in the list: open the password field or connect straight away.
     pub fn choose(&mut self) -> Option<WifiEffect> {
         self.error = false;
         self.message.clear();
+        self.inline = None;
         if self.on_other_row() {
             self.mode = WifiMode::OtherSsid;
             self.password.clear();
@@ -109,8 +123,8 @@ impl WifiState {
         match self.mode.clone() {
             WifiMode::Password { ssid, secured } => {
                 if secured && self.password.is_empty() {
-                    self.error = true;
-                    self.message = "Type the password for this network.".to_owned();
+                    self.error = false;
+                    self.inline = Some("Type the password for this network.".to_owned());
                     return None;
                 }
                 let password = self.password.clone();
@@ -129,8 +143,7 @@ impl WifiState {
     pub fn submit_other_ssid(&mut self) -> bool {
         let ssid = self.password.trim().to_owned();
         if ssid.is_empty() {
-            self.error = true;
-            self.message = "Type the network name.".to_owned();
+            self.inline = Some("Type the network name.".to_owned());
             return false;
         }
         self.password.clear();
@@ -152,36 +165,57 @@ impl WifiState {
         self.loading = false;
         self.selected = self.selected.min(self.row_count().saturating_sub(1));
         self.error = false;
+        self.inline = None;
     }
 
     pub fn on_connected(&mut self, ssid: &str) {
         self.mode = WifiMode::List;
         self.password.clear();
         self.error = false;
-        self.message =
-            format!("Connected to {ssid}. The radio turns off when you leave this screen.");
+        self.inline = None;
+        self.message = format!("Connected to {ssid}.");
         for network in &mut self.networks {
             network.connected = network.ssid == ssid;
         }
     }
 
-    pub fn on_error(&mut self, error: &DaemonError) {
+    /// A connect that failed. The sentence stays under the network it belongs
+    /// to, and a wrong password keeps the field open so it can be retyped.
+    pub fn on_connect_error(&mut self, ssid: &str, error: &DaemonError) {
+        self.error = false;
+        self.message.clear();
+        let lower = error.message.to_ascii_lowercase();
+        if error.kind == DaemonErrorKind::CaptivePortal {
+            self.mode = WifiMode::List;
+            self.inline = Some(error.message.clone());
+        } else if lower.contains("password") || lower.contains("secret") {
+            self.mode = WifiMode::Password {
+                ssid: ssid.to_owned(),
+                secured: true,
+            };
+            self.password.clear();
+            self.inline = Some("That password did not work. Try again.".to_owned());
+        } else {
+            self.mode = WifiMode::List;
+            self.inline = Some(error.message.clone());
+        }
+    }
+
+    /// A scan that failed: there is no network row to sit under, so the status
+    /// line carries it.
+    pub fn on_scan_error(&mut self, error: &DaemonError) {
         self.mode = WifiMode::List;
         self.error = true;
+        self.inline = None;
         self.message = match error.kind {
             DaemonErrorKind::CaptivePortal => {
                 "This network needs a login page. Use a phone hotspot.".to_owned()
-            }
-            _ if error.message.to_ascii_lowercase().contains("password")
-                || error.message.to_ascii_lowercase().contains("secret") =>
-            {
-                "Could not connect. Check the password.".to_owned()
             }
             _ => error.message.clone(),
         };
     }
 
-    /// How many of the three calm bars are lit.
+    /// How many of the three arcs are lit.
     pub fn signal_level(strength: u8) -> usize {
         if strength >= 70 {
             3
@@ -192,11 +226,24 @@ impl WifiState {
         }
     }
 
+    /// The word an open network needs instead of a lock: none. Kept as the
+    /// accessible name for the icon.
     pub fn access_label(network: &WifiNetwork) -> &'static str {
         if network.secured {
             "locked"
         } else {
             "open"
+        }
+    }
+
+    /// The label above the field that belongs to the selected network.
+    pub fn field_label(&self) -> String {
+        match &self.mode {
+            WifiMode::Password { ssid, .. } | WifiMode::OtherPassword { ssid } => {
+                format!("Password for {ssid}")
+            }
+            WifiMode::OtherSsid => "Network name".to_owned(),
+            WifiMode::List => String::new(),
         }
     }
 }
@@ -206,25 +253,27 @@ pub struct WifiPage {
     screen: Rc<ui::Screen>,
     list: gtk::ListBox,
     list_scroller: gtk::ScrolledWindow,
-    entry_bar: gtk::Box,
-    entry_label: gtk::Label,
     entry: gtk::Entry,
     state: RefCell<WifiState>,
     client: Client,
     nav: Rc<Navigator>,
+    handoff: WifiHandoff,
 }
 
 impl WifiPage {
-    pub fn new(client: Client, nav: Rc<Navigator>) -> Rc<Self> {
+    pub fn new(client: Client, nav: Rc<Navigator>, handoff: WifiHandoff) -> Rc<Self> {
         let screen = ui::Screen::new("Wi-Fi");
         screen.set_hints(&HINTS);
         screen.set_status(RADIO_NOTE);
 
         let list = ui::list();
+        // The password field lives inside a row of this list, and GTK only
+        // lets a widget take focus when every ancestor can: the list stays
+        // focusable so the field under a network can be typed into.
+        list.set_can_focus(true);
         let list_scroller = ui::scroller(&list);
-        // Keep the password field close to the list it belongs to: the list
-        // takes its natural height (up to a page's worth) instead of pushing
-        // the field to the bottom of the screen.
+        // The list takes its natural height (up to a page's worth) so the field
+        // under a network never lands at the bottom of the screen.
         list_scroller.set_vexpand(false);
         list_scroller.set_propagate_natural_height(true);
         list_scroller.set_max_content_height(420);
@@ -232,25 +281,16 @@ impl WifiPage {
         list_fade.set_vexpand(false);
         screen.content.append(&list_fade);
 
-        let entry_label = gtk::Label::new(Some("Password"));
-        entry_label.add_css_class("section-title");
         let entry = gtk::Entry::new();
         entry.set_hexpand(true);
         entry.set_visibility(false);
         entry.add_css_class("calm-entry");
-        let entry_bar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        entry_bar.append(&entry_label);
-        entry_bar.append(&entry);
-        entry_bar.set_visible(false);
-        screen.content.append(&entry_bar);
 
         let page = Rc::new(Self {
             widget: screen.root.clone(),
             screen,
             list,
             list_scroller,
-            entry_bar,
-            entry_label,
             entry,
             state: RefCell::new(WifiState {
                 loading: true,
@@ -258,6 +298,7 @@ impl WifiPage {
             }),
             client,
             nav,
+            handoff,
         });
         page.install();
         page
@@ -288,6 +329,11 @@ impl WifiPage {
         });
     }
 
+    /// How many networks the last scan found, for the tests.
+    pub fn network_count(&self) -> usize {
+        self.state.borrow().networks.len()
+    }
+
     fn scan(self: &Rc<Self>) {
         {
             let mut state = self.state.borrow_mut();
@@ -315,7 +361,7 @@ impl WifiPage {
                         }
                         drop(state);
                     }
-                    Err(error) => page.state.borrow_mut().on_error(&error),
+                    Err(error) => page.state.borrow_mut().on_scan_error(&error),
                 }
                 page.refresh();
             },
@@ -327,23 +373,9 @@ impl WifiPage {
         match effect {
             Some(effect) => self.run_effect(effect),
             None => {
-                let mode = self.state.borrow().mode.clone();
-                match mode {
-                    WifiMode::OtherSsid => {
-                        self.entry.set_visibility(true);
-                        self.entry_label.set_text("Network name");
-                        self.entry.set_text("");
-                        self.entry_bar.set_visible(true);
-                        self.entry.grab_focus();
-                    }
-                    WifiMode::Password { ssid, .. } => {
-                        self.entry.set_visibility(false);
-                        self.entry_label.set_text(&format!("Password for {ssid}"));
-                        self.entry.set_text("");
-                        self.entry_bar.set_visible(true);
-                        self.entry.grab_focus();
-                    }
-                    _ => {}
+                // A fresh field for a fresh network.
+                if matches!(self.state.borrow().mode, WifiMode::Password { .. }) {
+                    self.entry.set_text("");
                 }
                 self.refresh();
             }
@@ -364,13 +396,8 @@ impl WifiPage {
                 }
                 state.password.clear();
                 drop(state);
-                self.entry.set_visibility(false);
-                self.entry_label.set_text(&format!(
-                    "Password for {}",
-                    other_ssid(&self.state.borrow().mode)
-                ));
                 self.entry.set_text("");
-                self.entry.grab_focus();
+                self.refresh();
             }
             WifiMode::Password { .. } | WifiMode::OtherPassword { .. } => {
                 let password = self.entry.text().to_string();
@@ -380,7 +407,7 @@ impl WifiPage {
                     state.submit_password()
                 };
                 if let Some(effect) = effect {
-                    self.hide_entry();
+                    self.entry.set_text("");
                     self.run_effect(effect);
                 } else {
                     self.refresh();
@@ -413,9 +440,14 @@ impl WifiPage {
                             Ok(()) => {
                                 page.state.borrow_mut().on_connected(&ssid);
                                 page.refresh();
+                                // Opened from Sync to fix a failed sync: go
+                                // back and let Sync pick the thread up.
+                                if page.handoff.connect() {
+                                    page.nav.show("sync");
+                                }
                             }
                             Err(error) => {
-                                page.state.borrow_mut().on_error(&error);
+                                page.state.borrow_mut().on_connect_error(&ssid, &error);
                                 page.refresh();
                             }
                         }
@@ -456,22 +488,18 @@ impl WifiPage {
                             state.networks.retain(|network| network.ssid != ssid);
                             state.message = format!("Forgot {ssid}.");
                             state.error = false;
+                            state.inline = None;
                             drop(state);
                             page.refresh();
                         }
                         Err(error) => {
-                            page.state.borrow_mut().on_error(&error);
+                            page.state.borrow_mut().on_scan_error(&error);
                             page.refresh();
                         }
                     }
                 }
             },
         );
-    }
-
-    fn hide_entry(&self) {
-        self.entry_bar.set_visible(false);
-        self.entry.set_text("");
     }
 
     /// The forget card is open; the command palette waits for it.
@@ -492,16 +520,32 @@ impl WifiPage {
         }
         if self.state.borrow().mode != WifiMode::List {
             if keyval == gdk::Key::Escape {
-                self.state.borrow_mut().mode = WifiMode::List;
-                self.hide_entry();
+                {
+                    let mut state = self.state.borrow_mut();
+                    state.mode = WifiMode::List;
+                    state.inline = None;
+                }
+                self.entry.set_text("");
                 self.refresh();
+                return glib::Propagation::Stop;
+            }
+            // Enter belongs to the field even when the dispatcher sees the key
+            // first: every screen keeps its keys in one place.
+            if matches!(keyval, gdk::Key::Return | gdk::Key::KP_Enter) {
+                self.submit_entry();
                 return glib::Propagation::Stop;
             }
             return glib::Propagation::Proceed;
         }
         match keyval {
             gdk::Key::Escape => {
-                self.nav.show_editor();
+                // Opened from Sync: one step back is Sync, not the editor.
+                if self.handoff.is_asked() {
+                    self.handoff.abandon();
+                    self.nav.show("sync");
+                } else {
+                    self.nav.show_editor();
+                }
                 glib::Propagation::Stop
             }
             gdk::Key::Up => {
@@ -534,84 +578,254 @@ impl WifiPage {
     }
 
     fn refresh(self: &Rc<Self>) {
+        // The field lives in the row of its network, so lift it out before the
+        // rows are rebuilt.
+        if let Some(parent) = self.entry.parent() {
+            if let Ok(holder) = parent.downcast::<gtk::Box>() {
+                holder.remove(&self.entry);
+            }
+        }
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
-        {
-            let state = self.state.borrow();
-            for network in &state.networks {
-                let row = gtk::ListBoxRow::new();
-                row.add_css_class("ui-row");
-                row.add_css_class("file-row");
-                let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-                let name = gtk::Label::new(Some(&network.ssid));
-                name.set_xalign(0.0);
-                name.set_hexpand(true);
-                name.set_ellipsize(gtk::pango::EllipsizeMode::End);
-                name.add_css_class("file-name");
-                line.append(&name);
-                if network.connected {
-                    let connected = gtk::Label::new(Some("connected"));
-                    connected.add_css_class("row-note");
-                    line.append(&connected);
-                }
-                let bars = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-                bars.set_width_request(40);
-                bars.set_halign(gtk::Align::End);
-                let level = WifiState::signal_level(network.strength);
-                for (index, glyph) in ["▂", "▄", "▆"].iter().enumerate() {
-                    let bar = gtk::Label::new(Some(glyph));
-                    bar.add_css_class(if index < level {
-                        "wifi-signal"
-                    } else {
-                        "wifi-signal-off"
-                    });
-                    bars.append(&bar);
-                }
-                line.append(&bars);
-                let access = gtk::Label::new(Some(WifiState::access_label(network)));
-                access.add_css_class("row-note");
-                access.set_width_request(56);
-                access.set_xalign(0.0);
-                line.append(&access);
-                row.set_child(Some(&line));
-                self.list.append(&row);
+
+        let state = self.state.borrow();
+        let field = state.field_label();
+        let inline = state.inline.clone();
+        let mode = state.mode.clone();
+        let mut field_placed = false;
+        let mut selected_index = 0i32;
+        for (index, network) in state.networks.iter().enumerate() {
+            let row = network_row(network);
+            self.list.append(&row);
+            let row_index = self.list.observe_children().n_items() as i32 - 1;
+            if index != state.selected {
+                continue;
             }
-            let other = gtk::ListBoxRow::new();
-            other.add_css_class("ui-row");
-            other.add_css_class("file-row");
-            let label = gtk::Label::new(Some("Other network…"));
-            label.set_xalign(0.0);
-            label.add_css_class("file-name");
-            other.set_child(Some(&label));
-            self.list.append(&other);
-            ui::select(&self.list, state.selected);
+            selected_index = row_index;
+            match &mode {
+                WifiMode::Password { ssid, .. } if *ssid == network.ssid => {
+                    self.place_field(&field, inline.as_deref());
+                    field_placed = true;
+                }
+                // A failed connect left a sentence for this network.
+                _ => {
+                    if let Some(sentence) = inline.as_deref() {
+                        if mode == WifiMode::List {
+                            self.list.append(&error_row(sentence));
+                        }
+                    }
+                }
+            }
         }
-        if let Some(row) = self.list.row_at_index(self.state.borrow().selected as i32) {
+        let other = gtk::ListBoxRow::new();
+        other.add_css_class("ui-row");
+        other.add_css_class("file-row");
+        let label = gtk::Label::new(Some("Other network…"));
+        label.set_xalign(0.0);
+        label.add_css_class("file-name");
+        other.set_child(Some(&label));
+        self.list.append(&other);
+        let other_index = self.list.observe_children().n_items() as i32 - 1;
+        if state.on_other_row() {
+            selected_index = other_index;
+        }
+        if state.on_other_row()
+            && matches!(mode, WifiMode::OtherSsid | WifiMode::OtherPassword { .. })
+        {
+            self.place_field(&field, inline.as_deref());
+            field_placed = true;
+        }
+        if !field_placed {
+            if let Some(sentence) = inline.as_deref() {
+                // The other row can carry an error of its own (an empty name).
+                if state.on_other_row() && mode == WifiMode::List {
+                    self.list.append(&error_row(sentence));
+                }
+            }
+        }
+        if let Some(row) = self.list.row_at_index(selected_index) {
+            self.list.select_row(Some(&row));
             ui::scroll_to_row(&self.list_scroller, &self.list, &row);
         }
 
-        let state = self.state.borrow();
-        if state.message.is_empty() {
-            self.screen.set_status(RADIO_NOTE);
-        } else if state.error {
-            self.screen.set_status_error(&state.message);
+        self.entry.set_visibility(mode == WifiMode::OtherSsid);
+        if !state.message.is_empty() {
+            if state.error {
+                self.screen.set_status_error(&state.message);
+            } else {
+                self.screen.set_status(&state.message);
+            }
+        } else if self.handoff.is_asked() {
+            // Sync sent the writer here to fix a failed sync: say why.
+            self.screen
+                .set_status("Choose a network. Sync finishes when you are connected.");
         } else {
-            self.screen.set_status(&state.message);
+            self.screen.set_status(RADIO_NOTE);
         }
-        if state.mode == WifiMode::List {
+        if mode == WifiMode::List {
             self.screen.set_hints(&HINTS);
         } else {
             self.screen.set_hints(&PASSWORD_HINTS);
         }
+        let focus_field = mode != WifiMode::List;
+        drop(state);
+        if focus_field {
+            // The field was just moved into its new row, so it is mapped on
+            // the next layout pass rather than now.
+            let entry = self.entry.clone();
+            glib::idle_add_local_once(move || {
+                entry.grab_focus();
+            });
+        }
+    }
+
+    /// Put the field in a row of its own, right under its network, with the
+    /// sentence that belongs to it underneath.
+    fn place_field(&self, label: &str, inline: Option<&str>) {
+        let row = gtk::ListBoxRow::new();
+        row.set_selectable(false);
+        row.set_activatable(false);
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        column.set_margin_start(14);
+        column.set_margin_end(14);
+        column.set_margin_top(2);
+        column.set_margin_bottom(10);
+        let title = gtk::Label::new(Some(label));
+        title.set_xalign(0.0);
+        title.add_css_class("section-title");
+        column.append(&title);
+        column.append(&self.entry);
+        if let Some(sentence) = inline {
+            let error = gtk::Label::new(Some(sentence));
+            error.set_xalign(0.0);
+            error.set_wrap(true);
+            error.add_css_class("error-text");
+            column.append(&error);
+        }
+        row.set_child(Some(&column));
+        self.list.append(&row);
     }
 }
 
-fn other_ssid(mode: &WifiMode) -> String {
-    match mode {
-        WifiMode::OtherPassword { ssid } => ssid.clone(),
-        _ => String::new(),
+/// One network: its name, then the state that has no word of its own as an
+/// icon. A Wi-Fi fan for strength, a padlock for a network that needs a
+/// password, and one short word for the network in use.
+fn network_row(network: &WifiNetwork) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.add_css_class("ui-row");
+    row.add_css_class("file-row");
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let name = gtk::Label::new(Some(&network.ssid));
+    name.set_xalign(0.0);
+    name.set_hexpand(true);
+    name.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    name.add_css_class("file-name");
+    line.append(&name);
+    if network.connected {
+        let connected = gtk::Label::new(Some("Connected"));
+        connected.add_css_class("row-note");
+        line.append(&connected);
     }
+    if network.secured {
+        line.append(&lock_icon());
+    }
+    line.append(&signal_icon(network.strength));
+    row.set_child(Some(&line));
+    row
+}
+
+/// A sentence under a network, for a connection that did not work.
+fn error_row(sentence: &str) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_selectable(false);
+    row.set_activatable(false);
+    row.set_can_focus(false);
+    let label = gtk::Label::new(Some(sentence));
+    label.set_xalign(0.0);
+    label.set_wrap(true);
+    label.set_margin_start(14);
+    label.set_margin_end(14);
+    label.set_margin_bottom(10);
+    label.add_css_class("error-text");
+    row.set_child(Some(&label));
+    row
+}
+
+/// The Wi-Fi mark: one dot and three arcs, filled from the dot out. Strength
+/// reads at a glance and needs no icon font; unlit arcs stay as a quiet
+/// outline so the icon never changes size.
+fn signal_icon(strength: u8) -> gtk::DrawingArea {
+    let level = WifiState::signal_level(strength);
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(18);
+    area.set_content_height(15);
+    area.set_valign(gtk::Align::Center);
+    area.set_can_focus(false);
+    area.set_focusable(false);
+    area.add_css_class("wifi-signal");
+    area.set_accessible_role(gtk::AccessibleRole::Img);
+    area.update_property(&[gtk::accessible::Property::Label(&format!(
+        "Wi-Fi signal {level} of 3"
+    ))]);
+    area.set_draw_func(move |area, context, _width, _height| {
+        let color = area.color();
+        let (red, green, blue) = (
+            f64::from(color.red()),
+            f64::from(color.green()),
+            f64::from(color.blue()),
+        );
+        let (cx, cy) = (9.0, 13.0);
+        for (index, radius) in [4.5_f64, 8.0, 11.5].iter().enumerate() {
+            let lit = index < level;
+            context.set_source_rgba(red, green, blue, if lit { 1.0 } else { 0.28 });
+            context.set_line_width(1.8);
+            context.new_path();
+            context.arc(
+                cx,
+                cy,
+                *radius,
+                std::f64::consts::PI * 1.25,
+                std::f64::consts::PI * 1.75,
+            );
+            let _ = context.stroke();
+        }
+        context.set_source_rgba(red, green, blue, 1.0);
+        context.new_path();
+        context.arc(cx, cy, 1.7, 0.0, std::f64::consts::TAU);
+        let _ = context.fill();
+    });
+    area
+}
+
+/// A small padlock: the one thing that makes a network need a password.
+fn lock_icon() -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::new();
+    area.set_content_width(11);
+    area.set_content_height(15);
+    area.set_valign(gtk::Align::Center);
+    area.set_can_focus(false);
+    area.set_focusable(false);
+    area.add_css_class("wifi-signal");
+    area.set_accessible_role(gtk::AccessibleRole::Img);
+    area.update_property(&[gtk::accessible::Property::Label("Locked")]);
+    area.set_draw_func(|area, context, _width, _height| {
+        let color = area.color();
+        context.set_source_rgba(
+            f64::from(color.red()),
+            f64::from(color.green()),
+            f64::from(color.blue()),
+            f64::from(color.alpha()),
+        );
+        context.set_line_width(1.5);
+        context.new_path();
+        context.arc(5.5, 6.0, 3.0, std::f64::consts::PI, std::f64::consts::TAU);
+        let _ = context.stroke();
+        context.new_path();
+        context.rectangle(1.0, 6.0, 9.0, 8.0);
+        let _ = context.fill();
+    });
+    area
 }
 
 #[cfg(test)]
@@ -645,8 +859,12 @@ mod tests {
                 secured: true
             }
         );
+        assert_eq!(state.field_label(), "Password for Studio 5G");
         assert!(state.submit_password().is_none());
-        assert!(state.error);
+        assert_eq!(
+            state.inline.as_deref(),
+            Some("Type the password for this network.")
+        );
         state.password = "secret".into();
         assert_eq!(
             state.submit_password(),
@@ -667,16 +885,46 @@ mod tests {
     }
 
     #[test]
-    fn a_portal_shows_the_sentence_from_the_spec() {
+    fn a_portal_shows_the_sentence_from_the_spec_under_the_network() {
         let fake = FakeDaemon::new();
         let error = fake.wifi_connect("Hotel Guest", "").unwrap_err();
         let mut state = WifiState::default();
-        state.on_error(&error);
-        assert!(state.error);
+        state.on_connect_error("Hotel Guest", &error);
+        assert!(!state.error, "the status line is not the error");
         assert_eq!(
-            state.message,
-            "This network needs a login page. Use a phone hotspot."
+            state.inline.as_deref(),
+            Some("This network needs a login page. Use a phone hotspot.")
         );
+        assert_eq!(state.mode, WifiMode::List);
+    }
+
+    #[test]
+    fn a_refused_password_reopens_the_field_with_one_line() {
+        let mut state = WifiState::default();
+        let error = DaemonError::failed("Studio 5G refused the connection (wrong password?)");
+        state.on_connect_error("Studio 5G", &error);
+        assert_eq!(
+            state.mode,
+            WifiMode::Password {
+                ssid: "Studio 5G".into(),
+                secured: true
+            }
+        );
+        assert_eq!(
+            state.inline.as_deref(),
+            Some("That password did not work. Try again.")
+        );
+    }
+
+    #[test]
+    fn connecting_says_so_and_moves_the_mark() {
+        let fake = FakeDaemon::new();
+        let mut state = WifiState::default();
+        state.on_networks(fake.wifi_scan().unwrap());
+        state.on_connected("Studio 5G");
+        assert_eq!(state.message, "Connected to Studio 5G.");
+        assert!(state.networks[1].connected);
+        assert!(!state.networks[0].connected);
     }
 
     #[test]
@@ -702,8 +950,10 @@ mod tests {
         state.select(1); // Other network…
         assert_eq!(state.choose(), None);
         assert_eq!(state.mode, WifiMode::OtherSsid);
+        assert_eq!(state.field_label(), "Network name");
         state.password = "  ".into();
         assert!(!state.submit_other_ssid());
+        assert_eq!(state.inline.as_deref(), Some("Type the network name."));
         state.password = "Writing shed".into();
         assert!(state.submit_other_ssid());
         assert_eq!(
@@ -712,6 +962,7 @@ mod tests {
                 ssid: "Writing shed".into()
             }
         );
+        assert_eq!(state.field_label(), "Password for Writing shed");
         state.password = "quiet".into();
         assert_eq!(
             state.submit_password(),
@@ -720,6 +971,19 @@ mod tests {
                 password: "quiet".into()
             })
         );
+    }
+
+    #[test]
+    fn moving_clears_the_sentence_of_the_previous_network() {
+        let fake = FakeDaemon::new();
+        let mut state = WifiState::default();
+        state.on_networks(fake.wifi_scan().unwrap());
+        let error = fake.wifi_connect("Hotel Guest", "").unwrap_err();
+        state.select(2);
+        state.on_connect_error("Hotel Guest", &error);
+        assert!(state.inline.is_some());
+        state.move_by(1);
+        assert_eq!(state.inline, None);
     }
 
     #[test]
