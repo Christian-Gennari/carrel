@@ -808,7 +808,9 @@ struct FakeState {
     battery: BatteryStatus,
     sync: SyncInfo,
     versions: Vec<HistoryEntry>,
-    preview: String,
+    /// The text of each version, by revision. The History preview diffs it
+    /// against the current text.
+    previews: Vec<(String, String)>,
     networks: Vec<WifiNetwork>,
     drives: Vec<Drive>,
     update: String,
@@ -867,15 +869,45 @@ impl FakeDaemon {
                 delta: 1_004,
             },
         ];
-        let preview = concat!(
-            "The kettle clicks off at six. I write at the kitchen table while ",
-            "the house is still asleep, and the first sentence arrives as if it ",
-            "had been waiting under the floorboards.\n\n",
-            "> A sentence is a small room. You walk in, close the door, and look around.\n\n",
-            "Some mornings the words come slowly; other mornings they arrive all ",
-            "at once, like rain on a tin roof."
-        )
-        .to_owned();
+        let previews = vec![
+            (
+                "9f1c0a2".to_owned(),
+                concat!(
+                    "# The quiet morning\n\n",
+                    "The kettle clicks off at five. I write at the kitchen table while ",
+                    "the house is still **asleep**, and the first sentence arrives as if it ",
+                    "had been waiting under the floorboards.\n\n",
+                    "> A sentence is a small room. You walk in, close the door, and look around.\n\n",
+                    "Some mornings the words come *slowly*.[^1](nostos:cite/quiet-mornings-42)"
+                )
+                .to_owned(),
+            ),
+            (
+                "77b3e41".to_owned(),
+                concat!(
+                    "# The quiet morning\n\n",
+                    "The kettle clicks off at six. I write at the kitchen table while ",
+                    "the house is still asleep, and the first sentence arrives as if it ",
+                    "had been waiting under the floorboards.\n\n",
+                    "> A sentence is a small room. You walk in, close the door, and look around.\n\n",
+                    "Some mornings the words come slowly."
+                )
+                .to_owned(),
+            ),
+            (
+                "2ad8c05".to_owned(),
+                concat!(
+                    "The kettle clicks off at six. I write at the kitchen table while ",
+                    "the house is still asleep.\n\n",
+                    "Some mornings the words come slowly."
+                )
+                .to_owned(),
+            ),
+            (
+                "5c40f7b".to_owned(),
+                "The kettle clicks off at six.".to_owned(),
+            ),
+        ];
         Self {
             state: Mutex::new(FakeState {
                 battery: BatteryStatus {
@@ -889,7 +921,7 @@ impl FakeDaemon {
                     last_sync: now - 3_600,
                 },
                 versions,
-                preview,
+                previews,
                 networks: vec![
                     WifiNetwork {
                         ssid: "Kitchen".into(),
@@ -943,7 +975,8 @@ impl FakeDaemon {
     /// `CARREL_BATTERY=10` or `CARREL_BATTERY=18,charging` changes the battery;
     /// `CARREL_FAKE_NO_DRIVE=1` removes the USB stick; `CARREL_FAKE_SYNC` is
     /// `unpaired`, `syncing` or `error`; `CARREL_FAKE_SLOW_EXPORT=1` keeps the
-    /// exporting step on screen.
+    /// exporting step on screen, `CARREL_FAKE_SLOW_IMPORT=1` the import step,
+    /// and `CARREL_FAKE_EXPORT_ERROR=1` fails the export.
     pub fn demo() -> Self {
         let fake = Self::new();
         if let Ok(value) = std::env::var("CARREL_BATTERY") {
@@ -1198,10 +1231,9 @@ impl DaemonClient for FakeDaemon {
             .state
             .lock()
             .map_err(|_| DaemonError::failed("fake lock"))?;
-        if state.versions.iter().any(|version| version.rev == rev) {
-            Ok(state.preview.clone())
-        } else {
-            Err(DaemonError::failed(format!("unknown revision {rev}")))
+        match state.previews.iter().find(|(revision, _)| revision == rev) {
+            Some((_, text)) => Ok(text.clone()),
+            None => Err(DaemonError::failed(format!("unknown revision {rev}"))),
         }
     }
 
@@ -1379,19 +1411,25 @@ impl DaemonClient for FakeDaemon {
                 .exported
                 .push((selection.clone(), format.clone(), drive_id.clone()));
         }
-        // The fake copy is instant; a slow one keeps the "Exporting" step on
-        // screen long enough for a screenshot.
+        // The fake copy is instant; a slow one keeps the "Exporting" screen
+        // long enough for a screenshot, and an error shows its one line.
         if std::env::var_os("CARREL_FAKE_SLOW_EXPORT").is_some() {
             std::thread::sleep(std::time::Duration::from_secs(10));
         }
-        Ok(format!(
-            "/media/carrel/{drive_id}/Carrel export {folder}/ ({format})"
-        ))
+        if std::env::var_os("CARREL_FAKE_EXPORT_ERROR").is_some() {
+            return Err(DaemonError::failed(
+                "The drive was removed before the copy finished.",
+            ));
+        }
+        Ok(format!("/media/carrel/{drive_id}/Carrel export {folder}/"))
     }
 
     fn import(&self, drive_id: String, paths: Vec<String>) -> Result<Vec<String>, DaemonError> {
         // The real daemon scans the drive when the shell names no paths; the
         // fake copies a deterministic pair so the finished screen has content.
+        if std::env::var_os("CARREL_FAKE_SLOW_IMPORT").is_some() {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+        }
         let imported = if paths.is_empty() {
             vec![
                 "Imported/Letters.md".to_owned(),

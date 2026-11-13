@@ -141,6 +141,11 @@ impl Keys {
                 return glib::Propagation::Stop;
             }
             if key == gdk::Key::e {
+                // Ctrl+E on the finished result returns to the three rows,
+                // with the choices Carrel remembers, ready for Enter again.
+                if visible == "export" {
+                    self.export.reopen();
+                }
                 self.nav.show("export");
                 return glib::Propagation::Stop;
             }
