@@ -555,7 +555,7 @@ impl FilesPage {
             }
         }
         if entries.is_empty() {
-            self.push_message("No files in this folder yet");
+            self.push_state("No files in this folder yet", "Ctrl+N starts one here.");
         }
     }
 
@@ -581,7 +581,10 @@ impl FilesPage {
             })
         });
         if hits.is_empty() {
-            self.push_message(&format!("No documents match “{query}”."));
+            self.push_state(
+                &format!("No documents match “{query}”"),
+                "Esc clears the search.",
+            );
             return;
         }
         for (rel, _) in hits {
@@ -609,30 +612,21 @@ impl FilesPage {
     }
 
     fn push_header(self: &Rc<Self>, text: &str) {
-        let row = gtk::ListBoxRow::new();
-        row.set_selectable(false);
-        row.set_activatable(false);
-        let label = gtk::Label::new(Some(text));
-        label.set_xalign(0.0);
-        label.add_css_class("section-title");
-        label.set_margin_top(10);
-        label.set_margin_bottom(2);
-        label.set_margin_start(14);
-        row.set_child(Some(&label));
-        self.push_row(row, None);
+        self.push_row(ui::group_row(text), None);
     }
 
-    fn push_message(self: &Rc<Self>, text: &str) {
+    /// An empty list is a state, not a sentence in a row: one headline and one
+    /// small detail line, the same shape the finished Export uses. It sits on
+    /// the page's own left edge, like the title above it.
+    fn push_state(self: &Rc<Self>, headline: &str, detail: &str) {
+        let state = ui::State::new();
+        state.set(headline, &[detail], false);
         let row = gtk::ListBoxRow::new();
         row.set_selectable(false);
         row.set_activatable(false);
-        let label = gtk::Label::new(Some(text));
-        label.set_xalign(0.0);
-        label.add_css_class("row-note");
-        label.set_margin_top(10);
-        label.set_margin_bottom(10);
-        label.set_margin_start(12);
-        row.set_child(Some(&label));
+        row.set_can_focus(false);
+        state.widget.set_margin_bottom(10);
+        row.set_child(Some(&state.widget));
         self.push_row(row, None);
     }
 
@@ -755,9 +749,6 @@ impl FilesPage {
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         line.append(&spacer);
-        let note = gtk::Label::new(Some("folder"));
-        note.add_css_class("row-note");
-        line.append(&note);
         row.set_child(Some(&line));
         (row, None)
     }

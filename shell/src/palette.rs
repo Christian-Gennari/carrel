@@ -356,7 +356,7 @@ impl CommandPalette {
         message.set_visible(false);
 
         let hint = ui::hint_bar(&PALETTE_HINTS);
-        hint.add_css_class("command-hint-bar");
+        hint.add_css_class("card-hint-bar");
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.add_css_class("command-palette");
@@ -809,7 +809,8 @@ impl KeySheet {
         columns.attach(&group(&GROUPS[3]), 1, 1, 1, 1);
 
         let hint = ui::hint_bar(&[("Esc", "Close")]);
-        hint.set_margin_top(20);
+        hint.add_css_class("card-hint-bar");
+        hint.set_margin_top(18);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.add_css_class("key-sheet");
@@ -869,11 +870,15 @@ fn group((name, rows): &(&str, &[(&str, &str)])) -> gtk::Box {
     let grid = gtk::Grid::new();
     grid.set_row_spacing(8);
     grid.set_column_spacing(14);
+    // One cap width per group, so every word starts on the same edge instead
+    // of stepping in and out with the length of the keys beside it.
+    let caps = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
     for (index, (keys, word)) in rows.iter().enumerate() {
         let cap = gtk::Label::new(Some(keys));
         cap.add_css_class("key-cap");
         cap.set_halign(gtk::Align::Start);
         cap.set_valign(gtk::Align::Center);
+        caps.add_widget(&cap);
         let word = gtk::Label::new(Some(word));
         word.set_xalign(0.0);
         word.set_hexpand(true);

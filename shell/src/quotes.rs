@@ -236,6 +236,8 @@ pub struct QuotePalette {
     scroller: gtk::ScrolledWindow,
     message: gtk::Label,
     hint: gtk::Box,
+    /// The footer while a state is shown: only Esc works with no results.
+    message_hint: gtk::Box,
     view: sourceview::View,
     buffer: sourceview::Buffer,
     editor: Rc<EditorPage>,
@@ -287,7 +289,10 @@ impl QuotePalette {
         message.set_visible(false);
 
         let hint = crate::ui::hint_bar(&HINTS);
-        hint.add_css_class("quote-hint-bar");
+        hint.add_css_class("card-hint-bar");
+        let message_hint = crate::ui::hint_bar(&[("Esc", "Close")]);
+        message_hint.add_css_class("card-hint-bar");
+        message_hint.set_visible(false);
 
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         column.set_width_request(POPOVER_WIDTH);
@@ -295,6 +300,7 @@ impl QuotePalette {
         column.append(&message);
         column.append(&scroller);
         column.append(&hint);
+        column.append(&message_hint);
 
         let popover = gtk::Popover::new();
         popover.add_css_class("quote-popover");
@@ -316,6 +322,7 @@ impl QuotePalette {
             scroller,
             message,
             hint,
+            message_hint,
             view,
             buffer,
             editor,
@@ -718,8 +725,10 @@ impl QuotePalette {
             }
             _ => self.message.set_visible(false),
         }
+        // A state keeps a footer, so the card never ends bare: Esc closes it.
         self.scroller.set_visible(!state.hits.is_empty());
         self.hint.set_visible(!state.hits.is_empty());
+        self.message_hint.set_visible(state.hits.is_empty());
     }
 
     fn render_list(&self) {

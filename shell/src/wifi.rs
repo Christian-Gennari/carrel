@@ -353,12 +353,9 @@ impl WifiPage {
                     Ok(networks) => {
                         let mut state = page.state.borrow_mut();
                         state.on_networks(networks);
-                        if state.networks.is_empty() {
-                            state.message =
-                                "No networks in range. Press R to scan again.".to_owned();
-                        } else {
-                            state.message.clear();
-                        }
+                        // An empty list is the state block's business, not the
+                        // status line's.
+                        state.message.clear();
                         drop(state);
                     }
                     Err(error) => page.state.borrow_mut().on_scan_error(&error),
@@ -593,6 +590,10 @@ impl WifiPage {
         let field = state.field_label();
         let inline = state.inline.clone();
         let mode = state.mode.clone();
+        let empty_error = state.error && state.networks.is_empty();
+        if state.networks.is_empty() {
+            self.list.append(&state_row(&state));
+        }
         let mut field_placed = false;
         let mut selected_index = 0i32;
         for (index, network) in state.networks.iter().enumerate() {
@@ -650,7 +651,11 @@ impl WifiPage {
         }
 
         self.entry.set_visibility(mode == WifiMode::OtherSsid);
-        if !state.message.is_empty() {
+        if empty_error {
+            // The state block above carries the error; the line under the
+            // title stays the quiet context.
+            self.screen.set_status(RADIO_NOTE);
+        } else if !state.message.is_empty() {
             if state.error {
                 self.screen.set_status_error(&state.message);
             } else {
@@ -706,6 +711,30 @@ impl WifiPage {
         row.set_child(Some(&column));
         self.list.append(&row);
     }
+}
+
+/// The empty, scanning or failed scan, where the networks would be: one
+/// headline and one detail line, the same state block every screen uses.
+fn state_row(state: &WifiState) -> gtk::ListBoxRow {
+    let block = crate::ui::State::new();
+    if state.error {
+        block.set(&state.message, &["Press R to scan again."], true);
+    } else if state.loading {
+        block.set(
+            "Scanning for networks…",
+            &["The list fills as soon as one answers."],
+            false,
+        );
+    } else {
+        block.set("No networks in range", &["Press R to scan again."], false);
+    }
+    let row = gtk::ListBoxRow::new();
+    row.set_selectable(false);
+    row.set_activatable(false);
+    row.set_can_focus(false);
+    block.widget.set_margin_bottom(10);
+    row.set_child(Some(&block.widget));
+    row
 }
 
 /// One network: its name, then the state that has no word of its own as an

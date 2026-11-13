@@ -22,11 +22,11 @@ use crate::ui;
 const EXPORT_HINTS: [(&str, &str); 4] = [
     ("Enter", "Export"),
     ("← →", "Change"),
-    ("↑ ↓", "Row"),
+    ("↑ ↓", "Move"),
     ("Esc", "Back"),
 ];
 const EXPORT_NO_DRIVE_HINTS: [(&str, &str); 3] =
-    [("← →", "Change"), ("↑ ↓", "Row"), ("Esc", "Back")];
+    [("← →", "Change"), ("↑ ↓", "Move"), ("Esc", "Back")];
 const IMPORT_HINTS: [(&str, &str); 2] = [("Enter", "Import"), ("Esc", "Back")];
 const IMPORT_NO_DRIVE_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
 const RUNNING_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
@@ -447,11 +447,9 @@ impl ExportState {
         self.error = Some(message);
     }
 
-    /// The one-line status under the title, or the error in its place.
+    /// The one-line status under the title: what the screen will do. A failure
+    /// is a state block of its own, so it is not repeated here.
     pub fn status(&self, dated_folder: &str) -> String {
-        if let Some(error) = &self.error {
-            return error.clone();
-        }
         match self.step {
             ExportStep::Configure if self.current_drive().is_none() => {
                 "Plug in a drive; this screen notices it as soon as it appears.".to_owned()
@@ -603,13 +601,8 @@ pub struct ExportPage {
     quiet: gtk::Button,
     quiet_cap: gtk::Label,
     quiet_word: gtk::Label,
-    progress: gtk::Box,
-    progress_heading: gtk::Label,
-    progress_line: gtk::Label,
-    result: gtk::Box,
-    result_heading: gtk::Label,
-    result_location: gtk::Label,
-    result_detail: gtk::Label,
+    /// Running, done and error states: the shared headline + detail block.
+    state_view: ui::State,
     state: RefCell<ExportState>,
     prefs: RefCell<ExportPrefs>,
     client: Client,
@@ -639,44 +632,17 @@ impl ExportPage {
             action_button("I", "Import from a USB drive", "quiet-action", "quiet-word");
         quiet.set_margin_top(12);
 
+        // Running, done and error all use the shared state block: one headline
+        // and one small detail line, the same shape as Import's result. It
+        // sits directly under the status, where the eye lands first.
+        let state_view = ui::State::new();
+        screen.content.append(&state_view.widget);
+
         let configure = gtk::Box::new(gtk::Orientation::Vertical, 0);
         configure.append(&rows);
         configure.append(&action);
         configure.append(&quiet);
         screen.content.append(&configure);
-
-        let progress_heading = gtk::Label::new(None);
-        progress_heading.set_xalign(0.0);
-        progress_heading.set_wrap(true);
-        progress_heading.add_css_class("step-title");
-        let progress_line = gtk::Label::new(None);
-        progress_line.set_xalign(0.0);
-        progress_line.set_wrap(true);
-        progress_line.add_css_class("row-note");
-        let progress = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        progress.set_margin_top(22);
-        progress.append(&progress_heading);
-        progress.append(&progress_line);
-        screen.content.append(&progress);
-
-        let result_heading = gtk::Label::new(None);
-        result_heading.set_xalign(0.0);
-        result_heading.set_wrap(true);
-        result_heading.add_css_class("step-title");
-        let result_location = gtk::Label::new(None);
-        result_location.set_xalign(0.0);
-        result_location.set_wrap(true);
-        result_location.add_css_class("row-note");
-        let result_detail = gtk::Label::new(None);
-        result_detail.set_xalign(0.0);
-        result_detail.set_wrap(true);
-        result_detail.add_css_class("file-name");
-        let result = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        result.set_margin_top(22);
-        result.append(&result_heading);
-        result.append(&result_location);
-        result.append(&result_detail);
-        screen.content.append(&result);
 
         let prefs = ExportPrefs::load(store.root());
         let page = Rc::new(Self {
@@ -690,13 +656,7 @@ impl ExportPage {
             quiet,
             quiet_cap,
             quiet_word,
-            progress,
-            progress_heading,
-            progress_line,
-            result,
-            result_heading,
-            result_location,
-            result_detail,
+            state_view,
             state: RefCell::new(ExportState::default()),
             prefs: RefCell::new(prefs),
             client,
@@ -1045,16 +1005,18 @@ impl ExportPage {
         };
         self.screen
             .set_title(if import { "Import" } else { "Export" });
+        // An error is a state, not a second line under the title: the block
+        // below says what happened and what Enter does next.
         let status = self.state.borrow().status(&ui::local_date());
-        if error.is_some() {
-            self.screen.set_status_error(&status);
-        } else {
-            self.screen.set_status(&status);
-        }
+        self.screen.set_status(&status);
 
         self.configure.set_visible(step == ExportStep::Configure);
-        self.progress.set_visible(step == ExportStep::Running);
-        self.result.set_visible(step == ExportStep::Done);
+        if let Some(message) = &error {
+            self.state_view
+                .set(message, &["Nothing was removed from your writing."], true);
+        } else {
+            self.state_view.hide();
+        }
 
         match step {
             ExportStep::Configure => {
@@ -1087,27 +1049,18 @@ impl ExportPage {
                 self.screen.set_hints(hints);
             }
             ExportStep::Running => {
-                self.progress_heading
-                    .set_text(&self.state.borrow().progress_heading());
-                self.progress_line
-                    .set_text(self.state.borrow().progress_line());
+                let state = self.state.borrow();
+                self.state_view
+                    .set(&state.progress_heading(), &[state.progress_line()], false);
+                drop(state);
                 self.screen.set_hints(&RUNNING_HINTS);
             }
             ExportStep::Done => {
                 let state = self.state.borrow();
                 let heading = state.outcome_heading().unwrap_or_default();
                 let lines = state.outcome_lines();
-                self.result_heading.set_text(&heading);
-                self.result_heading.set_visible(!heading.is_empty());
-                let (location, detail) = match lines.as_slice() {
-                    [] => (None, None),
-                    [only] => (None, Some(only.as_str())),
-                    [location, detail, ..] => (Some(location.as_str()), Some(detail.as_str())),
-                };
-                self.result_location.set_text(location.unwrap_or_default());
-                self.result_location.set_visible(location.is_some());
-                self.result_detail.set_text(detail.unwrap_or_default());
-                self.result_detail.set_visible(detail.is_some());
+                let details: Vec<&str> = lines.iter().map(String::as_str).collect();
+                self.state_view.set(&heading, &details, false);
                 let hints = if state.is_import() {
                     &DONE_IMPORT_HINTS[..]
                 } else {
@@ -1167,26 +1120,7 @@ impl ExportPage {
                     drive_count > 1,
                 ),
             };
-            let element = gtk::ListBoxRow::new();
-            element.add_css_class("ui-row");
-            element.add_css_class("file-row");
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-            let label = gtk::Label::new(Some(name));
-            label.set_xalign(0.0);
-            label.set_size_request(86, -1);
-            label.add_css_class("setting-value");
-            let value = gtk::Label::new(Some(&value));
-            value.set_xalign(0.0);
-            value.set_hexpand(true);
-            value.set_ellipsize(gtk::pango::EllipsizeMode::End);
-            value.add_css_class(if dim { "row-note" } else { "file-name" });
-            let arrows = gtk::Label::new(Some("‹ ›"));
-            arrows.add_css_class("row-note");
-            arrows.set_visible(changeable);
-            line.append(&label);
-            line.append(&value);
-            line.append(&arrows);
-            element.set_child(Some(&line));
+            let element = ui::form_row(name, &value, dim, changeable);
             self.rows.append(&element);
         }
         ui::select(&self.rows, row);
@@ -1481,7 +1415,11 @@ mod tests {
         state.on_error("the drive was removed".into());
         assert_eq!(state.step, ExportStep::Configure);
         assert_eq!(state.error.as_deref(), Some("the drive was removed"));
-        assert_eq!(state.status("2026-11-13"), "the drive was removed");
+        // The error is a state block on the screen; the status under the title
+        // stays the quiet sentence about what the screen will do.
+        assert!(state
+            .status("2026-11-13")
+            .contains("Nothing leaves the device"));
     }
 
     #[test]

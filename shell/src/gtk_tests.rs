@@ -624,13 +624,13 @@ fn files_search_finds_a_document_in_any_folder() {
     shell.press("Esc", gdk::Key::Escape, none);
     settle();
     shell.type_search("zzzqx");
-    assert!(shell.has_label("No documents match “zzzqx”."));
+    assert!(shell.has_label("No documents match “zzzqx”"));
     shell.press("Enter", gdk::Key::Return, none);
     assert_eq!(shell.visible(), "files");
 
     // Backspace edits the query; Esc clears it and the next Esc leaves.
     shell.press("BackSpace", gdk::Key::BackSpace, none);
-    assert!(shell.has_label("No documents match “zzzq”."));
+    assert!(shell.has_label("No documents match “zzzq”"));
     shell.press("Esc", gdk::Key::Escape, none);
     assert!(shell.has_label("Recent"));
     assert_eq!(shell.visible(), "files");
@@ -1024,6 +1024,31 @@ const BASELINE: [(&str, usize); 18] = [
     // Sync and Wi-Fi from the editor (issue #29).
     ("Pair with Nostos from the editor", 2),
     ("Sync when Wi-Fi is not set up yet", 2),
+];
+
+/// What each task cost in round 1 (`docs/ux-baseline.md` at commit f810120),
+/// for the tasks that existed then. A later round may not need more keys, and
+/// round 10 asserts that against these numbers. `None` means the task was
+/// added after round 1 and has no "before".
+const ROUND_ONE: [Option<usize>; 18] = [
+    Some(4),  // Open an existing file by name
+    Some(12), // Create a new file
+    Some(7),  // Insert a quote with @
+    Some(1),  // Start a sync
+    Some(6),  // Export the current file to USB as .docx
+    None,     // Export again in the last format
+    Some(5),  // Restore an earlier version (now "Compare and restore")
+    Some(2),  // Change the theme
+    None,     // Open a file with the command palette
+    None,     // Toggle focus mode with the command palette
+    None,     // Set the theme to Sepia with the command palette
+    None,     // Show the keyboard shortcuts
+    None,     // Find and open a file by typing
+    None,     // Move a file into a folder
+    None,     // First run to editor with defaults
+    None,     // Change font size in Settings
+    None,     // Pair with Nostos from the editor
+    None,     // Sync when Wi-Fi is not set up yet
 ];
 
 fn key_for(character: char) -> (String, gdk::Key) {
@@ -1712,9 +1737,11 @@ fn the_wifi_fix_returns_to_sync_and_syncs() {
     );
 }
 
-/// Print and write the table; fail when a count moved away from the baseline.
+/// Print and write the table; fail when a count moved away from the baseline
+/// or grew past what the same task cost in round 1.
 fn finish_baseline(measured: &[(&str, Vec<String>)]) {
     assert_eq!(measured.len(), BASELINE.len());
+    assert_eq!(measured.len(), ROUND_ONE.len());
     let mut table = String::new();
     table.push_str("# UX baseline — keystrokes per writer task\n\n");
     table.push_str(
@@ -1725,8 +1752,14 @@ fn finish_baseline(measured: &[(&str, Vec<String>)]) {
     table.push_str("A chord counts once. Every typed character counts once. ");
     table.push_str("A confirmation dialog counts the keys that reach its button.\n\n");
     table.push_str("Regenerate with `dev/run.sh bash dev/ux-baseline.sh` (Xvfb, no GPU).\n\n");
-    table.push_str("| Task | Keys pressed | Key sequence |\n");
-    table.push_str("|---|---:|---|\n");
+    table.push_str(
+        "The \"Round 1 → round 10\" column is the first screenshot matrix \
+         against this round, for every task that existed in round 1. A dash \
+         means the task was added by a later round. No task needs more keys \
+         than it did in round 1.\n\n",
+    );
+    table.push_str("| Task | Round 1 → round 10 | Keys pressed | Key sequence |\n");
+    table.push_str("|---|---|---:|---|\n");
 
     println!("\nKeystroke baseline (a chord counts once):\n");
     println!("{:<44} {:>4}  Sequence", "Task", "Keys");
@@ -1738,9 +1771,21 @@ fn finish_baseline(measured: &[(&str, Vec<String>)]) {
             "{task} needs {} keys, baseline is {expected}; update docs/ux-baseline.md and BASELINE deliberately",
             sequence.len()
         );
+        let before = ROUND_ONE[index];
+        if let Some(before) = before {
+            assert!(
+                sequence.len() <= before,
+                "{task} needs {} keys, more than round 1's {before}",
+                sequence.len()
+            );
+        }
         println!("{:<44} {:>4}  {}", task, sequence.len(), sequence.join(" "));
+        let trend = match before {
+            Some(before) => format!("{before} → {}", sequence.len()),
+            None => "—".to_owned(),
+        };
         table.push_str(&format!(
-            "| {task} | {} | {} |\n",
+            "| {task} | {trend} | {} | {} |\n",
             sequence.len(),
             sequence.join(" ")
         ));
