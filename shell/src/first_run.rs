@@ -24,8 +24,8 @@ use crate::sync::SyncPage;
 use crate::ui;
 
 const HINTS: [(&str, &str); 3] = [("Enter", "Choose"), ("↑ ↓", "Move"), ("Esc", "Back")];
-const WELCOME_HINTS: [(&str, &str); 2] = [("Enter", "Choose"), ("↑ ↓", "Move")];
-const START_HINTS: [(&str, &str); 2] = [("Enter", "Start"), ("↑ ↓", "Choose")];
+const WELCOME_HINTS: [(&str, &str); 2] = [("Enter", "Open"), ("↑ ↓", "Move")];
+const START_HINTS: [(&str, &str); 2] = [("Enter", "Start"), ("↑ ↓", "Move")];
 const SYNC_CHOICES: [&str; 4] = ["Not now", "Nostos", "Self-hosted server", "Google Drive"];
 
 /// The last row of the welcome screen is the action, not a value.
@@ -392,7 +392,8 @@ impl FirstRunPage {
             }
             for (index, (name, value)) in state.welcome_options(&settings).iter().enumerate() {
                 let row = if index == START_WRITING {
-                    ui::plain_row(name)
+                    // The one action on the screen reads as the action.
+                    ui::primary_row(name)
                 } else {
                     ui::value_row(name, value, "")
                 };
@@ -401,13 +402,7 @@ impl FirstRunPage {
         } else {
             self.screen.set_hints(&HINTS);
             for option in state.options() {
-                let row = gtk::ListBoxRow::new();
-                row.add_css_class("ui-row");
-                row.add_css_class("file-row");
-                let label = gtk::Label::new(Some(&option));
-                label.set_xalign(0.0);
-                label.add_css_class("file-name");
-                row.set_child(Some(&label));
+                let row = ui::plain_row(&option);
                 self.list.append(&row);
             }
         }

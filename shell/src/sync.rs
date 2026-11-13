@@ -1165,11 +1165,12 @@ impl SyncPage {
                 self.list.append(&group_row("Connections"));
             }
             let widget = match row {
-                // "Sync now" is the one prominent action only when nothing
-                // else needs the writer first.
-                Row::SyncNow => action_row("Sync now", "", state.remedy().is_none()),
+                // "Sync now" is the one prominent action whenever nothing
+                // else needs the writer first: no error, or an error the
+                // retry itself fixes.
+                Row::SyncNow => primary_row("Sync now", state.remedy() == Some(Remedy::Wifi)),
                 Row::ChooseNetwork => remedy_row(&state.row_label(Row::ChooseNetwork), REMEDY_NOTE),
-                _ => action_row(&state.row_label(*row), state.row_note(*row), false),
+                _ => action_row(&state.row_label(*row), state.row_note(*row)),
             };
             self.list.append(&widget);
             action_rows.push(self.list.observe_children().n_items() as i32 - 1);
@@ -1208,9 +1209,9 @@ impl SyncPage {
         self.sentence.set_text(&state.pairing_sentence());
         self.live.set_text(state.pairing_live());
         if state.paired {
-            self.live.add_css_class("sync-now");
+            self.live.add_css_class("primary-row");
         } else {
-            self.live.remove_css_class("sync-now");
+            self.live.remove_css_class("primary-row");
         }
         self.pairing_note.set_text(state.pairing_note());
         let data = state.qr_data();
@@ -1231,20 +1232,21 @@ fn set_line(label: &gtk::Label, text: &str) {
 
 /// A row the keyboard lands on: the label at the row size, an optional note
 /// under it. `strong` marks the one prominent action ("Sync now").
-fn action_row(title: &str, note: &str, strong: bool) -> gtk::ListBoxRow {
-    if !note.is_empty() {
-        return ui::value_row(title, "", note);
+fn action_row(title: &str, note: &str) -> gtk::ListBoxRow {
+    if note.is_empty() {
+        ui::plain_row(title)
+    } else {
+        ui::value_row(title, "", note)
     }
-    let row = ui::plain_row(title);
-    if strong {
-        if let Some(label) = row
-            .child()
-            .and_then(|child| child.downcast::<gtk::Label>().ok())
-        {
-            label.add_css_class("sync-now");
-        }
+}
+
+/// The overview's one action: the shared row shape with the action weight.
+fn primary_row(title: &str, quiet: bool) -> gtk::ListBoxRow {
+    if quiet {
+        ui::plain_row(title)
+    } else {
+        ui::primary_row(title)
     }
-    row
 }
 
 /// The error's one action, with the key that takes it written in the row:
@@ -1287,20 +1289,10 @@ fn remedy_row(label: &str, note: &str) -> gtk::ListBoxRow {
     row
 }
 
-/// The quiet group label above the pairing rows: not a choice, never selected.
+/// The quiet group label above the pairing rows: the shared group row, so its
+/// title starts on the same edge as every other list's.
 fn group_row(text: &str) -> gtk::ListBoxRow {
-    let row = gtk::ListBoxRow::new();
-    row.set_selectable(false);
-    row.set_activatable(false);
-    row.set_can_focus(false);
-    // The same padding as an action row, so the label starts where the rows do.
-    row.add_css_class("ui-row");
-    let label = gtk::Label::new(Some(text));
-    label.set_xalign(0.0);
-    label.set_margin_top(4);
-    label.add_css_class("section-title");
-    row.set_child(Some(&label));
-    row
+    ui::group_row(text)
 }
 
 /// A QR as a GDK texture: dark modules on warm white, with the four-module

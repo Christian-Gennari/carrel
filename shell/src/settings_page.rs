@@ -442,16 +442,17 @@ fn cycle_theme(list: &[Theme], current: Theme, delta: i32) -> Theme {
 }
 
 /// The keys that work on the selected row: a value moves with Left/Right, a
-/// screen opens with Enter, and Esc always goes back.
+/// screen opens with Enter, and Esc always goes back. Enter leads when Enter
+/// does something, and Esc is always last, on every screen.
 fn hints_for(state: &SettingsState, settings: &Settings) -> Vec<(&'static str, &'static str)> {
     match state.row(settings) {
         SettingRow::Wifi | SettingRow::SyncBackends => {
-            vec![("↑ ↓", "Move"), ("Enter", "Open"), ("Esc", "Back")]
+            vec![("Enter", "Open"), ("↑ ↓", "Move"), ("Esc", "Back")]
         }
         SettingRow::Update if state.update.ready() => {
-            vec![("↑ ↓", "Move"), ("Enter", "Update"), ("Esc", "Back")]
+            vec![("Enter", "Update"), ("↑ ↓", "Move"), ("Esc", "Back")]
         }
-        _ => vec![("↑ ↓", "Move"), ("← →", "Change"), ("Esc", "Back")],
+        _ => vec![("← →", "Change"), ("↑ ↓", "Move"), ("Esc", "Back")],
     }
 }
 
@@ -487,7 +488,7 @@ impl SettingsPage {
         on_change: Rc<dyn Fn()>,
     ) -> Rc<Self> {
         let screen = ui::Screen::new("Settings");
-        screen.set_hints(&[("↑ ↓", "Move"), ("← →", "Change"), ("Esc", "Back")]);
+        screen.set_hints(&[("← →", "Change"), ("↑ ↓", "Move"), ("Esc", "Back")]);
         let list = ui::list();
         let scroller = ui::scroller(&list);
         screen.content.append(&ui::fade_top(&scroller));
@@ -824,18 +825,9 @@ fn action_row(text: &str, note: &str) -> gtk::ListBoxRow {
 }
 
 /// A small, quiet group label. It takes no cursor: Up and Down step over it.
+/// The shared row keeps every screen's group titles on the same edge.
 fn group_row(name: &str) -> gtk::ListBoxRow {
-    let row = gtk::ListBoxRow::new();
-    row.set_selectable(false);
-    row.set_activatable(false);
-    let label = gtk::Label::new(Some(name));
-    label.set_xalign(0.0);
-    label.add_css_class("section-title");
-    label.set_margin_start(14);
-    label.set_margin_top(12);
-    label.set_margin_bottom(2);
-    row.set_child(Some(&label));
-    row
+    ui::group_row(name)
 }
 
 /// The sample line under Look: body text at the current font and size, in the

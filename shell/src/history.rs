@@ -306,6 +306,10 @@ pub struct HistoryPage {
     added_tag: gtk::TextTag,
     removed_tag: gtk::TextTag,
     notice: gtk::Label,
+    /// The two panes, hidden while a state takes their place.
+    columns: gtk::Box,
+    /// Empty, loading and error states: one headline and one detail line.
+    message: ui::State,
     state: RefCell<HistoryState>,
     client: Client,
     nav: Rc<Navigator>,
@@ -326,16 +330,22 @@ impl HistoryPage {
         screen.set_hints(&HINTS);
 
         let list = ui::list();
-        list.set_width_request(396);
+        // The two panes share the one 720 px frame: the versions keep a
+        // narrow column and the preview takes the rest.
+        list.set_width_request(390);
         let list_scroller = ui::scroller(&list);
 
         let preview_title = gtk::Label::new(None);
         preview_title.set_xalign(0.0);
         preview_title.set_wrap(true);
+        // A wrapping label asks for one character of width, so the pane takes
+        // the space the frame leaves instead of widening the frame itself.
+        preview_title.set_max_width_chars(1);
         preview_title.add_css_class("preview-title");
         let preview_legend = gtk::Label::new(None);
         preview_legend.set_xalign(0.0);
         preview_legend.set_wrap(true);
+        preview_legend.set_max_width_chars(1);
         preview_legend.add_css_class("row-note");
         preview_legend.set_visible(false);
 
@@ -377,8 +387,16 @@ impl HistoryPage {
 
         let columns = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         columns.set_vexpand(true);
-        columns.append(&ui::fade_top(&list_scroller));
+        // The versions keep their narrow column; the preview takes the rest of
+        // the shared frame.
+        let list_pane = ui::fade_top(&list_scroller);
+        list_pane.set_hexpand(false);
+        list_pane.set_size_request(390, -1);
+        preview_pane.set_hexpand(true);
+        columns.append(&list_pane);
         columns.append(&preview_pane);
+        let message = ui::State::new();
+        screen.content.append(&message.widget);
         screen.content.append(&columns);
 
         let notice = gtk::Label::new(None);
@@ -400,6 +418,8 @@ impl HistoryPage {
             added_tag,
             removed_tag,
             notice,
+            columns,
+            message,
             state: RefCell::new(HistoryState::default()),
             client,
             nav,
@@ -432,7 +452,11 @@ impl HistoryPage {
     fn open(self: &Rc<Self>) {
         let Some(path) = self.editor.current_rel() else {
             self.screen.set_status("");
-            self.show_message("Open a file to see its history.", false);
+            self.show_message_state(
+                "No file open",
+                "Open a document to see its versions.",
+                false,
+            );
             return;
         };
         if let Err(error) = self.editor.flush_now() {
@@ -471,16 +495,24 @@ impl HistoryPage {
 
     fn set_versions(self: &Rc<Self>, versions: Vec<HistoryEntry>) {
         if versions.is_empty() {
-            self.show_message(
-                "No versions yet. Carrel saves history after five quiet minutes.",
+            self.show_message_state(
+                "No versions yet",
+                "Carrel saves history after five quiet minutes.",
                 false,
             );
             return;
         }
         let effects = self.state.borrow_mut().set_versions(versions);
+        self.show_columns();
         self.rebuild_list();
         self.update_preview();
         self.run_effects(effects);
+    }
+
+    /// The two panes come back whenever there is something to show.
+    fn show_columns(&self) {
+        self.message.hide();
+        self.columns.set_visible(true);
     }
 
     fn show_loading(&self) {
@@ -492,29 +524,38 @@ impl HistoryPage {
             state.error = None;
         }
         self.clear_list();
-        self.preview_title.set_text("Loading…");
+        self.preview_title.set_text("");
         self.preview_legend.set_visible(false);
         self.preview.buffer().set_text("");
         self.update_notice();
+        self.show_message_state("Loading versions…", "This takes a moment.", false);
     }
 
-    fn show_message(&self, message: &str, error: bool) {
+    /// A state takes the panes' place: one headline, one detail line, on the
+    /// same page edge as the title. Empty and error look the same, except for
+    /// the colour of the headline.
+    fn show_message_state(&self, headline: &str, detail: &str, error: bool) {
+        self.message.set(headline, &[detail], error);
+        self.columns.set_visible(false);
+    }
+
+    fn show_message(self: &Rc<Self>, message: &str, error: bool) {
         {
             let mut state = self.state.borrow_mut();
             state.versions.clear();
             state.preview = None;
             state.preview_rev = None;
+            // The state block below carries the sentence; the notice line is
+            // for a restore's outcome, not for a screen with nothing on it.
             state.notice.clear();
-            state.error = error.then(|| message.to_owned());
-            if !error {
-                state.notice = message.to_owned();
-            }
+            state.error = None;
         }
         self.clear_list();
         self.preview_title.set_text("");
         self.preview_legend.set_visible(false);
-        self.preview.buffer().set_text(message);
+        self.preview.buffer().set_text("");
         self.update_notice();
+        self.show_message_state(message, "Nothing in your writing changed.", error);
     }
 
     fn clear_list(&self) {
@@ -770,9 +811,11 @@ impl HistoryPage {
         };
         let when = ui::format_moment(entry.time);
         let weak = Rc::downgrade(self);
+        // A short question, one width for every card; the moment leads the
+        // sentence, where no title length can stretch the card.
         self.screen.ask(
-            &format!("Restore the version from {when}?"),
-            "Your current text is kept in History.",
+            "Restore this version?",
+            &format!("{when}. Your current text is kept in History."),
             "Restore",
             move || {
                 if let Some(page) = weak.upgrade() {
