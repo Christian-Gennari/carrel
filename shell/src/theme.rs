@@ -35,6 +35,11 @@ pub struct Palette {
     pub danger: &'static str,
     /// The hairline between surfaces, from the theme's own border token.
     pub border: &'static str,
+    /// High contrast cannot show a selected row as a 20 % tint: the row would
+    /// be a whisper on white. It uses the accent itself and the paper's own
+    /// light on it, so selection is unmistakable in the one theme whose job
+    /// is exactly that.
+    pub strong_selection: bool,
 }
 
 impl Palette {
@@ -47,6 +52,7 @@ impl Palette {
             accent: "#293E32",
             danger: "#B3261E",
             border: "#E5E7EB",
+            strong_selection: false,
         }
     }
 
@@ -58,6 +64,7 @@ impl Palette {
             accent: "#293E32",
             danger: "#A8372A",
             border: "#E6DFD3",
+            strong_selection: false,
         }
     }
 
@@ -69,6 +76,7 @@ impl Palette {
             accent: "#8494B0",
             danger: "#E39A9A",
             border: "#33363D",
+            strong_selection: false,
         }
     }
 
@@ -80,6 +88,7 @@ impl Palette {
             accent: "#C9953E",
             danger: "#E3A08A",
             border: "#3A342C",
+            strong_selection: false,
         }
     }
 
@@ -91,6 +100,7 @@ impl Palette {
             accent: "#8FBFAE",
             danger: "#FFB4AB",
             border: "#2A2D37",
+            strong_selection: false,
         }
     }
 
@@ -103,6 +113,7 @@ impl Palette {
             accent: "#0043CE",
             danger: "#B00020",
             border: "#767676",
+            strong_selection: true,
         }
     }
 
@@ -149,8 +160,23 @@ impl Palette {
     }
 
     /// The row behind a selected item: the one place a list uses the accent.
+    /// A quiet tint on five themes, the accent itself on High contrast.
     pub fn selection(&self) -> String {
-        blend(self.accent, self.background, 0.20)
+        if self.strong_selection {
+            self.accent.to_owned()
+        } else {
+            blend(self.accent, self.background, 0.20)
+        }
+    }
+
+    /// The text on a selected row: the ink on a tint, the paper's light on the
+    /// High contrast accent.
+    pub fn selected_text(&self) -> &'static str {
+        if self.strong_selection {
+            self.background
+        } else {
+            self.text
+        }
     }
 
     /// Selected text inside the editor and the entries.
@@ -161,7 +187,14 @@ impl Palette {
     /// A hint under a selected row: the ink mixed onto the row's own accent
     /// tint, so the smaller text still clears 4.5:1 there.
     pub fn selected_note(&self) -> String {
-        blend(self.text, &self.selection(), 0.72)
+        blend(self.selected_text(), &self.selection(), 0.72)
+    }
+
+    /// The visible hairline around a theme swatch. The theme's border token is
+    /// a surface divider (about 1.2:1) and disappears when a swatch shows its
+    /// own paper, so a swatch draws its edge from the ink instead, at 3:1.
+    pub fn edge(&self) -> String {
+        blend(self.text, self.background, 0.55)
     }
 
     /// The ring a focused field draws. A neutral step of the ink, never the
@@ -312,6 +345,8 @@ pub fn css(settings: &Settings) -> String {
     let surface = palette.surface();
     let hover = palette.hover();
     let selection = palette.selection();
+    let selected_text = palette.selected_text();
+    let edge = palette.edge();
     let text_selection = palette.text_selection();
     let selected_note = palette.selected_note();
     let focus = palette.focus_ring();
@@ -373,10 +408,11 @@ scrollbar {{
 .document-name.typing {{
     opacity: 0.42;
 }}
-/* The open document's name, quiet above the page. Never a bar or a tab. */
+/* The open document's name, quiet above the page. Never a bar or a tab. It is
+   the dim colour at hint size, the same small voice as the bottom line. */
 .document-name {{
-    color: {muted};
-    font-size: {secondary}px;
+    color: {dim};
+    font-size: {hint}px;
     padding: 0;
 }}
 /* The bottom line ends with the palette's key, quiet and dim. */
@@ -394,8 +430,9 @@ scrollbar {{
     font-size: {size}px;
 }}
 /* The command palette: the Quotes palette's sheet, centred near the top of
-   the editor column. It carries the shared card shadow, and the page behind
-   it is drawn at about 40 % (paper over the page), like focus mode. */
+   the editor column. It carries the shared card shape and shadow, and the
+   page behind it is drawn at about 40 % (paper over the page), like focus
+   mode. */
 .overlay-dim {{
     background-color: {overlay_dim};
 }}
@@ -403,6 +440,7 @@ scrollbar {{
     background-color: {background};
     color: {text};
     border: 1px solid {border};
+    border-radius: 12px;
     box-shadow: 0 18px 48px {shadow};
 }}
 .command-query-row {{
@@ -432,7 +470,9 @@ scrollbar {{
     font-size: {secondary}px;
     padding: 16px;
 }}
-.hint-bar.command-hint-bar {{
+/* The footer of every floating card: palette, Quotes, key sheet. One rule,
+   one place, so the cards end the same way. */
+.card-hint-bar {{
     padding: 9px 16px 10px 16px;
     border-top: 1px solid {border};
 }}
@@ -529,13 +569,44 @@ button:disabled, button:disabled label {{
 }}
 .file-row:selected, .setting-row:selected, .quote-row:selected, .ui-row:selected {{
     background-color: {selection};
-    color: {text};
+    color: {selected_text};
+}}
+/* A row's own labels carry their own ink, so the selected row names them.
+   On five themes this is the same ink as before; on High contrast it is the
+   paper's light on the accent, which is the whole point of the selection. */
+.file-row:selected .file-name,
+.file-row:selected .folder-name,
+.file-row:selected .history-time,
+.file-row:selected .conflict-tag,
+.setting-row:selected .setting-label,
+.ui-row:selected .setting-label,
+.command-row:selected .command-name,
+.quote-row:selected .quote-text {{
+    color: {selected_text};
+}}
+/* Secondary text on a selected row: a hint of the light, mixed onto the row. */
+.file-row:selected .row-note,
+.file-row:selected .setting-value,
+.file-row:selected .history-delta,
+.file-row:selected .wifi-signal,
+.setting-row:selected .row-note,
+.setting-row:selected .setting-value,
+.ui-row:selected .row-note,
+.quote-row:selected .quote-meta {{
+    color: {selected_note};
+}}
+.file-row:selected .conflict-tag {{
+    border-color: {selected_note};
 }}
 .folder-name {{
     font-weight: 600;
 }}
 .file-name {{
     font-weight: 400;
+}}
+/* The one action on a screen reads as the action, not as another value. */
+.primary-row {{
+    font-weight: 600;
 }}
 .setting-label {{
     color: {text};
@@ -714,11 +785,13 @@ entry:focus, entry:focus-within {{
 .pairing-code {{
     color: {text};
     font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-    font-size: 44px;
+    /* The Sync state is the largest text on the device (40 px); the code
+       shares that size instead of outshouting it. */
+    font-size: 40px;
 }}
 .pairing-sentence {{
     color: {muted};
-    font-size: 17px;
+    font-size: {row}px;
 }}
 /* The Sync screen's one state line: the largest text on the device, because
    the state is what the writer came to see. */
@@ -730,9 +803,18 @@ entry:focus, entry:focus-within {{
 .sync-state.error-text {{
     color: {danger};
 }}
-/* The one prominent action on the Sync screen. */
-.sync-now {{
-    font-weight: 600;
+/* A state that takes the place of the content: empty, running, done, error.
+   One headline line and one small detail line, the same shape everywhere. */
+.state-headline {{
+    color: {text};
+    font-size: {step}px;
+}}
+.state-headline.error-text {{
+    color: {danger};
+}}
+.state-detail {{
+    color: {dim};
+    font-size: {secondary}px;
 }}
 .wifi-signal, .wifi-signal-off {{
     font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
@@ -773,23 +855,28 @@ entry:focus, entry:focus-within {{
     font-size: {hint}px;
     padding: 10px 16px 2px 16px;
 }}
-.quote-hint-bar {{
-    padding: 9px 16px 10px 16px;
-    border-top: 1px solid {border};
-}}
-/* The palette at the caret: a quiet raised sheet. The accent stays on the
+/* The palette at the caret: the same card shape as the command palette and
+   the key sheet. It is a popover (its own surface), so it keeps no shadow:
+   under the software renderer a popover's shadow has no alpha to fade with
+   and would draw as a black box. The surface itself is the theme's paper, so
+   the rounded corners show paper, not a dark edge. The accent stays on the
    selected row only. */
+popover.quote-popover {{
+    background-color: {background};
+}}
 popover.quote-popover > contents {{
     background-color: {background};
     color: {text};
     border: 1px solid {border};
-    border-radius: 0;
+    border-radius: 12px;
     padding: 0;
     box-shadow: none;
 }}
-/* A QR code needs a white quiet zone on every theme to scan. */
+/* A QR code needs a white quiet zone on every theme to scan. The edge keeps
+   that white card visible on white paper too. */
 .qr {{
     background-color: #FFFFFF;
+    border: 1px solid {edge};
     padding: 10px;
     border-radius: 6px;
 }}
@@ -804,6 +891,8 @@ popover.quote-popover > contents {{
         surface = surface,
         hover = hover,
         selection = selection,
+        selected_text = selected_text,
+        edge = edge,
         text_selection = text_selection,
         selected_note = selected_note,
         focus = focus,
@@ -856,6 +945,7 @@ mod tests {
             let danger = contrast_ratio(palette.danger, palette.background);
             let ring = contrast_ratio(&palette.focus_ring(), palette.background);
             let hint = contrast_ratio(&palette.selected_note(), &palette.selection());
+            let edge = contrast_ratio(&palette.edge(), palette.background);
             assert!(body >= 7.0, "{name}: body text is only {body:.2}:1");
             assert!(dim >= 4.5, "{name}: dim text is only {dim:.2}:1");
             assert!(accent >= 3.0, "{name}: the accent is only {accent:.2}:1");
@@ -865,6 +955,9 @@ mod tests {
                 hint >= 4.5,
                 "{name}: a hint on a selected row is only {hint:.2}:1"
             );
+            // A swatch shows its own paper, so its edge must be findable on
+            // that same paper (WCAG non-text contrast).
+            assert!(edge >= 3.0, "{name}: a swatch edge is only {edge:.2}:1");
         }
     }
 
@@ -936,16 +1029,22 @@ mod tests {
                 .lines()
                 .filter(|line| line.to_ascii_uppercase().contains(palette.accent))
                 .collect();
+            // Two carets (editor and entries), plus High contrast's selected
+            // row, which is the accent itself.
+            let expected = if palette.strong_selection { 3 } else { 2 };
             assert_eq!(
                 accent_lines.len(),
-                2,
-                "{}: editor caret and entry caret",
+                expected,
+                "{}: the accent colours {expected} lines",
                 theme.label()
             );
             for line in accent_lines {
+                let line = line.trim_start();
                 assert!(
-                    line.trim_start().starts_with("caret-color:"),
-                    "the accent hex must never colour anything but a caret: {line}"
+                    line.starts_with("caret-color:")
+                        || (palette.strong_selection && line.starts_with("background-color:")),
+                    "the accent hex must never colour anything but a caret or \
+                     the High contrast selection: {line}"
                 );
             }
             assert!(!sheet.contains(&format!("caret-color: {}", palette.text)));
@@ -962,10 +1061,12 @@ mod tests {
             let palette = Palette::of(theme);
             let surface = palette.surface();
             let selection = palette.selection();
+            let selected_text = palette.selected_text();
             let name = theme.label();
             let row = contrast_ratio(palette.text, &surface);
             let quiet = contrast_ratio(&palette.muted(), &surface);
-            let selected = contrast_ratio(palette.text, &selection);
+            let selected = contrast_ratio(selected_text, &selection);
+            let quiet_selected = contrast_ratio(&palette.selected_note(), &selection);
             assert!(row >= 7.0, "{name}: text on a raised surface is {row:.2}:1");
             assert!(
                 quiet >= 4.5,
@@ -975,7 +1076,34 @@ mod tests {
                 selected >= 7.0,
                 "{name}: a row's text on its selection is {selected:.2}:1"
             );
+            assert!(
+                quiet_selected >= 4.5,
+                "{name}: a row's hint on its selection is {quiet_selected:.2}:1"
+            );
             assert!(palette.scrim().starts_with("rgba("));
+        }
+    }
+
+    #[test]
+    fn high_contrast_selects_in_the_accent_itself() {
+        // A 20 % tint of a dark blue is a whisper on white; High contrast is
+        // the one theme that must shout, so its selected row is the accent.
+        for theme in Theme::ALL {
+            let palette = Palette::of(theme);
+            if theme == Theme::HighContrast {
+                assert!(palette.strong_selection);
+                assert_eq!(palette.selection(), palette.accent);
+                assert_eq!(palette.selected_text(), palette.background);
+                let distinct = contrast_ratio(&palette.selection(), palette.background);
+                assert!(distinct >= 6.0, "the selected row is only {distinct:.2}:1");
+            } else {
+                assert!(!palette.strong_selection);
+                assert_eq!(
+                    palette.selection(),
+                    blend(palette.accent, palette.background, 0.20)
+                );
+                assert_eq!(palette.selected_text(), palette.text);
+            }
         }
     }
 
@@ -989,6 +1117,77 @@ mod tests {
             assert!(sheet.contains(".scroll-fade-top"));
         }
     }
+
+    /// One rule's body, for the tests that pin a single shared shape.
+    fn rule<'a>(sheet: &'a str, selector: &str) -> &'a str {
+        let start = sheet
+            .find(&format!("{selector} {{"))
+            .unwrap_or_else(|| panic!("{selector} is in the stylesheet"));
+        let rest = &sheet[start..];
+        let end = rest.find('}').expect("a closed rule");
+        &rest[..end]
+    }
+
+    // --- UI round 10 (issue #38): one card, one state, one type scale. ---
+    #[test]
+    fn every_floating_card_has_the_same_shape() {
+        let sheet = css(&Settings::default());
+        // One corner on all four, one shadow on the three that are ordinary
+        // widgets: a popover's shadow has no alpha under the software
+        // renderer, so the Quotes sheet keeps its surface shadow-free.
+        for selector in [
+            ".command-palette",
+            ".key-sheet",
+            ".dialog-card",
+            "popover.quote-popover > contents",
+        ] {
+            let body = rule(&sheet, selector);
+            assert!(
+                body.contains("border-radius: 12px"),
+                "{selector} has no shared corner"
+            );
+        }
+        for selector in [".command-palette", ".key-sheet", ".dialog-card"] {
+            let body = rule(&sheet, selector);
+            assert!(
+                body.contains("box-shadow: 0 18px 48px"),
+                "{selector} has no shared shadow"
+            );
+        }
+        let popover = rule(&sheet, "popover.quote-popover > contents");
+        assert!(popover.contains("box-shadow: none"), "{popover}");
+    }
+
+    #[test]
+    fn the_pairing_code_never_outshouts_the_sync_state() {
+        for theme in Theme::ALL {
+            let sheet = css(&settings_for(theme, FontChoice::Serif));
+            let code = rule(&sheet, ".pairing-code");
+            let state = rule(&sheet, ".sync-state");
+            assert!(code.contains("font-size: 40px"), "{code}");
+            assert!(state.contains("font-size: 40px"), "{state}");
+            // The instruction under the code is body text, on the scale.
+            let sentence = rule(&sheet, ".pairing-sentence");
+            assert!(sentence.contains("font-size: 19px"), "{sentence}");
+        }
+    }
+
+    #[test]
+    fn the_document_name_and_the_state_block_use_the_shared_sizes() {
+        for theme in Theme::ALL {
+            let palette = Palette::of(theme);
+            let sheet = css(&settings_for(theme, FontChoice::Serif));
+            let name = rule(&sheet, ".document-name");
+            assert!(name.contains(&format!("color: {}", palette.dim())));
+            assert!(name.contains("font-size: 14px"), "{name}");
+            let headline = rule(&sheet, ".state-headline");
+            assert!(headline.contains("font-size: 23px"), "{headline}");
+            let detail = rule(&sheet, ".state-detail");
+            assert!(detail.contains("font-size: 15px"), "{detail}");
+            assert!(detail.contains(&format!("color: {}", palette.dim())));
+        }
+    }
+    // --- end UI round 10 (issue #38) ---
 
     #[test]
     fn no_ui_text_is_below_the_hint_floor() {
