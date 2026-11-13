@@ -35,8 +35,12 @@ pub const SEARCHING_MESSAGE: &str = "Searching…";
 /// The heading above the list for a bare `@`: the library's newest items.
 pub const RECENT_HEADING: &str = "Recent";
 
-/// The key hints under the list.
-pub const HINT: &str = "↵ quote  ·  ⇧↵ citation  ·  Esc close";
+/// The key hints under the list, in the same key-cap bar as every screen.
+const HINTS: [(&str, &str); 3] = [
+    ("Enter", "Quote"),
+    ("Shift+Enter", "Citation"),
+    ("Esc", "Close"),
+];
 
 /// How long after the last keystroke the palette asks the daemon.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
@@ -231,7 +235,7 @@ pub struct QuotePalette {
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
     message: gtk::Label,
-    hint: gtk::Label,
+    hint: gtk::Box,
     view: sourceview::View,
     buffer: sourceview::Buffer,
     editor: Rc<EditorPage>,
@@ -282,9 +286,8 @@ impl QuotePalette {
         message.add_css_class("quote-message");
         message.set_visible(false);
 
-        let hint = gtk::Label::new(Some(HINT));
-        hint.set_xalign(0.0);
-        hint.add_css_class("quote-hint");
+        let hint = crate::ui::hint_bar(&HINTS);
+        hint.add_css_class("quote-hint-bar");
 
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         column.set_width_request(POPOVER_WIDTH);
@@ -763,6 +766,7 @@ impl QuotePalette {
 
 fn result_row(hit: &LibraryHit) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
+    row.add_css_class("ui-row");
     row.add_css_class("quote-row");
 
     let text = gtk::Label::new(Some(&hit.text));

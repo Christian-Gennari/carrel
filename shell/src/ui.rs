@@ -1,11 +1,19 @@
-//! Small shared pieces for the keyboard-first screens: page columns, list
-//! rows, time labels and the one way to show a key hint.
+//! Small shared pieces for the keyboard-first screens: the one page frame,
+//! list rows, the key hint bar, the confirmation dialog, time labels.
+
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 
 use gtk::prelude::*;
-use gtk::{glib, pango};
+use gtk::{gdk, glib, pango};
 
 use crate::settings::Theme;
 use crate::theme::{self, Palette};
+
+/// The max width of every non-editor screen. About the editor column at the
+/// default body size, so moving between the page and a screen does not change
+/// where the text lives.
+pub const COLUMN_WIDTH: i32 = 720;
 
 /// The page itself: fills the window, carries the theme background.
 pub fn page() -> gtk::Box {
@@ -22,8 +30,8 @@ pub fn column(width: i32) -> gtk::Box {
     column.set_valign(gtk::Align::Fill);
     column.set_width_request(width);
     column.set_vexpand(true);
-    column.set_margin_top(52);
-    column.set_margin_bottom(18);
+    column.set_margin_top(56);
+    column.set_margin_bottom(24);
     column
 }
 
@@ -32,6 +40,263 @@ pub fn title(text: &str) -> gtk::Label {
     label.set_xalign(0.0);
     label.add_css_class("screen-title");
     label
+}
+
+/// One page frame for every non-editor screen: the same centered column, the
+/// title in the same place, an optional one-line status under it, the content,
+/// and the key hint bar at the bottom. Confirmations are a centered card over
+/// a dimmed page, never a separate strip or native window.
+pub struct Screen {
+    pub root: gtk::Overlay,
+    pub content: gtk::Box,
+    page: gtk::Box,
+    status: gtk::Label,
+    hint_slot: gtk::Box,
+    hint_key: RefCell<String>,
+    scrim: gtk::CenterBox,
+    dialog_title: gtk::Label,
+    dialog_text: gtk::Label,
+    cancel: gtk::Button,
+    accept: gtk::Button,
+    accept_focused: Cell<bool>,
+    action: RefCell<Option<Rc<dyn Fn()>>>,
+}
+
+impl Screen {
+    pub fn new(title_text: &str) -> Rc<Self> {
+        let status = gtk::Label::new(None);
+        status.set_xalign(0.0);
+        status.set_hexpand(true);
+        status.set_ellipsize(pango::EllipsizeMode::End);
+        status.set_single_line_mode(true);
+        status.add_css_class("screen-status");
+        status.set_visible(false);
+
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 14);
+        content.set_vexpand(true);
+        content.set_margin_top(22);
+
+        let hint_slot = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        hint_slot.add_css_class("hint-slot");
+        hint_slot.set_margin_top(18);
+
+        let column = column(COLUMN_WIDTH);
+        column.append(&title(title_text));
+        column.append(&status);
+        column.append(&content);
+        column.append(&hint_slot);
+
+        let page = page();
+        page.append(&column);
+
+        let dialog_title = gtk::Label::new(None);
+        dialog_title.set_xalign(0.0);
+        dialog_title.set_wrap(true);
+        dialog_title.add_css_class("dialog-title");
+        let dialog_text = gtk::Label::new(None);
+        dialog_text.set_xalign(0.0);
+        dialog_text.set_wrap(true);
+        dialog_text.set_max_width_chars(46);
+        dialog_text.add_css_class("dialog-text");
+
+        let cancel = gtk::Button::with_label("Cancel");
+        cancel.add_css_class("dialog-button");
+        cancel.set_size_request(104, -1);
+        let accept = gtk::Button::with_label("Delete");
+        accept.add_css_class("dialog-button");
+        accept.add_css_class("dialog-accept");
+        accept.set_size_request(104, -1);
+
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        actions.set_halign(gtk::Align::End);
+        actions.set_margin_top(8);
+        actions.append(&cancel);
+        actions.append(&accept);
+
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        card.add_css_class("dialog-card");
+        card.set_halign(gtk::Align::Center);
+        card.set_valign(gtk::Align::Center);
+        card.set_width_request(420);
+        card.append(&dialog_title);
+        card.append(&dialog_text);
+        card.append(&actions);
+
+        let scrim = gtk::CenterBox::new();
+        scrim.add_css_class("dialog-scrim");
+        scrim.set_halign(gtk::Align::Fill);
+        scrim.set_valign(gtk::Align::Fill);
+        scrim.set_hexpand(true);
+        scrim.set_vexpand(true);
+        scrim.set_can_target(true);
+        scrim.set_visible(false);
+        scrim.set_center_widget(Some(&card));
+
+        let root = gtk::Overlay::new();
+        root.set_child(Some(&page));
+        root.add_overlay(&scrim);
+        root.set_focusable(true);
+
+        let screen = Rc::new(Self {
+            root,
+            content,
+            page,
+            status,
+            hint_slot,
+            hint_key: RefCell::new(String::new()),
+            scrim,
+            dialog_title,
+            dialog_text,
+            cancel,
+            accept,
+            accept_focused: Cell::new(false),
+            action: RefCell::new(None),
+        });
+        screen.install_dialog();
+        screen.set_hints(&[]);
+        screen
+    }
+
+    fn install_dialog(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.cancel.connect_clicked(move |_| {
+            if let Some(screen) = weak.upgrade() {
+                screen.close_dialog();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.accept.connect_clicked(move |_| {
+            if let Some(screen) = weak.upgrade() {
+                screen.accept_dialog();
+            }
+        });
+    }
+
+    pub fn focus_page(&self) {
+        self.page.grab_focus();
+    }
+
+    /// The one-line status under the title. An empty string hides it.
+    pub fn set_status(&self, text: &str) {
+        self.set_status_kind(text, false);
+    }
+
+    pub fn set_status_error(&self, text: &str) {
+        self.set_status_kind(text, true);
+    }
+
+    fn set_status_kind(&self, text: &str, error: bool) {
+        if error {
+            self.status.add_css_class("error-text");
+        } else {
+            self.status.remove_css_class("error-text");
+        }
+        if text.is_empty() {
+            self.status.set_visible(false);
+            self.status.set_text("");
+        } else {
+            if self.status.text() != text {
+                self.status.set_text(text);
+            }
+            self.status.set_visible(true);
+        }
+    }
+
+    /// Replace the bottom hint bar. At most five hints; callers put the most
+    /// useful first. A key cap is a small rounded box with the key on it.
+    pub fn set_hints(&self, hints: &[(&str, &str)]) {
+        let key = hints
+            .iter()
+            .take(5)
+            .map(|(keys, word)| format!("{keys}\u{1f}{word}"))
+            .collect::<Vec<_>>()
+            .join("\u{1e}");
+        if *self.hint_key.borrow() == key {
+            return;
+        }
+        *self.hint_key.borrow_mut() = key;
+        while let Some(child) = self.hint_slot.first_child() {
+            self.hint_slot.remove(&child);
+        }
+        self.hint_slot.append(&hint_bar(hints));
+    }
+
+    /// Show a confirmation card over a dimmed page. `accept` names what the
+    /// destructive button does ("Delete", "Restore"); the safe Cancel button
+    /// has focus, so Enter alone never destroys anything.
+    pub fn ask(
+        self: &Rc<Self>,
+        title: &str,
+        sentence: &str,
+        accept: &str,
+        action: impl Fn() + 'static,
+    ) {
+        self.dialog_title.set_text(title);
+        self.dialog_text.set_text(sentence);
+        self.accept.set_label(accept);
+        *self.action.borrow_mut() = Some(Rc::new(action));
+        self.accept_focused.set(false);
+        self.scrim.set_visible(true);
+        // Cancel is the safe button: Enter alone never destroys anything.
+        self.cancel.grab_focus();
+    }
+
+    pub fn is_dialog_open(&self) -> bool {
+        self.scrim.is_visible()
+    }
+
+    fn close_dialog(self: &Rc<Self>) {
+        self.scrim.set_visible(false);
+        *self.action.borrow_mut() = None;
+        self.focus_page();
+    }
+
+    fn accept_dialog(self: &Rc<Self>) {
+        let action = self.action.borrow_mut().take();
+        self.close_dialog();
+        if let Some(action) = action {
+            action();
+        }
+    }
+
+    fn toggle_dialog_focus(&self) {
+        let accept = !self.accept_focused.get();
+        self.accept_focused.set(accept);
+        if accept {
+            self.accept.grab_focus();
+        } else {
+            self.cancel.grab_focus();
+        }
+    }
+
+    /// Route a key to the open confirmation. Esc cancels, Enter activates the
+    /// focused button, Left/Right/Tab move between the two.
+    pub fn dialog_key(
+        self: &Rc<Self>,
+        keyval: gdk::Key,
+        _state: gdk::ModifierType,
+    ) -> glib::Propagation {
+        if !self.is_dialog_open() {
+            return glib::Propagation::Proceed;
+        }
+        match keyval {
+            gdk::Key::Escape => self.close_dialog(),
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                if self.accept_focused.get() {
+                    self.accept_dialog();
+                } else {
+                    self.close_dialog();
+                }
+            }
+            gdk::Key::Left
+            | gdk::Key::Right
+            | gdk::Key::Tab
+            | gdk::Key::ISO_Left_Tab
+            | gdk::Key::KP_Tab => self.toggle_dialog_focus(),
+            _ => {}
+        }
+        glib::Propagation::Stop
+    }
 }
 
 /// The Carrel mark ("c|": a round c and a text cursor), drawn with Cairo from
@@ -107,11 +372,28 @@ fn draw_mark(context: &gtk::cairo::Context, width: f64, height: f64) {
     let _ = context.fill();
 }
 
-pub fn hint(text: &str) -> gtk::Label {
-    let label = gtk::Label::new(Some(text));
-    label.set_xalign(0.0);
-    label.add_css_class("hint");
-    label
+/// A one-line hint with real key caps, e.g. `[Enter] Open  [Esc] Back`. Every
+/// screen and the Quotes palette footer use this same bar.
+pub fn hint_bar(hints: &[(&str, &str)]) -> gtk::Box {
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 18);
+    bar.add_css_class("hint-bar");
+    bar.set_halign(gtk::Align::Start);
+    bar.set_valign(gtk::Align::End);
+    for (keys, word) in hints.iter().take(5) {
+        let item = gtk::Box::new(gtk::Orientation::Horizontal, 7);
+        item.add_css_class("hint-item");
+        item.set_valign(gtk::Align::Center);
+        let cap = gtk::Label::new(Some(keys));
+        cap.add_css_class("key-cap");
+        cap.set_valign(gtk::Align::Center);
+        let word = gtk::Label::new(Some(word));
+        word.add_css_class("hint-word");
+        word.set_valign(gtk::Align::Center);
+        item.append(&cap);
+        item.append(&word);
+        bar.append(&item);
+    }
+    bar
 }
 
 pub fn line() -> gtk::Label {
@@ -170,11 +452,13 @@ fn setting_row(
     mark: bool,
 ) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
+    row.add_css_class("ui-row");
     row.add_css_class("setting-row");
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let label = gtk::Label::new(Some(name));
     label.set_xalign(0.0);
     label.set_hexpand(true);
+    label.set_ellipsize(pango::EllipsizeMode::End);
     label.add_css_class("setting-label");
     let value = gtk::Label::new(Some(value));
     value.set_xalign(1.0);
@@ -365,6 +649,7 @@ fn rounded_rect(
 
 pub fn plain_row(name: &str) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
+    row.add_css_class("ui-row");
     row.add_css_class("setting-row");
     let label = gtk::Label::new(Some(name));
     label.set_xalign(0.0);

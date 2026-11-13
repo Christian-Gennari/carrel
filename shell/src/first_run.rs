@@ -17,7 +17,9 @@ use crate::settings::Settings;
 use crate::sync::SyncPage;
 use crate::ui;
 
-const HINT: &str = "Up/Down move · Enter choose · Esc back";
+const HINTS: [(&str, &str); 3] = [("Enter", "Choose"), ("↑ ↓", "Move"), ("Esc", "Back")];
+const FIRST_HINTS: [(&str, &str); 2] = [("Enter", "Choose"), ("↑ ↓", "Move")];
+const INTRO: &str = "A quiet place to write. Four short answers, then the page.";
 const SYNC_CHOICES: [&str; 4] = ["Not now", "Nostos", "Self-hosted server", "Google Drive"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,7 +176,8 @@ impl FirstRunState {
 }
 
 pub struct FirstRunPage {
-    pub widget: gtk::Box,
+    pub widget: gtk::Overlay,
+    screen: Rc<ui::Screen>,
     step_title: gtk::Label,
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
@@ -192,30 +195,22 @@ impl FirstRunPage {
         nav: Rc<Navigator>,
         sync: Rc<SyncPage>,
     ) -> Rc<Self> {
+        let screen = ui::Screen::new("Carrel");
+        screen.set_hints(&HINTS);
+        screen.set_status(INTRO);
+
         let step_title = gtk::Label::new(None);
         step_title.set_xalign(0.0);
         step_title.add_css_class("step-title");
+        screen.content.append(&step_title);
 
         let list = ui::list();
         let scroller = ui::scroller(&list);
-
-        let intro = ui::hint("A quiet place to write. Four short answers, then the page.");
-
-        let column = ui::column(640);
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 14);
-        header.append(&ui::mark(34));
-        header.append(&ui::title("Carrel"));
-        column.append(&header);
-        column.append(&intro);
-        column.append(&step_title);
-        column.append(&scroller);
-        column.append(&ui::hint(HINT));
-
-        let widget = ui::page();
-        widget.append(&column);
+        screen.content.append(&scroller);
 
         let page = Rc::new(Self {
-            widget,
+            widget: screen.root.clone(),
+            screen,
             step_title,
             list,
             scroller,
@@ -245,7 +240,7 @@ impl FirstRunPage {
                     page.state.borrow_mut().on_step(&settings);
                 }
                 page.refresh();
-                page.widget.grab_focus();
+                page.screen.focus_page();
             }
         });
     }
@@ -363,12 +358,18 @@ impl FirstRunPage {
         }
         let settings = self.settings.borrow();
         let state = self.state.borrow();
+        if state.step() == FirstStep::Language {
+            self.screen.set_hints(&FIRST_HINTS);
+        } else {
+            self.screen.set_hints(&HINTS);
+        }
         self.step_title.set_text(state.step().title());
         let options = state.options(&settings);
         let sync_step = state.step() == FirstStep::Sync;
         let count = options.len();
         for (index, option) in options.iter().enumerate() {
             let row = gtk::ListBoxRow::new();
+            row.add_css_class("ui-row");
             row.add_css_class("file-row");
             let label = gtk::Label::new(Some(option));
             label.set_xalign(0.0);

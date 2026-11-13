@@ -1,5 +1,5 @@
 //! The Files screen: a calm list, keyboard first, destructive actions behind a
-//! confirmation dialog.
+//! confirmation dialog, and rename in place.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -7,13 +7,11 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib, pango};
+use gtk::{gdk, glib, pango};
 
 use crate::editor::EditorPage;
 use crate::store::{is_document_name, Entry, Store};
-
-const HINT: &str =
-    "Enter open · Ctrl+N new · Ctrl+Shift+N folder · F2 rename · Del delete · Esc editor";
+use crate::ui;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum EntryMode {
@@ -23,19 +21,16 @@ enum EntryMode {
 }
 
 pub struct FilesPage {
-    pub widget: gtk::Box,
+    pub widget: gtk::Overlay,
+    screen: Rc<ui::Screen>,
     list: gtk::ListBox,
     list_scroller: gtk::ScrolledWindow,
-    path_label: gtk::Label,
-    hint: gtk::Label,
-    entry_bar: gtk::Box,
-    entry_label: gtk::Label,
-    entry: gtk::Entry,
+    entry: RefCell<Option<gtk::Entry>>,
     mode: Cell<EntryMode>,
     rename_target: RefCell<Option<PathBuf>>,
     current_dir: RefCell<PathBuf>,
     entries: RefCell<Vec<Entry>>,
-    hint_generation: Cell<u64>,
+    status_generation: Cell<u64>,
     store: Store,
     editor: Rc<EditorPage>,
     stack: gtk::Stack,
@@ -43,74 +38,30 @@ pub struct FilesPage {
 
 impl FilesPage {
     pub fn new(store: Store, editor: Rc<EditorPage>, stack: gtk::Stack) -> Rc<Self> {
-        let list = gtk::ListBox::new();
-        list.set_selection_mode(gtk::SelectionMode::Single);
-        list.set_activate_on_single_click(false);
-        // Keys are handled by the window controller, so the list itself never
-        // needs focus; this also keeps the calm Paper look free of a blue
-        // focus ring around the selected row.
-        list.set_can_focus(false);
-        list.add_css_class("file-list");
+        let screen = ui::Screen::new("Files");
+        screen.set_hints(&[
+            ("Enter", "Open"),
+            ("F2", "Rename"),
+            ("Del", "Delete"),
+            ("Ctrl+N", "New"),
+            ("Esc", "Back"),
+        ]);
 
-        let list_scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .vexpand(true)
-            .child(&list)
-            .build();
-
-        let path_label = gtk::Label::new(Some("Writing"));
-        path_label.set_xalign(0.0);
-        path_label.add_css_class("hint");
-
-        let title = gtk::Label::new(Some("Files"));
-        title.set_xalign(0.0);
-        title.add_css_class("screen-title");
-
-        let entry_label = gtk::Label::new(Some("Rename"));
-        let entry = gtk::Entry::new();
-        entry.set_hexpand(true);
-        entry.add_css_class("renaming");
-        let entry_bar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-        entry_bar.append(&entry_label);
-        entry_bar.append(&entry);
-        entry_bar.set_visible(false);
-
-        let hint = gtk::Label::new(Some(HINT));
-        hint.set_xalign(0.0);
-        hint.add_css_class("hint");
-
-        let column = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        column.set_halign(gtk::Align::Center);
-        column.set_width_request(760);
-        column.set_vexpand(true);
-        column.set_margin_top(52);
-        column.set_margin_bottom(18);
-        column.append(&title);
-        column.append(&path_label);
-        column.append(&list_scroller);
-        column.append(&entry_bar);
-        column.append(&hint);
-
-        let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        widget.add_css_class("carrel-page");
-        widget.set_focusable(true);
-        widget.append(&column);
+        let list = ui::list();
+        let list_scroller = ui::scroller(&list);
+        screen.content.append(&list_scroller);
 
         let page = Rc::new(Self {
-            widget,
+            widget: screen.root.clone(),
+            screen,
             list,
             list_scroller,
-            path_label,
-            hint,
-            entry_bar,
-            entry_label,
-            entry,
+            entry: RefCell::new(None),
             mode: Cell::new(EntryMode::None),
             rename_target: RefCell::new(None),
             current_dir: RefCell::new(PathBuf::new()),
             entries: RefCell::new(Vec::new()),
-            hint_generation: Cell::new(0),
+            status_generation: Cell::new(0),
             store,
             editor,
             stack,
@@ -134,15 +85,8 @@ impl FilesPage {
         self.widget.connect_map(move |_| {
             if let Some(page) = weak.upgrade() {
                 page.refresh();
-                page.widget.grab_focus();
-            }
-        });
-
-        self.entry.connect_activate({
-            let weak = Rc::downgrade(self);
-            move |_| {
-                if let Some(page) = weak.upgrade() {
-                    page.commit_entry();
+                if page.mode.get() == EntryMode::None {
+                    page.screen.focus_page();
                 }
             }
         });
@@ -153,13 +97,17 @@ impl FilesPage {
         keyval: gdk::Key,
         state: gdk::ModifierType,
     ) -> glib::Propagation {
+        if self.screen.is_dialog_open() {
+            return self.screen.dialog_key(keyval, state);
+        }
+
         if self.mode.get() != EntryMode::None {
             match keyval {
                 gdk::Key::Escape => {
                     self.cancel_entry();
                     return glib::Propagation::Stop;
                 }
-                gdk::Key::Return => {
+                gdk::Key::Return | gdk::Key::KP_Enter => {
                     self.commit_entry();
                     return glib::Propagation::Stop;
                 }
@@ -189,7 +137,7 @@ impl FilesPage {
                 self.show_editor();
                 glib::Propagation::Stop
             }
-            gdk::Key::Return => {
+            gdk::Key::Return | gdk::Key::KP_Enter => {
                 self.activate_selected();
                 glib::Propagation::Stop
             }
@@ -235,7 +183,7 @@ impl FilesPage {
     }
 
     fn select_index(&self, index: i32) {
-        let count = self.entries.borrow().len() as i32;
+        let count = self.list.observe_children().n_items() as i32;
         if count == 0 {
             return;
         }
@@ -247,19 +195,7 @@ impl FilesPage {
     }
 
     fn scroll_to_row(&self, row: &gtk::ListBoxRow) {
-        let Some(bounds) = row.compute_bounds(&self.list) else {
-            return;
-        };
-        let adjustment = self.list_scroller.vadjustment();
-        let top = f64::from(bounds.y());
-        let bottom = top + f64::from(bounds.height());
-        let value = adjustment.value();
-        let page = adjustment.page_size();
-        if top < value {
-            adjustment.set_value(top);
-        } else if bottom > value + page {
-            adjustment.set_value(bottom - page);
-        }
+        ui::scroll_to_row(&self.list_scroller, &self.list, row);
     }
 
     fn select_rel(&self, rel: &Path) {
@@ -269,8 +205,24 @@ impl FilesPage {
             .iter()
             .position(|entry| entry.rel == rel);
         if let Some(index) = index {
-            self.select_index(index as i32);
+            let offset = i32::from(self.mode.get() == EntryMode::NewFolder);
+            self.select_index(index as i32 + offset);
         }
+    }
+
+    fn selected_rel(&self) -> Option<PathBuf> {
+        let index = self.list.selected_row()?.index().max(0) as usize;
+        if self.mode.get() == EntryMode::NewFolder {
+            index.checked_sub(1)
+        } else {
+            Some(index)
+        }
+        .and_then(|index| {
+            self.entries
+                .borrow()
+                .get(index)
+                .map(|entry| entry.rel.clone())
+        })
     }
 
     fn show_editor(&self) {
@@ -280,40 +232,111 @@ impl FilesPage {
 
     fn refresh(self: &Rc<Self>) {
         let dir = self.current_dir.borrow().clone();
+        let previous = self.selected_rel();
         match self.store.list(&dir) {
             Ok(entries) => {
-                while let Some(child) = self.list.first_child() {
-                    self.list.remove(&child);
-                }
-                for entry in &entries {
-                    self.list.append(&self.make_row(entry));
-                }
-                if entries.is_empty() {
-                    let row = gtk::ListBoxRow::new();
-                    row.set_selectable(false);
-                    row.set_activatable(false);
-                    let label = gtk::Label::new(Some("No files in this folder yet"));
-                    label.set_xalign(0.0);
-                    label.add_css_class("row-note");
-                    label.set_margin_top(10);
-                    label.set_margin_bottom(10);
-                    label.set_margin_start(12);
-                    row.set_child(Some(&label));
-                    self.list.append(&row);
-                }
                 self.entries.replace(entries);
-                self.path_label.set_text(&display_path(&dir));
-                self.set_hint(HINT);
-                if !self.entries.borrow().is_empty() {
-                    self.select_index(0);
-                }
+                self.screen.set_status(&display_path(&dir));
+                let selected = previous
+                    .and_then(|rel| {
+                        self.entries
+                            .borrow()
+                            .iter()
+                            .position(|entry| entry.rel == rel)
+                    })
+                    .unwrap_or(0);
+                self.rebuild(selected);
             }
             Err(error) => self.flash_error(format!("Cannot list folder: {error}")),
         }
     }
 
-    fn make_row(&self, entry: &Entry) -> gtk::ListBoxRow {
+    /// Draw the list. In rename mode the selected row itself becomes a field,
+    /// so the name is edited where the writer sees it.
+    fn rebuild(self: &Rc<Self>, selected: usize) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+        let mode = self.mode.get();
+        let target = self.rename_target.borrow().clone();
+        let entries = self.entries.borrow().clone();
+
+        let mut entry_row = None;
+        if mode == EntryMode::NewFolder {
+            let row = gtk::ListBoxRow::new();
+            row.add_css_class("ui-row");
+            row.add_css_class("file-row");
+            let field = self.make_entry("", Some("Folder name"));
+            row.set_child(Some(&field));
+            self.list.append(&row);
+            entry_row = Some((0, field));
+        }
+
+        for entry in &entries {
+            if mode == EntryMode::Rename && target.as_deref() == Some(entry.rel.as_path()) {
+                let row = gtk::ListBoxRow::new();
+                row.add_css_class("ui-row");
+                row.add_css_class("file-row");
+                let field = self.make_entry(&editable_name(entry), None);
+                row.set_child(Some(&field));
+                self.list.append(&row);
+                entry_row = Some((row.index(), field));
+            } else {
+                self.list.append(&self.make_row(entry));
+            }
+        }
+
+        if entries.is_empty() && mode != EntryMode::NewFolder {
+            let row = gtk::ListBoxRow::new();
+            row.set_selectable(false);
+            row.set_activatable(false);
+            let label = gtk::Label::new(Some("No files in this folder yet"));
+            label.set_xalign(0.0);
+            label.add_css_class("row-note");
+            label.set_margin_top(10);
+            label.set_margin_bottom(10);
+            label.set_margin_start(12);
+            row.set_child(Some(&label));
+            self.list.append(&row);
+        }
+
+        let row_index = if mode == EntryMode::NewFolder {
+            0
+        } else {
+            selected.min(entries.len().saturating_sub(1))
+        };
+        ui::select(&self.list, row_index);
+        if let Some(row) = self.list.row_at_index(row_index as i32) {
+            self.scroll_to_row(&row);
+        }
+
+        if let Some((_, field)) = entry_row {
+            *self.entry.borrow_mut() = Some(field.clone());
+            field.grab_focus();
+            field.select_region(0, -1);
+        } else {
+            *self.entry.borrow_mut() = None;
+        }
+    }
+
+    fn make_entry(self: &Rc<Self>, text: &str, placeholder: Option<&str>) -> gtk::Entry {
+        let entry = gtk::Entry::new();
+        entry.set_text(text);
+        entry.set_placeholder_text(placeholder);
+        entry.set_hexpand(true);
+        entry.add_css_class("renaming");
+        let weak = Rc::downgrade(self);
+        entry.connect_activate(move |_| {
+            if let Some(page) = weak.upgrade() {
+                page.commit_entry();
+            }
+        });
+        entry
+    }
+
+    fn make_row(self: &Rc<Self>, entry: &Entry) -> gtk::ListBoxRow {
         let row = gtk::ListBoxRow::new();
+        row.add_css_class("ui-row");
         row.add_css_class("file-row");
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let name = gtk::Label::new(Some(&if entry.is_dir {
@@ -340,6 +363,11 @@ impl FilesPage {
     }
 
     fn open_index(self: &Rc<Self>, index: i32) {
+        let offset = i32::from(self.mode.get() == EntryMode::NewFolder);
+        let index = index - offset;
+        if index < 0 {
+            return;
+        }
         let entry = self.entries.borrow().get(index as usize).cloned();
         let Some(entry) = entry else {
             return;
@@ -387,38 +415,40 @@ impl FilesPage {
     fn start_new_folder(self: &Rc<Self>) {
         self.mode.set(EntryMode::NewFolder);
         *self.rename_target.borrow_mut() = None;
-        self.entry_label.set_text("New folder");
-        self.entry.set_text("");
-        self.entry_bar.set_visible(true);
-        self.entry.grab_focus();
+        let selected = self.list.selected_row().map(|row| row.index()).unwrap_or(0);
+        self.rebuild(selected.max(0) as usize);
     }
 
     fn start_rename(self: &Rc<Self>) {
         let Some(row) = self.list.selected_row() else {
             return;
         };
-        let entry = self.entries.borrow().get(row.index() as usize).cloned();
+        let index = row.index().max(0) as usize;
+        let entry = self.entries.borrow().get(index).cloned();
         let Some(entry) = entry else {
             return;
         };
         self.mode.set(EntryMode::Rename);
         *self.rename_target.borrow_mut() = Some(entry.rel.clone());
-        self.entry_label.set_text("Rename");
-        self.entry.set_text(&entry.name);
-        self.entry.select_region(0, -1);
-        self.entry_bar.set_visible(true);
-        self.entry.grab_focus();
+        self.rebuild(index);
     }
 
-    fn cancel_entry(&self) {
-        self.mode.set(EntryMode::None);
-        *self.rename_target.borrow_mut() = None;
-        self.entry_bar.set_visible(false);
-        self.entry.set_text("");
+    fn cancel_entry(self: &Rc<Self>) {
+        let mode = self.mode.get();
+        self.finish_entry();
+        if mode == EntryMode::NewFolder {
+            self.refresh();
+        } else {
+            let selected = self.list.selected_row().map(|row| row.index()).unwrap_or(0);
+            self.rebuild(selected.max(0) as usize);
+        }
     }
 
     fn commit_entry(self: &Rc<Self>) {
-        let name = self.entry.text().trim().to_string();
+        let Some(field) = self.entry.borrow().clone() else {
+            return;
+        };
+        let name = field.text().trim().to_string();
         if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
             self.flash_error("Choose a name without / or a leading dot.");
             return;
@@ -432,6 +462,7 @@ impl FilesPage {
                     Ok(()) => {
                         self.finish_entry();
                         self.refresh();
+                        self.select_rel(&rel);
                     }
                     Err(error) => self.flash_error(format!("Cannot create folder: {error}")),
                 }
@@ -447,6 +478,8 @@ impl FilesPage {
                     .map_or_else(|| PathBuf::from(&new_name), |parent| parent.join(&new_name));
                 if target == source {
                     self.finish_entry();
+                    let selected = self.list.selected_row().map(|row| row.index()).unwrap_or(0);
+                    self.rebuild(selected.max(0) as usize);
                     return;
                 }
 
@@ -477,71 +510,67 @@ impl FilesPage {
     fn finish_entry(&self) {
         self.mode.set(EntryMode::None);
         *self.rename_target.borrow_mut() = None;
-        self.entry_bar.set_visible(false);
-        self.entry.set_text("");
+        *self.entry.borrow_mut() = None;
     }
 
     fn confirm_delete(self: &Rc<Self>) {
         let Some(row) = self.list.selected_row() else {
             return;
         };
-        let entry = self.entries.borrow().get(row.index() as usize).cloned();
+        let offset = i32::from(self.mode.get() == EntryMode::NewFolder);
+        let entry = self
+            .entries
+            .borrow()
+            .get((row.index() - offset).max(0) as usize)
+            .cloned();
         let Some(entry) = entry else {
             return;
         };
-        let window = self
-            .widget
-            .root()
-            .and_then(|root| root.downcast::<gtk::Window>().ok());
-        let dialog = gtk::AlertDialog::builder()
-            .modal(true)
-            .message(format!("Delete “{}”?", entry.name))
-            .detail("The file moves to Carrel trash inside .carrel. Nothing is erased.")
-            .buttons(["Cancel", "Delete"])
-            .cancel_button(0)
-            .default_button(0)
-            .build();
-
+        let sentence = if entry.is_dir {
+            "The folder and its files move to Carrel trash inside .carrel, so nothing is lost."
+        } else {
+            "The file moves to Carrel trash inside .carrel, so nothing is lost."
+        };
         let weak = Rc::downgrade(self);
         let rel = entry.rel.clone();
-        dialog.choose(window.as_ref(), gio::Cancellable::NONE, move |answer| {
-            if !matches!(answer, Ok(1)) {
-                return;
-            }
-            let Some(page) = weak.upgrade() else {
-                return;
-            };
-            let affected = page.editor.close_if_affected(&rel).is_some();
-            match page.store.delete(&rel) {
-                Ok(()) => {
-                    page.refresh();
-                    if affected {
-                        if let Err(error) = page.editor.open_last_or_new() {
-                            eprintln!("carrel: cannot open another file: {error}");
-                        }
-                    }
+        self.screen.ask(
+            &format!("Delete “{}”?", entry.name),
+            sentence,
+            "Delete",
+            move || {
+                if let Some(page) = weak.upgrade() {
+                    page.delete_rel(&rel);
                 }
-                Err(error) => page.flash_error(format!("Cannot delete: {error}")),
-            }
-        });
+            },
+        );
     }
 
-    fn set_hint(&self, text: &str) {
-        self.hint.remove_css_class("error-text");
-        self.hint.set_text(text);
+    fn delete_rel(self: &Rc<Self>, rel: &Path) {
+        let affected = self.editor.close_if_affected(rel).is_some();
+        match self.store.delete(rel) {
+            Ok(()) => {
+                self.refresh();
+                if affected {
+                    if let Err(error) = self.editor.open_last_or_new() {
+                        eprintln!("carrel: cannot open another file: {error}");
+                    }
+                }
+            }
+            Err(error) => self.flash_error(format!("Cannot delete: {error}")),
+        }
     }
 
     fn flash_error(self: &Rc<Self>, message: impl Into<String>) {
         let message = message.into();
-        let generation = self.hint_generation.get().wrapping_add(1);
-        self.hint_generation.set(generation);
-        self.hint.add_css_class("error-text");
-        self.hint.set_text(&message);
+        let generation = self.status_generation.get().wrapping_add(1);
+        self.status_generation.set(generation);
+        self.screen.set_status_error(&message);
         let weak = Rc::downgrade(self);
         glib::timeout_add_local_once(Duration::from_secs(4), move || {
             if let Some(page) = weak.upgrade() {
-                if page.hint_generation.get() == generation {
-                    page.set_hint(HINT);
+                if page.status_generation.get() == generation {
+                    page.screen
+                        .set_status(&display_path(&page.current_dir.borrow()));
                 }
             }
         });
@@ -554,6 +583,19 @@ fn display_path(dir: &Path) -> String {
     } else {
         format!("Writing / {}", dir.display())
     }
+}
+
+/// A document is renamed by its name, not its extension: "Notes.md" shows
+/// "Notes" in the row, and the extension comes back on save.
+fn editable_name(entry: &Entry) -> String {
+    if entry.is_dir {
+        return entry.name.clone();
+    }
+    Path::new(&entry.name)
+        .file_stem()
+        .map(|stem| stem.to_string_lossy().to_string())
+        .filter(|stem| !stem.is_empty())
+        .unwrap_or_else(|| entry.name.clone())
 }
 
 /// Where an open document moves to when its file or parent folder is renamed.
@@ -586,8 +628,19 @@ fn ensure_document_extension(name: String, source: &Path, source_is_file: bool) 
 
 #[cfg(test)]
 mod tests {
-    use super::{ensure_document_extension, moved_path};
+    use super::{editable_name, ensure_document_extension, moved_path};
+    use crate::store::Entry;
     use std::path::{Path, PathBuf};
+    use std::time::{Duration, SystemTime};
+
+    fn entry(name: &str, is_dir: bool) -> Entry {
+        Entry {
+            name: name.to_owned(),
+            rel: PathBuf::from(name),
+            is_dir,
+            modified: SystemTime::UNIX_EPOCH + Duration::from_secs(1),
+        }
+    }
 
     #[test]
     fn renames_keep_the_open_file() {
@@ -631,5 +684,15 @@ mod tests {
             ensure_document_extension("Book".to_owned(), Path::new("Novel"), false),
             "Book"
         );
+    }
+
+    #[test]
+    fn rename_shows_the_name_without_the_extension() {
+        assert_eq!(editable_name(&entry("Notes.md", false)), "Notes");
+        assert_eq!(
+            editable_name(&entry("The quiet morning.md", false)),
+            "The quiet morning"
+        );
+        assert_eq!(editable_name(&entry("Novel", true)), "Novel");
     }
 }

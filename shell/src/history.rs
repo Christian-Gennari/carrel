@@ -6,14 +6,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib};
+use gtk::{gdk, glib};
 
 use crate::daemon::{Client, HistoryEntry};
 use crate::editor::EditorPage;
 use crate::nav::Navigator;
 use crate::ui;
 
-const HINT: &str = "Up/Down versions · Enter restore · Esc editor";
+const HINTS: [(&str, &str); 3] = [("Enter", "Restore"), ("↑ ↓", "Versions"), ("Esc", "Back")];
 
 /// The pure part: which version is selected, what the preview shows, what the
 /// screen asks the daemon for next.
@@ -135,13 +135,13 @@ impl HistoryState {
 }
 
 pub struct HistoryPage {
-    pub widget: gtk::Box,
+    pub widget: gtk::Overlay,
+    screen: Rc<ui::Screen>,
     list: gtk::ListBox,
     list_scroller: gtk::ScrolledWindow,
     preview_title: gtk::Label,
     preview: gtk::Label,
     notice: gtk::Label,
-    hint: gtk::Label,
     state: RefCell<HistoryState>,
     client: Client,
     nav: Rc<Navigator>,
@@ -152,8 +152,11 @@ pub struct HistoryPage {
 
 impl HistoryPage {
     pub fn new(client: Client, nav: Rc<Navigator>, editor: Rc<EditorPage>) -> Rc<Self> {
+        let screen = ui::Screen::new("History");
+        screen.set_hints(&HINTS);
+
         let list = ui::list();
-        list.set_width_request(300);
+        list.set_width_request(340);
         let list_scroller = ui::scroller(&list);
 
         let preview_title = gtk::Label::new(None);
@@ -168,7 +171,7 @@ impl HistoryPage {
         preview.add_css_class("preview-text");
         let preview_box = gtk::Box::new(gtk::Orientation::Vertical, 10);
         preview_box.set_hexpand(true);
-        preview_box.set_margin_start(28);
+        preview_box.set_margin_start(24);
         preview_box.append(&preview_title);
         preview_box.append(&preview);
         let preview_scroller = ui::scroller(&preview_box);
@@ -178,32 +181,23 @@ impl HistoryPage {
         columns.set_vexpand(true);
         columns.append(&list_scroller);
         columns.append(&preview_scroller);
+        screen.content.append(&columns);
 
         let notice = gtk::Label::new(None);
         notice.set_xalign(0.0);
         notice.set_wrap(true);
         notice.add_css_class("notice-line");
         notice.set_visible(false);
-
-        let hint = ui::hint(HINT);
-
-        let column = ui::column(820);
-        column.append(&ui::title("History"));
-        column.append(&columns);
-        column.append(&notice);
-        column.append(&hint);
-
-        let widget = ui::page();
-        widget.append(&column);
+        screen.content.append(&notice);
 
         let page = Rc::new(Self {
-            widget,
+            widget: screen.root.clone(),
+            screen,
             list,
             list_scroller,
             preview_title,
             preview,
             notice,
-            hint,
             state: RefCell::new(HistoryState::default()),
             client,
             nav,
@@ -226,7 +220,7 @@ impl HistoryPage {
         self.widget.connect_map(move |_| {
             if let Some(page) = weak.upgrade() {
                 page.open();
-                page.widget.grab_focus();
+                page.screen.focus_page();
             }
         });
     }
@@ -234,6 +228,7 @@ impl HistoryPage {
     /// Refresh from the editor's current file. Called when the screen appears.
     fn open(self: &Rc<Self>) {
         let Some(path) = self.editor.current_rel() else {
+            self.screen.set_status("");
             self.show_message("Open a file to see its history.", false);
             return;
         };
@@ -245,6 +240,7 @@ impl HistoryPage {
             return;
         }
         let path = path.to_string_lossy().to_string();
+        self.screen.set_status(&path);
         self.state.borrow_mut().path = path.clone();
         self.state.borrow_mut().notice.clear();
         self.state.borrow_mut().error = None;
@@ -317,8 +313,6 @@ impl HistoryPage {
         }
         self.preview_title.set_text("");
         self.preview.set_text(message);
-        self.hint.remove_css_class("error-text");
-        self.hint.set_text(HINT);
         self.update_notice();
     }
 
@@ -329,21 +323,20 @@ impl HistoryPage {
         let state = self.state.borrow();
         for entry in &state.versions {
             let row = gtk::ListBoxRow::new();
+            row.add_css_class("ui-row");
             row.add_css_class("file-row");
-            let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
             let time = gtk::Label::new(Some(&ui::format_moment(entry.time)));
             time.set_xalign(0.0);
+            time.set_hexpand(true);
+            time.set_ellipsize(gtk::pango::EllipsizeMode::End);
             time.add_css_class("history-time");
-            let detail = gtk::Label::new(Some(&format!(
-                "{} words · {}",
-                crate::store::stats::format_number(u64::from(entry.words)),
-                HistoryState::delta_label(entry)
-            )));
-            detail.set_xalign(0.0);
-            detail.add_css_class("row-note");
-            column.append(&time);
-            column.append(&detail);
-            row.set_child(Some(&column));
+            let detail = gtk::Label::new(Some(&HistoryState::delta_label(entry)));
+            detail.set_xalign(1.0);
+            detail.add_css_class("history-delta");
+            line.append(&time);
+            line.append(&detail);
+            row.set_child(Some(&line));
             self.list.append(&row);
         }
         let selected = state.selected;
@@ -443,6 +436,9 @@ impl HistoryPage {
         keyval: gdk::Key,
         state: gdk::ModifierType,
     ) -> glib::Propagation {
+        if self.screen.is_dialog_open() {
+            return self.screen.dialog_key(keyval, state);
+        }
         if state.contains(gdk::ModifierType::CONTROL_MASK) {
             return glib::Propagation::Proceed;
         }
@@ -488,29 +484,19 @@ impl HistoryPage {
             return;
         };
         let when = ui::format_moment(entry.time);
-        let window = self
-            .widget
-            .root()
-            .and_then(|root| root.downcast::<gtk::Window>().ok());
-        let dialog = gtk::AlertDialog::builder()
-            .modal(true)
-            .message("Restore this version?")
-            .detail(format!(
-                "The text from {when} replaces the current file. The current text stays in history, so nothing is lost."
-            ))
-            .buttons(["Cancel", "Restore"])
-            .cancel_button(0)
-            .default_button(0)
-            .build();
         let weak = Rc::downgrade(self);
-        dialog.choose(window.as_ref(), gio::Cancellable::NONE, move |answer| {
-            if !matches!(answer, Ok(1)) {
-                return;
-            }
-            if let Some(page) = weak.upgrade() {
-                page.restore_selected();
-            }
-        });
+        self.screen.ask(
+            "Restore this version?",
+            &format!(
+                "The text from {when} replaces the current file, and the current text stays in history."
+            ),
+            "Restore",
+            move || {
+                if let Some(page) = weak.upgrade() {
+                    page.restore_selected();
+                }
+            },
+        );
     }
 
     fn restore_selected(self: &Rc<Self>) {

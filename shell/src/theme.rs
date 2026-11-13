@@ -12,6 +12,20 @@ use gtk::CssProvider;
 
 use crate::settings::{Settings, Theme};
 
+/// The one type scale for the whole interface, in pixels. Body rows follow
+/// the editor's body size (spec/03-ui.md: 19 px default, never under 16), so
+/// the screen and the page read at the same size. Nothing on screen is smaller
+/// than a hint; the hint is the floor.
+pub const TITLE_PX: u32 = 30;
+pub const SECTION_PX: u32 = 15;
+pub const STEP_PX: u32 = 23;
+pub const SECONDARY_PX: u32 = 15;
+pub const HINT_PX: u32 = 14;
+pub const PREVIEW_PX: u32 = 16;
+pub const MIN_ROW_PX: u32 = 16;
+pub const BOTTOM_LINE_PX: u32 = 14;
+pub const BUTTON_PX: u32 = 15;
+
 /// The colours a theme names out loud. The rest is mixed from them.
 #[derive(Clone, Copy)]
 pub struct Palette {
@@ -157,6 +171,22 @@ impl Palette {
         blend(self.text, self.background, 0.70)
     }
 
+    /// The translucent layer under a confirmation card. Day papers take a
+    /// little ink; night papers fade their text toward the paper, because the
+    /// paper is already the darkest thing in the theme.
+    pub fn scrim(&self) -> String {
+        if self.is_dark() {
+            rgba_css(self.background, 0.58)
+        } else {
+            rgba_css(self.text, 0.38)
+        }
+    }
+
+    /// Whether this palette is a night theme.
+    pub fn is_dark(&self) -> bool {
+        luminance(self.background) < 0.5
+    }
+
     /// A paragraph outside the cursor, drawn at 35 % opacity.
     pub fn focus_text(&self) -> gdk::RGBA {
         rgba_color(self.text, 0.35)
@@ -208,6 +238,13 @@ pub fn blend(over: &str, base: &str, alpha: f64) -> String {
         (f64::from(front) * alpha + f64::from(back) * (1.0 - alpha)).round() as u8
     };
     format!("#{:02X}{:02X}{:02X}", mix(or, br), mix(og, bg), mix(ob, bb))
+}
+
+/// `rgba(r, g, b, alpha)` for GTK CSS: the dim layer under a dialog, where
+/// the page must still show through.
+pub fn rgba_css(hex: &str, alpha: f64) -> String {
+    let (red, green, blue) = parse_hex(hex);
+    format!("rgba({red}, {green}, {blue}, {:.2})", alpha.clamp(0.0, 1.0))
 }
 
 /// `rgba(r, g, b, alpha)` for a text tag that must stay translucent.
@@ -273,8 +310,11 @@ pub fn css(settings: &Settings) -> String {
     let text_selection = palette.text_selection();
     let selected_note = palette.selected_note();
     let focus = palette.focus_ring();
+    let scrim = palette.scrim();
     let family = settings.font.css_family();
     let size = settings.font_size;
+    // A row reads at the editor's body size, never below the scale's floor.
+    let row = size.max(MIN_ROW_PX);
 
     format!(
         r#"
@@ -294,7 +334,8 @@ window, .carrel-page {{
 }}
 /* One selection colour everywhere: no default GTK blue-grey in the editor,
    the Quotes search field or any list. */
-selection, entry selection, textview selection, .carrel-editor selection {{
+selection, entry selection, entry:backdrop selection,
+textview selection, .carrel-editor selection {{
     background-color: {text_selection};
     color: {text};
 }}
@@ -311,33 +352,43 @@ scrollbar {{
 }}
 .bottom-line {{
     color: {muted};
-    font-size: 10pt;
+    font-size: {bottom_line}px;
     padding: 8px 24px 14px 24px;
 }}
 .screen-title {{
-    font-size: 24pt;
-    font-weight: 600;
     color: {text};
-    margin-bottom: 18px;
+    font-size: {title}px;
+    font-weight: 600;
 }}
-.hint {{
+.screen-status {{
     color: {muted};
-    font-size: 10pt;
-    padding: 12px 4px 18px 4px;
+    font-size: {secondary}px;
+    margin-top: 8px;
 }}
+.section-title {{
+    color: {muted};
+    font-size: {section}px;
+    margin-bottom: 2px;
+}}
+.step-title {{
+    color: {text};
+    font-size: {step}px;
+    margin-bottom: 4px;
+}}
+/* One row style everywhere: same height, padding, radius and accent tint. */
 .file-list {{
     background-color: transparent;
 }}
-.file-row {{
+.file-row, .setting-row, .quote-row, .ui-row {{
     padding: 10px 14px;
-    border-radius: 7px;
+    border-radius: 8px;
     color: {text};
-    font-size: 15pt;
+    font-size: {row}px;
 }}
-.file-row:hover {{
+.file-row:hover, .setting-row:hover, .quote-row:hover, .ui-row:hover {{
     background-color: {hover};
 }}
-.file-row:selected {{
+.file-row:selected, .setting-row:selected, .quote-row:selected, .ui-row:selected {{
     background-color: {selection};
     color: {text};
 }}
@@ -347,20 +398,34 @@ scrollbar {{
 .file-name {{
     font-weight: 400;
 }}
+.setting-label {{
+    color: {text};
+    font-size: {row}px;
+}}
+.setting-value {{
+    color: {muted};
+    font-size: {secondary}px;
+}}
 .row-note {{
     color: {dim};
-    font-size: 10pt;
+    font-size: {secondary}px;
 }}
 /* A hint under the selected row sits on that row's tint, so it takes a
    little more ink to stay readable. */
-.setting-row:selected .row-note {{
+.file-row:selected .row-note,
+.setting-row:selected .row-note,
+.quote-row:selected .quote-meta,
+.ui-row:selected .row-note {{
     color: {selected_note};
 }}
+/* Rename in place: the row itself becomes a field. */
 .renaming {{
     background-color: {surface};
     color: {text};
+    border: 1px solid {border};
     border-radius: 6px;
-    padding: 6px 10px;
+    padding: 2px 8px;
+    font-size: {row}px;
 }}
 .error-text {{
     color: {danger};
@@ -370,7 +435,8 @@ scrollbar {{
     color: {text};
     border: 1px solid {border};
     border-radius: 6px;
-    padding: 6px 14px;
+    padding: 7px 16px;
+    font-size: {button}px;
 }}
 button {{
     background-color: {surface};
@@ -378,22 +444,25 @@ button {{
     border: 1px solid {border};
     border-radius: 6px;
     box-shadow: none;
-    padding: 6px 16px;
+    padding: 7px 18px;
+    font-size: {button}px;
 }}
 button:hover {{
-    background-color: {border};
+    background-color: {hover};
 }}
-.dialog, window.dialog {{
-    background-color: {background};
-    color: {text};
+button:focus {{
+    border-color: {focus};
+    box-shadow: inset 0 0 0 1px {focus};
+    outline-style: none;
+    outline-width: 0;
 }}
 entry {{
     background-color: {surface};
     color: {text};
     border: 1px solid {border};
     border-radius: 6px;
-    padding: 7px 11px;
-    font-size: 13pt;
+    padding: 8px 12px;
+    font-size: {row}px;
     caret-color: {accent};
 }}
 entry:focus, entry:focus-within {{
@@ -403,51 +472,69 @@ entry:focus, entry:focus-within {{
     outline-style: none;
     outline-width: 0;
 }}
-.setting-row {{
-    padding: 8px 14px;
-    border-radius: 7px;
+/* A confirmation is one card over a dimmed page, never a native strip. */
+.dialog-scrim {{
+    background-color: {scrim};
 }}
-.setting-row:selected {{
-    background-color: {selection};
-}}
-.setting-label {{
+.dialog-card {{
+    background-color: {surface};
     color: {text};
-    font-size: 14pt;
+    border: 1px solid {border};
+    border-radius: 12px;
+    padding: 26px 28px 22px 28px;
 }}
-.setting-value {{
-    color: {muted};
-    font-size: 12pt;
-}}
-.section-title {{
-    color: {muted};
-    font-size: 12pt;
-    margin-bottom: 6px;
-}}
-.step-title {{
+.dialog-title {{
     color: {text};
-    font-size: 18pt;
-    margin-top: 20px;
-    margin-bottom: 6px;
+    font-size: {step}px;
+    font-weight: 600;
+}}
+.dialog-text {{
+    color: {muted};
+    font-size: {secondary}px;
+}}
+/* Key caps: the one hint bar, on every screen. */
+.hint-bar {{
+    padding: 0;
+}}
+.key-cap {{
+    background-color: {surface};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 5px;
+    padding: 1px 7px;
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: {hint}px;
+}}
+.hint-word {{
+    color: {muted};
+    font-size: {hint}px;
+}}
+.hint-slot {{
+    border-top: 1px solid {border};
+    padding-top: 14px;
+}}
+.status-line {{
+    color: {muted};
+    font-size: {secondary}px;
 }}
 .sync-progress {{
     color: {text};
-    font-size: 13pt;
-    padding: 6px 0 0 0;
+    font-size: {secondary}px;
 }}
 .preview-title {{
     color: {muted};
-    font-size: 10pt;
+    font-size: {hint}px;
 }}
 .preview-text {{
     color: {text};
-    font-size: 12pt;
+    font-size: {preview}px;
 }}
 .preview-scroller {{
     border-left: 1px solid {border};
 }}
 .notice-line {{
     color: {muted};
-    font-size: 10pt;
+    font-size: {secondary}px;
     padding: 8px 2px 2px 2px;
 }}
 .notice-ok {{
@@ -455,74 +542,66 @@ entry:focus, entry:focus-within {{
 }}
 .done-heading {{
     color: {text};
-    font-size: 18pt;
-    margin-top: 14px;
+    font-size: {step}px;
+    margin-top: 6px;
 }}
 .battery-note {{
     color: {text};
     background-color: {surface};
     border-radius: 7px;
-    font-size: 10pt;
+    font-size: {hint}px;
     padding: 5px 14px;
 }}
 .pairing-code {{
     color: {text};
     font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-    font-size: 30pt;
+    font-size: 36px;
 }}
 .pairing-url {{
     color: {muted};
-    font-size: 11pt;
+    font-size: {secondary}px;
+}}
+.wifi-signal, .wifi-signal-off {{
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: {hint}px;
 }}
 .wifi-signal {{
     color: {dim};
-    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-    font-size: 11pt;
 }}
 .wifi-signal-off {{
     color: {border};
-    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
-    font-size: 11pt;
 }}
 .history-time {{
     color: {text};
-    font-size: 13pt;
+    font-size: {row}px;
+}}
+.history-delta {{
+    color: {muted};
+    font-size: {secondary}px;
 }}
 .quote-list {{
     background-color: transparent;
 }}
-.quote-row {{
-    padding: 8px 14px;
-    border-radius: 7px;
-}}
-.quote-row:hover {{
-    background-color: {hover};
-}}
-.quote-row:selected {{
-    background-color: {selection};
-}}
 .quote-text {{
     color: {text};
-    font-size: 12pt;
+    font-size: {row}px;
 }}
 .quote-meta {{
     color: {dim};
-    font-size: 10pt;
+    font-size: {secondary}px;
 }}
 .quote-message {{
     color: {muted};
-    font-size: 12pt;
+    font-size: {preview}px;
     padding: 12px 16px;
 }}
 .quote-heading {{
     color: {dim};
-    font-size: 10pt;
+    font-size: {hint}px;
     padding: 10px 16px 2px 16px;
 }}
-.quote-hint {{
-    color: {muted};
-    font-size: 10pt;
-    padding: 8px 16px 10px 16px;
+.quote-hint-bar {{
+    padding: 9px 16px 10px 16px;
     border-top: 1px solid {border};
 }}
 /* The palette at the caret: a quiet raised sheet. The accent stays on the
@@ -555,8 +634,18 @@ popover.quote-popover > contents {{
         text_selection = text_selection,
         selected_note = selected_note,
         focus = focus,
+        scrim = scrim,
         family = family,
         size = size,
+        row = row,
+        title = TITLE_PX,
+        section = SECTION_PX,
+        step = STEP_PX,
+        secondary = SECONDARY_PX,
+        hint = HINT_PX,
+        preview = PREVIEW_PX,
+        button = BUTTON_PX,
+        bottom_line = BOTTOM_LINE_PX,
     )
 }
 
@@ -688,6 +777,50 @@ mod tests {
             // a plain neutral or another theme's colour.
             assert!(sheet.contains(&palette.selection()));
             assert!(sheet.contains(&palette.text_selection()));
+        }
+    }
+
+    #[test]
+    fn rows_dialogs_and_key_caps_stay_readable_in_every_theme() {
+        for theme in Theme::ALL {
+            let palette = Palette::of(theme);
+            let surface = palette.surface();
+            let selection = palette.selection();
+            let name = theme.label();
+            let row = contrast_ratio(palette.text, &surface);
+            let quiet = contrast_ratio(&palette.muted(), &surface);
+            let selected = contrast_ratio(palette.text, &selection);
+            assert!(row >= 7.0, "{name}: text on a raised surface is {row:.2}:1");
+            assert!(
+                quiet >= 4.5,
+                "{name}: secondary text on a card is {quiet:.2}:1"
+            );
+            assert!(
+                selected >= 7.0,
+                "{name}: a row's text on its selection is {selected:.2}:1"
+            );
+            assert!(palette.scrim().starts_with("rgba("));
+        }
+    }
+
+    #[test]
+    fn no_ui_text_is_below_the_hint_floor() {
+        for theme in Theme::ALL {
+            let sheet = css(&settings_for(theme, FontChoice::Serif));
+            for line in sheet.lines() {
+                let Some(value) = line.trim().strip_prefix("font-size: ") else {
+                    continue;
+                };
+                let Some(px) = value.strip_suffix("px;") else {
+                    continue;
+                };
+                let px: u32 = px.parse().expect("a pixel size");
+                assert!(
+                    px >= 13,
+                    "{}: the stylesheet asks for {px} px text",
+                    theme.label()
+                );
+            }
         }
     }
 
