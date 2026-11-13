@@ -152,6 +152,7 @@ pub enum ExportOutcome {
     },
     Imported {
         paths: Vec<String>,
+        drive: String,
     },
 }
 
@@ -435,9 +436,9 @@ impl ExportState {
         self.error = None;
     }
 
-    pub fn on_imported(&mut self, paths: Vec<String>) {
+    pub fn on_imported(&mut self, paths: Vec<String>, drive: String) {
         self.step = ExportStep::Done;
-        self.outcome = Some(ExportOutcome::Imported { paths });
+        self.outcome = Some(ExportOutcome::Imported { paths, drive });
         self.error = None;
     }
 
@@ -495,13 +496,16 @@ impl ExportState {
     pub fn outcome_heading(&self) -> Option<String> {
         match &self.outcome {
             Some(ExportOutcome::Exported { drive, .. }) => Some(format!("Exported to {drive}")),
-            // The import result is one line; it is not repeated as a heading.
-            Some(ExportOutcome::Imported { .. }) | None => None,
+            Some(ExportOutcome::Imported { paths, drive }) => {
+                Some(imported_heading(paths.len(), drive))
+            }
+            None => None,
         }
     }
 
     /// The result, one line per fact: where it went, then the file and the
-    /// safe-to-remove sentence. The import result is said once.
+    /// safe-to-remove sentence. The import result names the drive in its
+    /// heading and says where the files are in one detail line.
     pub fn outcome_lines(&self) -> Vec<String> {
         match &self.outcome {
             Some(ExportOutcome::Exported { path, file, .. }) => {
@@ -515,7 +519,9 @@ impl ExportState {
                 });
                 lines
             }
-            Some(ExportOutcome::Imported { paths }) => vec![imported_text(paths.len())],
+            Some(ExportOutcome::Imported { .. }) => {
+                vec!["Saved in Imported/. Safe to remove.".to_owned()]
+            }
             None => Vec::new(),
         }
     }
@@ -567,11 +573,13 @@ pub fn export_location(path: &str) -> Option<String> {
     }
 }
 
-pub fn imported_text(files: usize) -> String {
+/// The import result headline, matching "Exported to …": who did what, and
+/// from which drive.
+pub fn imported_heading(files: usize, drive: &str) -> String {
     match files {
-        0 => "No .md or .txt files were found on the drive.".to_owned(),
-        1 => "1 file imported into Imported.".to_owned(),
-        count => format!("{count} files imported into Imported."),
+        0 => format!("No files imported from {drive}"),
+        1 => format!("Imported 1 file from {drive}"),
+        count => format!("Imported {count} files from {drive}"),
     }
 }
 
@@ -953,7 +961,9 @@ impl ExportPage {
                             return;
                         };
                         match result {
-                            Ok(paths) => page.state.borrow_mut().on_imported(paths),
+                            Ok(paths) => {
+                                page.state.borrow_mut().on_imported(paths, drive.clone());
+                            }
                             Err(error) => page.state.borrow_mut().on_error(error.message),
                         }
                         page.refresh();
@@ -1441,21 +1451,26 @@ mod tests {
                 drive: "CARREL USB".into(),
             }
         );
-        state.on_imported(vec!["Imported/one.md".into(), "Imported/two.txt".into()]);
+        state.on_imported(
+            vec!["Imported/one.md".into(), "Imported/two.txt".into()],
+            "CARREL USB".into(),
+        );
         assert_eq!(
-            state.outcome_heading(),
-            None,
-            "the import result is one line"
+            state.outcome_heading().as_deref(),
+            Some("Imported 2 files from CARREL USB")
         );
         assert_eq!(
             state.outcome_lines(),
-            vec!["2 files imported into Imported.".to_owned()]
+            vec!["Saved in Imported/. Safe to remove.".to_owned()]
         );
         assert!(state.is_import());
-        assert_eq!(imported_text(1), "1 file imported into Imported.");
         assert_eq!(
-            imported_text(0),
-            "No .md or .txt files were found on the drive."
+            imported_heading(1, "CARREL USB"),
+            "Imported 1 file from CARREL USB"
+        );
+        assert_eq!(
+            imported_heading(0, "CARREL USB"),
+            "No files imported from CARREL USB"
         );
     }
 

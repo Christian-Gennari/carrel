@@ -458,13 +458,22 @@ fn the_import_result_is_said_once() {
     shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
     pump(|| !shell.daemon.imported().is_empty());
     settle();
-    let sentence = "2 files imported into Imported.";
-    let count = text_on_screen(shell.window.upcast_ref(), sentence);
-    assert_eq!(count, 1, "the import result is said {count} times");
+    let headline = "Imported 2 files from CARREL USB";
+    let detail = "Saved in Imported/. Safe to remove.";
+    assert_eq!(
+        text_on_screen(shell.window.upcast_ref(), headline),
+        1,
+        "the import headline is said once"
+    );
+    assert_eq!(
+        text_on_screen(shell.window.upcast_ref(), detail),
+        1,
+        "the import detail is said once"
+    );
     shell.press("i", gdk::Key::i, gdk::ModifierType::empty());
     settle();
     assert_eq!(
-        text_on_screen(shell.window.upcast_ref(), sentence),
+        text_on_screen(shell.window.upcast_ref(), headline),
         0,
         "I starts the import again"
     );
