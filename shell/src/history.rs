@@ -18,6 +18,10 @@ use crate::store::display_path;
 use crate::theme;
 use crate::ui;
 
+/// The version list's column: a short moment, the word change and the bar.
+/// Everything else on the wide frame belongs to the diff.
+const HISTORY_LIST_WIDTH: i32 = 340;
+
 const HINTS: [(&str, &str); 4] = [
     ("Enter", "Restore"),
     ("↑ ↓", "Versions"),
@@ -326,13 +330,16 @@ impl HistoryPage {
         editor: Rc<EditorPage>,
         settings: Rc<RefCell<Settings>>,
     ) -> Rc<Self> {
-        let screen = ui::Screen::new("History");
+        // History is the one two-pane screen: the wide frame keeps the title,
+        // the status and the hint bar on every other screen's left edge and
+        // grows to the right, so the diff reads at about 66 characters a line.
+        let screen = ui::Screen::new_wide("History");
         screen.set_hints(&HINTS);
 
         let list = ui::list();
-        // The two panes share the one 720 px frame: the versions keep a
-        // narrow column and the preview takes the rest.
-        list.set_width_request(390);
+        // The versions stay compact (a short moment, the word change and the
+        // bar); the rest of the width is the diff's.
+        list.set_width_request(HISTORY_LIST_WIDTH);
         let list_scroller = ui::scroller(&list);
 
         let preview_title = gtk::Label::new(None);
@@ -391,7 +398,7 @@ impl HistoryPage {
         // the shared frame.
         let list_pane = ui::fade_top(&list_scroller);
         list_pane.set_hexpand(false);
-        list_pane.set_size_request(390, -1);
+        list_pane.set_size_request(HISTORY_LIST_WIDTH, -1);
         preview_pane.set_hexpand(true);
         columns.append(&list_pane);
         columns.append(&preview_pane);
@@ -569,14 +576,19 @@ impl HistoryPage {
         let state = self.state.borrow();
         let largest = state.largest_delta() as f64;
         let palette = theme::palette(&self.settings.borrow());
+        // The bar is drawn, not styled, so the selected row hands it the
+        // selection's own colours: on High contrast the row is the accent and
+        // ink on ink would disappear.
         let ink = colour(palette.text);
         let dim = colour(&palette.dim());
-        for entry in &state.versions {
+        let selected_ink = colour(palette.selected_text());
+        let selected_dim = colour(&palette.selected_note());
+        for (index, entry) in state.versions.iter().enumerate() {
             let row = gtk::ListBoxRow::new();
             row.add_css_class("ui-row");
             row.add_css_class("file-row");
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            let time = gtk::Label::new(Some(&ui::format_moment(entry.time)));
+            let time = gtk::Label::new(Some(&ui::format_moment_short(entry.time)));
             time.set_xalign(0.0);
             time.set_hexpand(true);
             time.set_ellipsize(gtk::pango::EllipsizeMode::End);
@@ -584,6 +596,11 @@ impl HistoryPage {
             let detail = gtk::Label::new(Some(&HistoryState::delta_label(entry)));
             detail.set_xalign(1.0);
             detail.add_css_class("history-delta");
+            let (ink, dim) = if index == state.selected {
+                (selected_ink, selected_dim)
+            } else {
+                (ink, dim)
+            };
             let bar = delta_bar(entry.delta, largest, ink, dim);
             line.append(&time);
             line.append(&detail);

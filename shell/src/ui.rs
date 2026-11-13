@@ -18,6 +18,14 @@ type ChoiceAction = Rc<dyn Fn(usize)>;
 /// where the text lives.
 pub const COLUMN_WIDTH: i32 = 720;
 
+/// The wide page frame, for a screen with two panes where one of them is text
+/// to read (History today). It keeps the 720 px column's left edge, so the
+/// title, the status and the hint bar still start where every other screen's
+/// do, and grows to the right only: the diff gets a readable measure instead
+/// of a narrow strip. 860 px gives the preview about 66 characters a line at
+/// the default body size, and the measure does not change with the window.
+pub const WIDE_COLUMN_WIDTH: i32 = 860;
+
 /// The confirmation card's width. One width for every card, so a delete, a
 /// restore and an unpair all look like the same object.
 pub const DIALOG_WIDTH: i32 = 460;
@@ -31,6 +39,20 @@ pub fn frame_top(height: i32) -> i32 {
         return 56;
     }
     (height / 12).clamp(56, 96)
+}
+
+/// The left margin that puts a column on the centred 720 px frame's edge. A
+/// wide screen uses it as its own left margin, which is what keeps its title
+/// under every other screen's title.
+pub fn frame_margin(width: i32) -> i32 {
+    ((width - COLUMN_WIDTH) / 2).max(24)
+}
+
+/// The wide frame's width at this window: never more than the measure above,
+/// and never past the window's right edge on a small screen.
+pub fn frame_wide(width: i32) -> i32 {
+    let start = frame_margin(width);
+    WIDE_COLUMN_WIDTH.min(width - start - 24).max(320)
 }
 
 /// The page itself: fills the window, carries the theme background.
@@ -85,10 +107,25 @@ pub struct Screen {
     choices: Vec<gtk::Button>,
     choice_focus: Cell<usize>,
     choice_action: RefCell<Option<ChoiceAction>>,
+    /// A wide frame (History): same left edge, wider to the right.
+    wide: bool,
 }
 
 impl Screen {
+    /// The 720 px frame every screen uses.
     pub fn new(title_text: &str) -> Rc<Self> {
+        Self::build(title_text, false)
+    }
+
+    /// The wide frame for a two-pane screen (History): the 720 px frame's
+    /// left edge, so the title, the status and the hint bar start where every
+    /// other screen's do, and the extra width goes to the pane that holds
+    /// text to read.
+    pub fn new_wide(title_text: &str) -> Rc<Self> {
+        Self::build(title_text, true)
+    }
+
+    fn build(title_text: &str, wide: bool) -> Rc<Self> {
         let status = gtk::Label::new(None);
         status.set_xalign(0.0);
         status.set_hexpand(true);
@@ -106,7 +143,14 @@ impl Screen {
         hint_slot.set_margin_top(18);
 
         let title = title(title_text);
-        let column = column(COLUMN_WIDTH);
+        let column = column(if wide {
+            WIDE_COLUMN_WIDTH
+        } else {
+            COLUMN_WIDTH
+        });
+        if wide {
+            column.set_halign(gtk::Align::Start);
+        }
         column.append(&title);
         column.append(&status);
         column.append(&content);
@@ -194,27 +238,60 @@ impl Screen {
             choices,
             choice_focus: Cell::new(0),
             choice_action: RefCell::new(None),
+            wide,
         });
         screen.install_dialog();
-        screen.follow_page_height();
+        screen.follow_page();
         screen.set_hints(&[]);
         screen
     }
 
-    /// Keep the frame's top margin proportional to the window, the way the
-    /// editor keeps its first line. The height arrives after the first
-    /// allocation, so this follows it.
-    fn follow_page_height(self: &Rc<Self>) {
+    /// Keep the frame proportional to the window, the way the editor keeps
+    /// its first line: the top margin grows with the height, and a wide frame
+    /// keeps its left edge on the 720 px column's while it grows to the right.
+    /// The page has its size when it is first mapped, and again each time the
+    /// screen is shown, so that is when the frame is measured.
+    fn follow_page(self: &Rc<Self>) {
+        let page = self.page.clone();
+        let mapped = page.clone();
         let weak = Rc::downgrade(self);
-        self.page
-            .connect_notify_local(Some("height"), move |page, _| {
+        page.connect_map(move |_| {
+            let Some(screen) = weak.upgrade() else {
+                return;
+            };
+            screen.resize(&mapped);
+            // The first allocation can land just after the map; one idle is
+            // enough to catch it.
+            let page = mapped.clone();
+            let weak = Rc::downgrade(&screen);
+            glib::idle_add_local_once(move || {
                 if let Some(screen) = weak.upgrade() {
-                    let top = frame_top(page.height());
-                    if screen.column.margin_top() != top {
-                        screen.column.set_margin_top(top);
-                    }
+                    screen.resize(&page);
                 }
             });
+        });
+    }
+
+    fn resize(&self, page: &gtk::Box) {
+        let top = frame_top(page.height());
+        if self.column.margin_top() != top {
+            self.column.set_margin_top(top);
+        }
+        if !self.wide {
+            return;
+        }
+        let width = page.width();
+        if width <= 0 {
+            return;
+        }
+        let start = frame_margin(width);
+        if self.column.margin_start() != start {
+            self.column.set_margin_start(start);
+        }
+        let wide = frame_wide(width);
+        if self.column.width_request() != wide {
+            self.column.set_width_request(wide);
+        }
     }
 
     fn install_dialog(self: &Rc<Self>) {
@@ -1024,40 +1101,72 @@ fn scroll_now(scroller: &gtk::ScrolledWindow, list: &gtk::ListBox, row: &gtk::Li
 
 /// Local time for history and sync. Unix 0 means "never".
 pub fn format_moment(unix: i64) -> String {
-    if unix <= 0 {
-        return "Never".to_owned();
-    }
-    let Ok(date) = glib::DateTime::from_unix_local(unix) else {
-        return "Unknown time".to_owned();
+    let Some((date, today, yesterday)) = moment(unix) else {
+        return never(unix);
     };
+    let time = format_of(&date, "%H:%M");
+    if today {
+        format!("Today, {time}")
+    } else if yesterday {
+        format!("Yesterday, {time}")
+    } else {
+        let text = format_of(&date, "%d %b %Y, %H:%M");
+        text.strip_prefix('0').unwrap_or(&text).to_owned()
+    }
+}
+
+/// The compact form the History list uses: `Today, 15:13`, `11 Nov, 16:07`.
+/// The year lives in the preview's title, so the row keeps its room for the
+/// word change and the diff gets the width.
+pub fn format_moment_short(unix: i64) -> String {
+    let Some((date, today, yesterday)) = moment(unix) else {
+        return never(unix);
+    };
+    let time = format_of(&date, "%H:%M");
+    if today {
+        format!("Today, {time}")
+    } else if yesterday {
+        format!("Yesterday, {time}")
+    } else {
+        let text = format_of(&date, "%d %b, %H:%M");
+        text.strip_prefix('0').unwrap_or(&text).to_owned()
+    }
+}
+
+fn never(unix: i64) -> String {
+    if unix <= 0 {
+        "Never".to_owned()
+    } else {
+        "Unknown time".to_owned()
+    }
+}
+
+/// The local date, and whether it is today or yesterday. `None` when the
+/// moment cannot be read at all.
+fn moment(unix: i64) -> Option<(glib::DateTime, bool, bool)> {
+    if unix <= 0 {
+        return None;
+    }
+    let date = glib::DateTime::from_unix_local(unix).ok()?;
+    let day = format_of(&date, "%Y-%m-%d");
     let today = glib::DateTime::now_local()
         .ok()
-        .and_then(|now| now.format("%Y-%m-%d").ok())
-        .map(|date| date.to_string());
+        .map(|now| format_of(&now, "%Y-%m-%d"))
+        .as_deref()
+        == Some(day.as_str());
     let yesterday = glib::DateTime::now_local()
         .ok()
         .and_then(|now| now.add_days(-1).ok())
-        .and_then(|day| day.format("%Y-%m-%d").ok())
-        .map(|date| date.to_string());
-    let day = date
-        .format("%Y-%m-%d")
-        .map(|day| day.to_string())
-        .unwrap_or_default();
-    let time = date
-        .format("%H:%M")
-        .map(|time| time.to_string())
-        .unwrap_or_default();
-    if today.as_deref() == Some(day.as_str()) {
-        format!("Today, {time}")
-    } else if yesterday.as_deref() == Some(day.as_str()) {
-        format!("Yesterday, {time}")
-    } else {
-        let text = date
-            .format("%d %b %Y, %H:%M")
-            .map(|text| text.to_string())
-            .unwrap_or_default();
-        text.strip_prefix('0').unwrap_or(&text).to_owned()
-    }
+        .map(|now| format_of(&now, "%Y-%m-%d"))
+        .as_deref()
+        == Some(day.as_str());
+    Some((date, today, yesterday))
+}
+
+fn format_of(date: &glib::DateTime, format: &str) -> String {
+    date.format(format)
+        .map(|text| text.to_string())
+        .unwrap_or_default()
 }
 
 /// `12 Nov 2026`, for the dated "Everything" export folder.
@@ -1067,4 +1176,50 @@ pub fn local_date() -> String {
         .and_then(|date| date.format("%Y-%m-%d").ok())
         .map(|date| date.to_string())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- UI round 10 (issue #38): the wide frame. ---
+    #[test]
+    fn the_wide_frame_keeps_the_720_column_left_edge() {
+        // The left edge is the centred 720 px column's, so a wide screen's
+        // title sits exactly under every other screen's title.
+        for width in [1366, 1920] {
+            let start = frame_margin(width);
+            assert_eq!(start, (width - COLUMN_WIDTH) / 2, "{width}: left edge");
+            assert_eq!(start + COLUMN_WIDTH, (width + COLUMN_WIDTH) / 2);
+        }
+        // It grows to the right only: the measure is the same at both sizes,
+        // and it never passes the window's right edge on a small one.
+        assert_eq!(frame_wide(1366), WIDE_COLUMN_WIDTH);
+        assert_eq!(frame_wide(1920), WIDE_COLUMN_WIDTH);
+        let small = 800;
+        assert!(frame_margin(small) + frame_wide(small) <= small - 24);
+        assert!(frame_wide(640) >= 320);
+    }
+
+    #[test]
+    fn the_history_list_shows_a_short_moment() {
+        // 2026-11-13 15:12 local is either today, yesterday or an older day,
+        // depending on when the test runs; all three forms are short and keep
+        // the time.
+        let moment = glib::DateTime::new(&glib::TimeZone::local(), 2026, 11, 13, 15, 12, 0.0)
+            .expect("a moment");
+        let unix = moment.to_unix();
+        let short = format_moment_short(unix);
+        let full = format_moment(unix);
+        assert!(short.contains("15:12"), "{short}");
+        assert!(full.contains("15:12"), "{full}");
+        assert!(!short.contains("2026"), "{short}");
+        assert!(
+            short.len() < full.len() || short == full,
+            "{short} vs {full}"
+        );
+        assert_eq!(format_moment_short(0), "Never");
+        assert_eq!(format_moment(0), "Never");
+    }
+    // --- end UI round 10 (issue #38) ---
 }
