@@ -212,7 +212,7 @@ impl SyncPage {
         for action in OVERVIEW_ROWS {
             list.append(&ui::plain_row(action_label(action)));
         }
-        let overview = ui::scroller(&list);
+        let overview = ui::fade_top(&ui::scroller(&list));
 
         let url_title = gtk::Label::new(Some("Address of your Carrel server"));
         url_title.set_xalign(0.0);

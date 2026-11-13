@@ -430,7 +430,7 @@ impl SettingsPage {
         screen.set_hints(&HINTS);
         let list = ui::list();
         let scroller = ui::scroller(&list);
-        screen.content.append(&scroller);
+        screen.content.append(&ui::fade_top(&scroller));
 
         // Screenshot hook (dev/screenshot.sh): start with a later row selected,
         // as if the writer had pressed Down that many times.

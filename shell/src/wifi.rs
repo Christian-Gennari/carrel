@@ -228,7 +228,9 @@ impl WifiPage {
         list_scroller.set_vexpand(false);
         list_scroller.set_propagate_natural_height(true);
         list_scroller.set_max_content_height(420);
-        screen.content.append(&list_scroller);
+        let list_fade = ui::fade_top(&list_scroller);
+        list_fade.set_vexpand(false);
+        screen.content.append(&list_fade);
 
         let entry_label = gtk::Label::new(Some("Password"));
         entry_label.add_css_class("section-title");
