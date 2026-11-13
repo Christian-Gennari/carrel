@@ -566,7 +566,13 @@ button:disabled, button:disabled label {{
 }}
 /* No hover tint on rows: Carrel is driven by keys, and a pointer resting on
    the screen (a touchpad, a VM's mouse) would light a second row beside the
-   selected one. A click still selects. */
+   selected one. A click still selects. GTK's own theme tints `row:hover`
+   too, so this says it outright. */
+.file-row:hover:not(:selected), .setting-row:hover:not(:selected),
+.quote-row:hover:not(:selected), .ui-row:hover:not(:selected) {{
+    background-color: transparent;
+    background-image: none;
+}}
 .file-row:selected, .setting-row:selected, .quote-row:selected, .ui-row:selected {{
     background-color: {selection};
     color: {selected_text};
