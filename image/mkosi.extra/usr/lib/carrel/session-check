@@ -1,0 +1,19 @@
+#!/bin/sh
+# Runs as root after carrel-session.service stops. If the session failed
+# within a few seconds of starting, the GPU renderer is the likely cause (cage
+# exits at once when wlroots cannot create its renderer, or crashes on the
+# first client buffer). session-env then draws in software for the rest of
+# this boot, so the writer gets an editor instead of a restart loop.
+set -u
+
+dir=/run/carrel
+[ "${SERVICE_RESULT:-success}" = success ] && exit 0
+[ -e "$dir/software-render" ] && exit 0
+
+start=$(cat "$dir/session-start" 2>/dev/null || echo 0)
+now=$(date +%s)
+if [ $((now - start)) -lt 10 ]; then
+    touch "$dir/software-render"
+    echo "carrel-session failed ${EXIT_CODE:-?}/${EXIT_STATUS:-?} right after start; drawing in software from now on"
+fi
+exit 0

@@ -1,0 +1,31 @@
+#!/bin/sh
+# Chooses how the Carrel session draws, before every start of
+# carrel-session.service (runs as root, writes /run/carrel/session.env, which
+# the unit reads as its EnvironmentFile).
+#
+# On a real GPU, cage (wlroots) and GTK use it. In a virtual machine they draw
+# in software instead: the virtual GPUs' 3D paths either refuse EGL
+# (VirtualBox/VMware SVGA without 3D: cage cannot create its renderer and
+# exits) or crash the compositor on the first client buffer (VirtualBox with
+# 3D on). A writing screen needs no GPU, so pixman in cage and cairo in GTK are
+# the dependable choice there. The same applies on real hardware once
+# session-check has seen the session fail right after it started on this boot.
+set -eu
+
+dir=/run/carrel
+mkdir -p "$dir"
+
+software=no
+if [ -e "$dir/software-render" ]; then
+    software=yes
+elif systemd-detect-virt --vm --quiet; then
+    software=yes
+fi
+
+if [ "$software" = yes ]; then
+    printf 'WLR_RENDERER=pixman\nGSK_RENDERER=cairo\n' > "$dir/session.env.tmp"
+else
+    : > "$dir/session.env.tmp"
+fi
+mv "$dir/session.env.tmp" "$dir/session.env"
+date +%s > "$dir/session-start"

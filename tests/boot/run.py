@@ -761,6 +761,18 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
     expect(" -s" not in exec_line, "session passes cage -s (VT switching)", failures)
     expect("Restart=always" in session, "session does not restart", failures)
     expect("User=writer" in session, "session does not run as writer", failures)
+    # Virtual GPUs (VirtualBox/VMware SVGA) refuse or crash cage's GL renderer;
+    # session-env and session-check switch the session to software drawing.
+    expect("ExecStartPre=+/usr/lib/carrel/session-env" in session,
+           "session does not choose its renderer before start", failures)
+    expect("EnvironmentFile=-/run/carrel/session.env" in session,
+           "session does not read the renderer choice", failures)
+    expect("ExecStopPost=+/usr/lib/carrel/session-check" in session,
+           "session does not fall back to software after a renderer failure", failures)
+    for helper in ("/usr/lib/carrel/session-env", "/usr/lib/carrel/session-check"):
+        path = root_file(helper)
+        expect(path.is_file() and path.stat().st_mode & 0o111 != 0,
+               f"{helper} is missing or not executable", failures)
 
     for unit in (
         "getty@.service", "serial-getty@.service", "console-getty.service",

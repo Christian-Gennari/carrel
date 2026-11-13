@@ -67,10 +67,10 @@ SIG_UUID = {"a": SIG_A_UUID, "b": SIG_B_UUID}
 SLOT_BY_UUID = {ROOT_A_UUID: "a", ROOT_B_UUID: "b"}
 
 BASE_CMDLINE = (
-    "console=tty0 console=ttyS0,115200 systemd.getty_auto=no "
+    "console=tty0 console=ttyS0,115200 systemd.getty_auto=no audit=0 "
     "ro rootfstype=erofs"
 )
-VERSION = os.environ.get("CARREL_VERSION", "0.2.0")
+VERSION = os.environ.get("CARREL_VERSION", "0.2.1")
 UPDATE_VERSION = os.environ.get("CARREL_UPDATE_VERSION", "0.3.0")
 
 SYSTEMD_REPART = "/usr/bin/systemd-repart"
