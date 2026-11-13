@@ -380,6 +380,12 @@ impl QuotePalette {
         self.active.borrow().is_some()
     }
 
+    /// Step aside for the command palette. A `@` typed by Ctrl+' with nothing
+    /// after it is taken back, exactly as Esc does.
+    pub(crate) fn close_from_outside(self: &Rc<Self>) {
+        self.close();
+    }
+
     /// How many results the open palette lists.
     #[cfg(test)]
     pub(crate) fn result_count(&self) -> usize {
@@ -511,7 +517,7 @@ impl QuotePalette {
     }
 
     /// Ctrl+': open the palette at the caret by typing the `@` for the writer.
-    fn open_at_caret(self: &Rc<Self>) {
+    pub(crate) fn open_at_caret(self: &Rc<Self>) {
         if self.is_open() {
             return;
         }

@@ -357,10 +357,87 @@ scrollbar {{
     background-color: transparent;
     min-height: 2px;
 }}
+.bottom-line-row {{
+    padding: 8px 24px 14px 24px;
+}}
 .bottom-line {{
     color: {muted};
     font-size: {bottom_line}px;
-    padding: 8px 24px 14px 24px;
+    padding: 0;
+}}
+/* The bottom line ends with the palette's key, quiet and dim. */
+.bottom-cap {{
+    color: {dim};
+    border: 1px solid {border};
+    border-radius: 5px;
+    padding: 0 6px;
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
+    font-size: {hint}px;
+}}
+/* The one line an empty document shows, exactly where the text will begin. */
+.start-hint {{
+    color: {dim};
+    font-size: {size}px;
+}}
+/* The command palette: the Quotes palette's sheet, centred near the top of
+   the editor column. */
+.command-palette {{
+    background-color: {background};
+    color: {text};
+    border: 1px solid {border};
+}}
+.command-query-row {{
+    padding: 14px 16px 12px 16px;
+    border-bottom: 1px solid {border};
+}}
+.command-query {{
+    color: {text};
+    font-size: {size}px;
+}}
+.command-query.command-placeholder {{
+    color: {dim};
+}}
+.command-list {{
+    background-color: transparent;
+}}
+.command-row {{
+    padding: 9px 14px;
+    border-radius: 6px;
+}}
+.command-name {{
+    color: {text};
+    font-size: {row}px;
+}}
+.command-message {{
+    color: {muted};
+    font-size: {secondary}px;
+    padding: 16px;
+}}
+.hint-bar.command-hint-bar {{
+    padding: 9px 16px 10px 16px;
+    border-top: 1px solid {border};
+}}
+/* The key sheet: one centred card, grouped, with the same key caps. */
+.key-sheet {{
+    background-color: {background};
+    color: {text};
+    border: 1px solid {border};
+    border-radius: 12px;
+    padding: 26px 30px 22px 30px;
+    box-shadow: 0 18px 48px {shadow};
+}}
+.key-sheet-title {{
+    color: {text};
+    font-size: {step}px;
+    font-weight: 600;
+}}
+.key-group {{
+    color: {muted};
+    font-size: {section}px;
+}}
+.key-word {{
+    color: {text};
+    font-size: {secondary}px;
 }}
 .screen-title {{
     color: {text};

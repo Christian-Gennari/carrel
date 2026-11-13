@@ -20,6 +20,7 @@ pub mod keys;
 pub mod locale;
 pub mod markdown;
 pub mod nav;
+pub mod palette;
 pub mod quote_trigger;
 pub mod quotes;
 pub mod settings;
