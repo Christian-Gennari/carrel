@@ -171,14 +171,19 @@ impl Palette {
         blend(self.text, self.background, 0.70)
     }
 
-    /// The translucent layer under a confirmation card. Day papers take a
-    /// little ink; night papers fade their text toward the paper, because the
-    /// paper is already the darkest thing in the theme.
+    /// The translucent layer under a confirmation card: the theme's ink at
+    /// 27 %, so the page is still the page and the card carries the weight.
     pub fn scrim(&self) -> String {
+        rgba_css(self.text, 0.27)
+    }
+
+    /// The soft shadow under a confirmation card. On a day theme it is a
+    /// little ink; on a night theme it is the dark paper.
+    pub fn shadow(&self) -> String {
         if self.is_dark() {
-            rgba_css(self.background, 0.58)
+            rgba_css(self.background, 0.72)
         } else {
-            rgba_css(self.text, 0.38)
+            rgba_css(self.text, 0.18)
         }
     }
 
@@ -311,6 +316,8 @@ pub fn css(settings: &Settings) -> String {
     let selected_note = palette.selected_note();
     let focus = palette.focus_ring();
     let scrim = palette.scrim();
+    let shadow = palette.shadow();
+    let background_clear = rgba_css(background, 0.0);
     let family = settings.font.css_family();
     let size = settings.font_size;
     // A row reads at the editor's body size, never below the scale's floor.
@@ -378,6 +385,10 @@ scrollbar {{
 /* One row style everywhere: same height, padding, radius and accent tint. */
 .file-list {{
     background-color: transparent;
+}}
+/* A scrolled list fades into the page instead of cutting a row in half. */
+.scroll-fade-top {{
+    background-image: linear-gradient(to bottom, {background} 0%, {background_clear} 100%);
 }}
 .file-row, .setting-row, .quote-row, .ui-row {{
     padding: 10px 14px;
@@ -477,11 +488,12 @@ entry:focus, entry:focus-within {{
     background-color: {scrim};
 }}
 .dialog-card {{
-    background-color: {surface};
+    background-color: {background};
     color: {text};
     border: 1px solid {border};
     border-radius: 12px;
     padding: 26px 28px 22px 28px;
+    box-shadow: 0 18px 48px {shadow};
 }}
 .dialog-title {{
     color: {text};
@@ -635,6 +647,8 @@ popover.quote-popover > contents {{
         selected_note = selected_note,
         focus = focus,
         scrim = scrim,
+        shadow = shadow,
+        background_clear = background_clear,
         family = family,
         size = size,
         row = row,
@@ -800,6 +814,17 @@ mod tests {
                 "{name}: a row's text on its selection is {selected:.2}:1"
             );
             assert!(palette.scrim().starts_with("rgba("));
+        }
+    }
+
+    #[test]
+    fn the_dialog_is_paper_over_light_ink() {
+        for theme in Theme::ALL {
+            let palette = Palette::of(theme);
+            assert_eq!(palette.scrim(), rgba_css(palette.text, 0.27));
+            let sheet = css(&settings_for(theme, FontChoice::Serif));
+            assert!(sheet.contains(&format!("box-shadow: 0 18px 48px {}", palette.shadow())));
+            assert!(sheet.contains(".scroll-fade-top"));
         }
     }
 
