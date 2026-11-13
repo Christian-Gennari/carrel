@@ -1,4 +1,5 @@
-//! The Settings screen: one calm list, arrows to change, Enter to open.
+//! The Settings screen: one calm list in four groups, arrows to change, Enter
+//! to open a screen.
 //!
 //! Every value from `spec/03-ui.md` is a row. The pure [`SettingsState`] owns
 //! selection and value changes, so the tests do not need a display; the GTK
@@ -43,58 +44,70 @@ pub enum SettingRow {
     About,
 }
 
-/// Every row, with the two Automatic slots right after Theme.
-const ROWS_AUTOMATIC: [SettingRow; 19] = [
-    SettingRow::Theme,
-    SettingRow::DayTheme,
-    SettingRow::NightTheme,
-    SettingRow::Font,
-    SettingRow::Size,
-    SettingRow::DailyGoal,
-    SettingRow::GoalProgress,
-    SettingRow::FocusMode,
-    SettingRow::Typewriter,
-    SettingRow::Spellcheck,
-    SettingRow::Clock,
-    SettingRow::Wifi,
-    SettingRow::SyncBackends,
-    SettingRow::SyncAtShutdown,
-    SettingRow::Keyboard,
-    SettingRow::Language,
-    SettingRow::TimeZone,
-    SettingRow::Update,
-    SettingRow::About,
-];
+/// One line of the screen: a small group label, a value row, or the sample
+/// line under Look. Only the value rows take the cursor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsItem {
+    Group(&'static str),
+    Row(SettingRow),
+    Sample,
+}
 
-/// The same list without the day and night pickers: they only exist while
-/// Automatic is chosen (spec/03-ui.md).
-const ROWS_FIXED: [SettingRow; 17] = [
-    SettingRow::Theme,
-    SettingRow::Font,
-    SettingRow::Size,
-    SettingRow::DailyGoal,
-    SettingRow::GoalProgress,
-    SettingRow::FocusMode,
-    SettingRow::Typewriter,
-    SettingRow::Spellcheck,
-    SettingRow::Clock,
-    SettingRow::Wifi,
-    SettingRow::SyncBackends,
-    SettingRow::SyncAtShutdown,
-    SettingRow::Keyboard,
-    SettingRow::Language,
-    SettingRow::TimeZone,
-    SettingRow::Update,
-    SettingRow::About,
-];
+/// The four group labels, in order.
+pub const GROUPS: [&str; 4] = ["Look", "Writing", "Connections", "Device"];
 
-/// The rows this person's settings put on screen.
-pub fn rows(settings: &Settings) -> &'static [SettingRow] {
-    if settings.theme.is_automatic() {
-        &ROWS_AUTOMATIC
-    } else {
-        &ROWS_FIXED
+/// Every line of the screen, in order. With an update ready the update row
+/// sits at the very top instead of the bottom of Device (issue #28).
+pub fn items(settings: &Settings, update_ready: bool) -> Vec<SettingsItem> {
+    use SettingRow::*;
+    let mut items = Vec::new();
+    if update_ready {
+        items.push(SettingsItem::Row(Update));
     }
+    items.push(SettingsItem::Group(GROUPS[0]));
+    items.push(SettingsItem::Row(Theme));
+    if settings.theme.is_automatic() {
+        items.push(SettingsItem::Row(DayTheme));
+        items.push(SettingsItem::Row(NightTheme));
+    }
+    items.push(SettingsItem::Row(Font));
+    items.push(SettingsItem::Row(Size));
+    items.push(SettingsItem::Sample);
+
+    items.push(SettingsItem::Group(GROUPS[1]));
+    items.extend(
+        [
+            DailyGoal,
+            GoalProgress,
+            FocusMode,
+            Typewriter,
+            Spellcheck,
+            Clock,
+        ]
+        .map(SettingsItem::Row),
+    );
+
+    items.push(SettingsItem::Group(GROUPS[2]));
+    items.extend([Wifi, SyncBackends, SyncAtShutdown].map(SettingsItem::Row));
+
+    items.push(SettingsItem::Group(GROUPS[3]));
+    items.extend([Keyboard, Language, TimeZone].map(SettingsItem::Row));
+    if !update_ready {
+        items.push(SettingsItem::Row(Update));
+    }
+    items.push(SettingsItem::Row(About));
+    items
+}
+
+/// The value rows the cursor walks, in screen order.
+pub fn rows(settings: &Settings, update_ready: bool) -> Vec<SettingRow> {
+    items(settings, update_ready)
+        .into_iter()
+        .filter_map(|item| match item {
+            SettingsItem::Row(row) => Some(row),
+            _ => None,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,6 +143,25 @@ impl UpdateState {
         !self.applying && self.ready_version().is_some()
     }
 
+    /// Whether the row belongs at the top of Settings: ready to install, or
+    /// installing right now.
+    pub fn has_top_row(&self) -> bool {
+        self.applying || self.ready_version().is_some()
+    }
+
+    /// The one clear sentence at the top of Settings.
+    pub fn top_label(&self) -> String {
+        if self.applying {
+            return "Installing update… Carrel will restart.".to_owned();
+        }
+        match self.ready_version() {
+            Some(version) if !version.is_empty() => {
+                format!("Update ready ({version}) — Enter to restart and update")
+            }
+            _ => "Update ready — Enter to restart and update".to_owned(),
+        }
+    }
+
     pub fn label(&self) -> String {
         if self.applying {
             return "Installing…".to_owned();
@@ -138,17 +170,9 @@ impl UpdateState {
             "" | "none" => "Up to date".to_owned(),
             "applying" => "Installing…".to_owned(),
             other if other.starts_with("downloading ") => "Downloading update…".to_owned(),
-            other if other.starts_with("available ") => "Update available · Sync".to_owned(),
-            other if other.starts_with("error ") => "Update check failed".to_owned(),
-            other if other.starts_with("ready ") => {
-                format!("Update ready ({}) · Apply", &other[6..])
-            }
-            other => match other.strip_prefix("ready:") {
-                Some(version) if !version.is_empty() => {
-                    format!("Update ready ({version}) · Apply")
-                }
-                _ => "Update ready · Apply".to_owned(),
-            },
+            other if other.starts_with("available ") => "Waiting for a sync".to_owned(),
+            other if other.starts_with("error ") => "Could not check for updates".to_owned(),
+            _ => "Update ready".to_owned(),
         }
     }
 }
@@ -156,25 +180,43 @@ impl UpdateState {
 #[derive(Debug, Default)]
 pub struct SettingsState {
     pub selected: usize,
-    pub about: bool,
     pub update: UpdateState,
+    /// False until the daemon has answered once: the first answer may put the
+    /// update row at the top without moving the writer's cursor.
+    update_known: bool,
 }
 
 impl SettingsState {
     pub fn row(&self, settings: &Settings) -> SettingRow {
-        let rows = rows(settings);
+        let rows = rows(settings, self.update.has_top_row());
         rows[self.selected.min(rows.len() - 1)]
     }
 
     pub fn move_by(&mut self, settings: &Settings, delta: i32) {
-        self.about = false;
-        let len = rows(settings).len() as i32;
+        let len = rows(settings, self.update.has_top_row()).len() as i32;
         self.selected = ((self.selected as i32 + delta).rem_euclid(len)) as usize;
     }
 
     pub fn select(&mut self, settings: &Settings, index: usize) {
-        self.about = false;
-        self.selected = index.min(rows(settings).len() - 1);
+        let len = rows(settings, self.update.has_top_row()).len();
+        self.selected = index.min(len.saturating_sub(1));
+    }
+
+    /// Take the daemon's update status. When the top row appears or leaves
+    /// later, the cursor stays on the same setting.
+    pub fn set_update(&mut self, update: UpdateState) {
+        let first_answer = !self.update_known;
+        self.update_known = true;
+        let was_top = self.update.has_top_row();
+        let is_top = update.has_top_row();
+        self.update = update;
+        if !first_answer && was_top != is_top {
+            if is_top {
+                self.selected += 1;
+            } else {
+                self.selected = self.selected.saturating_sub(1);
+            }
+        }
     }
 
     /// Change the selected value. Returns true when something was saved.
@@ -285,7 +327,8 @@ impl SettingsState {
                 );
                 settings.time_zone != previous
             }
-            // Navigation and actions do not change a value.
+            // Enter opens the two sub-screens and applies an update. Nothing
+            // else changes on Enter: Left/Right is how a value moves.
             SettingRow::Wifi
             | SettingRow::SyncBackends
             | SettingRow::Update
@@ -298,10 +341,6 @@ impl SettingsState {
             SettingRow::Wifi => SettingsEffect::OpenWifi,
             SettingRow::SyncBackends => SettingsEffect::OpenSync,
             SettingRow::Update if self.update.ready() => SettingsEffect::ApplyUpdate,
-            SettingRow::About => {
-                self.about = !self.about;
-                SettingsEffect::None
-            }
             _ => SettingsEffect::None,
         }
     }
@@ -312,15 +351,15 @@ impl SettingsState {
             SettingRow::DayTheme => settings.day_theme.label().to_owned(),
             SettingRow::NightTheme => settings.night_theme.label().to_owned(),
             SettingRow::Font => settings.font.label().to_owned(),
-            SettingRow::Size => format!("{} px", settings.font_size),
+            SettingRow::Size => settings.font_size.to_string(),
             SettingRow::DailyGoal => format!("{} words", settings.daily_goal),
             SettingRow::GoalProgress => settings.goal_display.label().to_owned(),
             SettingRow::FocusMode => on_off(settings.focus_mode),
             SettingRow::Typewriter => on_off(settings.typewriter_mode),
             SettingRow::Spellcheck => on_off(settings.spellcheck),
             SettingRow::Clock => on_off(settings.clock),
-            SettingRow::Wifi => "Change".to_owned(),
-            SettingRow::SyncBackends => "Change".to_owned(),
+            SettingRow::Wifi => "Open".to_owned(),
+            SettingRow::SyncBackends => "Open".to_owned(),
             SettingRow::SyncAtShutdown => on_off(settings.sync_at_shutdown),
             SettingRow::Keyboard => locale::keyboard_label(&settings.keyboard).to_owned(),
             SettingRow::Language => settings.language.clone(),
@@ -332,52 +371,57 @@ impl SettingsState {
 
     /// The line under the selected row; empty for a row that needs no help.
     pub fn hint_for(&self, settings: &Settings) -> String {
-        if self.about {
-            return "Carrel is free software, GPL-3.0-or-later. No account is needed to write."
-                .to_owned();
-        }
         match self.row(settings) {
             SettingRow::Theme if settings.theme.is_automatic() => format!(
                 "{} in the day (07:00–19:00), {} at night.",
                 settings.day_theme.label(),
                 settings.night_theme.label()
             ),
-            // A fixed theme is its own explanation.
-            SettingRow::Theme => String::new(),
-            SettingRow::DayTheme => {
-                "The daytime theme while Automatic follows the clock (07:00–19:00).".to_owned()
+            SettingRow::Theme => "This paper and ink stay until you change them.".to_owned(),
+            SettingRow::DayTheme => "The theme from 07:00 while Automatic is on.".to_owned(),
+            SettingRow::NightTheme => "The theme from 19:00 while Automatic is on.".to_owned(),
+            SettingRow::Font => {
+                "Serif, sans or mono. The page and this screen change at once.".to_owned()
             }
-            SettingRow::NightTheme => {
-                "The night-time theme while Automatic follows the clock (19:00–07:00).".to_owned()
-            }
-            SettingRow::Font => "The same three fonts everywhere, for calm reading.".to_owned(),
             SettingRow::Size => "Ctrl+= and Ctrl+- change this while writing.".to_owned(),
-            SettingRow::DailyGoal => "Shown on the bottom line: words today / goal.".to_owned(),
+            SettingRow::DailyGoal => {
+                "The words you aim for today, shown at the bottom of the page.".to_owned()
+            }
             SettingRow::GoalProgress => {
-                "Hairline draws today's progress along the bottom edge, in the accent.".to_owned()
+                "Numbers on the bottom line, or a thin line along the bottom edge.".to_owned()
             }
             SettingRow::FocusMode => {
-                "Everything but the paragraph with the cursor fades to 35 %. F2 toggles it."
-                    .to_owned()
+                "Only the paragraph with the cursor stays dark. F2 switches it.".to_owned()
             }
             SettingRow::Typewriter => {
-                "Backspace and Delete do nothing, so the draft only moves forward.".to_owned()
+                "Backspace and Delete do nothing. Keep moving forward.".to_owned()
             }
-            SettingRow::Spellcheck => "Off by default; no squiggles in the first draft.".to_owned(),
-            SettingRow::Clock => "Show the time on the bottom line.".to_owned(),
-            SettingRow::Wifi => "The radio is on only while the Wi-Fi screen is open.".to_owned(),
-            SettingRow::SyncBackends => "Nostos, a self-hosted server or Google Drive.".to_owned(),
+            SettingRow::Spellcheck => {
+                "Marks words to check later; no squiggles in the first draft.".to_owned()
+            }
+            SettingRow::Clock => "The time at the end of the bottom line.".to_owned(),
+            SettingRow::Wifi => {
+                "Choose a network. The radio is on only while you are here.".to_owned()
+            }
+            SettingRow::SyncBackends => "Nostos, your own server or Google Drive.".to_owned(),
             SettingRow::SyncAtShutdown => {
-                "Sync once more before powering off, if a server is paired.".to_owned()
+                "One last sync before Carrel powers off, when a server is set up.".to_owned()
             }
-            SettingRow::Keyboard => settings.keyboard.clone(),
-            SettingRow::Language => settings.language.clone(),
-            SettingRow::TimeZone => settings.time_zone.clone(),
+            SettingRow::Keyboard => {
+                "The keys you type on, including an external keyboard.".to_owned()
+            }
+            SettingRow::Language => "The language of the screens.".to_owned(),
+            SettingRow::TimeZone => {
+                "Used for the Automatic day and night and for the clock.".to_owned()
+            }
+            SettingRow::Update if self.update.applying => {
+                "Carrel is installing the update and will restart.".to_owned()
+            }
             SettingRow::Update if self.update.ready() => {
-                "Press Enter to install the update.".to_owned()
+                "Carrel restarts and opens the new version.".to_owned()
             }
-            SettingRow::Update => "Updates arrive only during a sync session.".to_owned(),
-            SettingRow::About => "Carrel 0.1.0, a writing device.".to_owned(),
+            SettingRow::Update => "Carrel looks for updates when it syncs.".to_owned(),
+            SettingRow::About => "Free software. No account is needed to write.".to_owned(),
         }
     }
 }
@@ -397,12 +441,23 @@ fn cycle_theme(list: &[Theme], current: Theme, delta: i32) -> Theme {
     list[((index + delta).rem_euclid(len)) as usize]
 }
 
-const HINTS: [(&str, &str); 4] = [
-    ("↑ ↓", "Move"),
-    ("← →", "Change"),
-    ("Enter", "Open"),
-    ("Esc", "Back"),
-];
+/// The keys that work on the selected row: a value moves with Left/Right, a
+/// screen opens with Enter, and Esc always goes back.
+fn hints_for(state: &SettingsState, settings: &Settings) -> Vec<(&'static str, &'static str)> {
+    match state.row(settings) {
+        SettingRow::Wifi | SettingRow::SyncBackends => {
+            vec![("↑ ↓", "Move"), ("Enter", "Open"), ("Esc", "Back")]
+        }
+        SettingRow::Update if state.update.ready() => {
+            vec![("↑ ↓", "Move"), ("Enter", "Update"), ("Esc", "Back")]
+        }
+        _ => vec![("↑ ↓", "Move"), ("← →", "Change"), ("Esc", "Back")],
+    }
+}
+
+/// The line under the Look group: this month's answer in the writer's own
+/// font and size, so a change is seen without leaving Settings.
+const SAMPLE: &str = "The quiet morning begins with a single sentence.";
 
 pub struct SettingsPage {
     pub widget: gtk::Overlay,
@@ -410,7 +465,12 @@ pub struct SettingsPage {
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
     state: RefCell<SettingsState>,
+    /// List row index → the value row it selects. Group labels and the sample
+    /// have no entry.
+    index_map: RefCell<Vec<Option<usize>>>,
     status_generation: Cell<u64>,
+    /// The screenshot hook's row, applied once the update status is known.
+    initial_select: Cell<Option<usize>>,
     settings: Rc<RefCell<Settings>>,
     root: PathBuf,
     client: Client,
@@ -427,28 +487,27 @@ impl SettingsPage {
         on_change: Rc<dyn Fn()>,
     ) -> Rc<Self> {
         let screen = ui::Screen::new("Settings");
-        screen.set_hints(&HINTS);
+        screen.set_hints(&[("↑ ↓", "Move"), ("← →", "Change"), ("Esc", "Back")]);
         let list = ui::list();
         let scroller = ui::scroller(&list);
         screen.content.append(&ui::fade_top(&scroller));
 
         // Screenshot hook (dev/screenshot.sh): start with a later row selected,
-        // as if the writer had pressed Down that many times.
-        let mut initial = SettingsState::default();
-        if let Some(index) = std::env::var("CARREL_SETTINGS_SELECT")
+        // as if the writer had pressed Down that many times. It lands after
+        // the update status is loaded, so the index means a row on screen.
+        let initial_select = std::env::var("CARREL_SETTINGS_SELECT")
             .ok()
-            .and_then(|value| value.parse::<usize>().ok())
-        {
-            initial.select(&settings.borrow(), index);
-        }
+            .and_then(|value| value.parse::<usize>().ok());
 
         let page = Rc::new(Self {
             widget: screen.root.clone(),
             screen,
             list,
             scroller,
-            state: RefCell::new(initial),
+            state: RefCell::new(SettingsState::default()),
+            index_map: RefCell::new(Vec::new()),
             status_generation: Cell::new(0),
+            initial_select: Cell::new(initial_select),
             settings,
             root,
             client,
@@ -463,13 +522,18 @@ impl SettingsPage {
         let weak = Rc::downgrade(self);
         self.list.connect_row_activated(move |_, row| {
             if let Some(page) = weak.upgrade() {
-                {
+                let index = page
+                    .index_map
+                    .borrow()
+                    .get(row.index().max(0) as usize)
+                    .copied()
+                    .flatten();
+                if let Some(index) = index {
                     let settings = page.settings.borrow();
-                    page.state
-                        .borrow_mut()
-                        .select(&settings, row.index().max(0) as usize);
+                    page.state.borrow_mut().select(&settings, index);
+                    drop(settings);
+                    page.activate();
                 }
-                page.activate();
             }
         });
 
@@ -489,8 +553,13 @@ impl SettingsPage {
             |daemon| daemon.update_status(),
             move |result| {
                 if let Some(page) = weak.upgrade() {
-                    page.state.borrow_mut().update =
-                        UpdateState::from_wire(result.unwrap_or_default());
+                    page.state
+                        .borrow_mut()
+                        .set_update(UpdateState::from_wire(result.unwrap_or_default()));
+                    if let Some(index) = page.initial_select.take() {
+                        let settings = page.settings.borrow();
+                        page.state.borrow_mut().select(&settings, index);
+                    }
                     page.refresh();
                 }
             },
@@ -589,26 +658,7 @@ impl SettingsPage {
             self.state.borrow_mut().activate(&settings)
         };
         match effect {
-            SettingsEffect::None => {
-                // Enter on a value row behaves like the right arrow.
-                let row = {
-                    let settings = self.settings.borrow();
-                    self.state.borrow().row(&settings)
-                };
-                if row != SettingRow::About {
-                    let changed = {
-                        let mut settings = self.settings.borrow_mut();
-                        self.state.borrow_mut().change(&mut settings, 1)
-                    };
-                    if changed {
-                        if let Err(error) = self.settings.borrow().save(&self.root) {
-                            eprintln!("carrel: could not save settings: {error}");
-                        }
-                        (self.on_change)();
-                    }
-                }
-                self.refresh();
-            }
+            SettingsEffect::None => self.refresh(),
             SettingsEffect::OpenWifi => self.nav.show("wifi"),
             SettingsEffect::OpenSync => self.nav.show("sync"),
             SettingsEffect::ApplyUpdate => self.apply_update(),
@@ -647,7 +697,6 @@ impl SettingsPage {
     }
 
     fn flash_error(self: &Rc<Self>, message: &str) {
-        self.state.borrow_mut().about = false;
         let generation = self.status_generation.get().wrapping_add(1);
         self.status_generation.set(generation);
         self.screen.set_status_error(message);
@@ -665,39 +714,140 @@ impl SettingsPage {
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
-        let settings = self.settings.borrow();
-        let state = self.state.borrow();
-        for (index, row) in rows(&settings).iter().enumerate() {
-            // The hint belongs to the selected row only, and sits under it
-            // aligned with the row text.
-            let note = if index == state.selected {
-                state.hint_for(&settings)
-            } else {
-                String::new()
-            };
-            let item = match row {
-                SettingRow::Theme | SettingRow::DayTheme | SettingRow::NightTheme => {
-                    theme_value_row(*row, &settings, &note)
-                }
-                SettingRow::About => {
-                    ui::marked_value_row(setting_name(*row), &state.value(*row, &settings), &note)
-                }
-                _ => ui::value_row(setting_name(*row), &state.value(*row, &settings), &note),
-            };
-            // The day and night pickers belong to Automatic: indent them so
-            // they read as part of the Theme row.
-            if matches!(*row, SettingRow::DayTheme | SettingRow::NightTheme) {
-                if let Some(child) = item.child() {
-                    child.set_margin_start(16);
+        let mut index_map = Vec::new();
+        let mut select_index = 0;
+        {
+            let settings = self.settings.borrow();
+            let mut state = self.state.borrow_mut();
+            // A row that disappeared (the day and night slots after leaving
+            // Automatic) must not leave the cursor past the last one.
+            let count = rows(&settings, state.update.has_top_row()).len();
+            state.selected = state.selected.min(count.saturating_sub(1));
+            let top_update = state.update.has_top_row();
+            let mut row_index = 0;
+            for (list_index, item) in items(&settings, top_update).iter().enumerate() {
+                match item {
+                    SettingsItem::Group(name) => {
+                        self.list.append(&group_row(name));
+                        index_map.push(None);
+                    }
+                    SettingsItem::Sample => {
+                        self.list.append(&sample_row());
+                        index_map.push(None);
+                    }
+                    SettingsItem::Row(row) => {
+                        let selected = row_index == state.selected;
+                        if selected {
+                            select_index = list_index;
+                        }
+                        // The hint belongs to the selected row only, and sits
+                        // under it aligned with the row text.
+                        let note = if selected {
+                            state.hint_for(&settings)
+                        } else {
+                            String::new()
+                        };
+                        let widget = match row {
+                            SettingRow::Theme | SettingRow::DayTheme | SettingRow::NightTheme => {
+                                theme_value_row(*row, &settings, &note)
+                            }
+                            // An update ready is one clear sentence at the top,
+                            // not a value on the right.
+                            SettingRow::Update if top_update => {
+                                action_row(&state.update.top_label(), &note)
+                            }
+                            SettingRow::About => ui::marked_value_row(
+                                setting_name(*row),
+                                &state.value(*row, &settings),
+                                &note,
+                            ),
+                            _ => ui::value_row(
+                                setting_name(*row),
+                                &state.value(*row, &settings),
+                                &note,
+                            ),
+                        };
+                        // The day and night pickers belong to Automatic:
+                        // indent them so they read as part of the Theme row.
+                        if matches!(row, SettingRow::DayTheme | SettingRow::NightTheme) {
+                            if let Some(child) = widget.child() {
+                                child.set_margin_start(16);
+                            }
+                        }
+                        self.list.append(&widget);
+                        index_map.push(Some(row_index));
+                        row_index += 1;
+                    }
                 }
             }
-            self.list.append(&item);
         }
-        ui::select(&self.list, state.selected);
-        if let Some(row) = self.list.row_at_index(state.selected as i32) {
+        {
+            let settings = self.settings.borrow();
+            let state = self.state.borrow();
+            self.screen.set_hints(&hints_for(&state, &settings));
+        }
+        *self.index_map.borrow_mut() = index_map;
+        ui::select(&self.list, select_index);
+        if let Some(row) = self.list.row_at_index(select_index as i32) {
             ui::scroll_to_row(&self.scroller, &self.list, &row);
         }
     }
+}
+
+/// The ready-update row: one sentence, in the same row shape as a setting,
+/// with the selected row's hint under it.
+fn action_row(text: &str, note: &str) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.add_css_class("ui-row");
+    row.add_css_class("setting-row");
+    let label = gtk::Label::new(Some(text));
+    label.set_xalign(0.0);
+    label.set_wrap(true);
+    label.add_css_class("setting-label");
+    if note.is_empty() {
+        row.set_child(Some(&label));
+        return row;
+    }
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    column.append(&label);
+    let note = gtk::Label::new(Some(note));
+    note.set_xalign(0.0);
+    note.set_wrap(true);
+    note.add_css_class("row-note");
+    column.append(&note);
+    row.set_child(Some(&column));
+    row
+}
+
+/// A small, quiet group label. It takes no cursor: Up and Down step over it.
+fn group_row(name: &str) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_selectable(false);
+    row.set_activatable(false);
+    let label = gtk::Label::new(Some(name));
+    label.set_xalign(0.0);
+    label.add_css_class("section-title");
+    label.set_margin_start(14);
+    label.set_margin_top(12);
+    label.set_margin_bottom(2);
+    row.set_child(Some(&label));
+    row
+}
+
+/// The sample line under Look: body text at the current font and size, in the
+/// page's own colour.
+fn sample_row() -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_selectable(false);
+    row.set_activatable(false);
+    let label = gtk::Label::new(Some(SAMPLE));
+    label.set_xalign(0.0);
+    label.add_css_class("setting-label");
+    label.set_margin_start(14);
+    label.set_margin_top(6);
+    label.set_margin_bottom(4);
+    row.set_child(Some(&label));
+    row
 }
 
 /// A theme row: its name, a swatch of its paper, ink and accent, then the
@@ -734,7 +884,7 @@ fn setting_name(row: SettingRow) -> &'static str {
         SettingRow::Spellcheck => "Spellcheck",
         SettingRow::Clock => "Clock",
         SettingRow::Wifi => "Wi-Fi networks",
-        SettingRow::SyncBackends => "Sync backends",
+        SettingRow::SyncBackends => "Sync",
         SettingRow::SyncAtShutdown => "Sync at shutdown",
         SettingRow::Keyboard => "Keyboard layout",
         SettingRow::Language => "Language",
@@ -750,7 +900,7 @@ mod tests {
     use crate::settings::{GoalDisplay, Theme, ThemeChoice};
 
     fn select(state: &mut SettingsState, settings: &Settings, row: SettingRow) {
-        let index = rows(settings)
+        let index = rows(settings, state.update.has_top_row())
             .iter()
             .position(|item| *item == row)
             .expect("row is on screen");
@@ -758,13 +908,14 @@ mod tests {
     }
 
     #[test]
-    fn every_setting_from_the_spec_has_one_row() {
-        let automatic: Vec<&str> = rows(&Settings::default())
+    fn every_setting_from_the_spec_has_one_row_in_its_group() {
+        let settings = Settings::default();
+        let names: Vec<&str> = rows(&settings, false)
             .iter()
             .map(|row| setting_name(*row))
             .collect();
         assert_eq!(
-            automatic,
+            names,
             vec![
                 "Theme",
                 "Day theme",
@@ -778,7 +929,7 @@ mod tests {
                 "Spellcheck",
                 "Clock",
                 "Wi-Fi networks",
-                "Sync backends",
+                "Sync",
                 "Sync at shutdown",
                 "Keyboard layout",
                 "Language",
@@ -793,10 +944,57 @@ mod tests {
             theme: ThemeChoice::Sepia,
             ..Settings::default()
         };
-        let names: Vec<&str> = rows(&fixed).iter().map(|row| setting_name(*row)).collect();
+        let names: Vec<&str> = rows(&fixed, false)
+            .iter()
+            .map(|row| setting_name(*row))
+            .collect();
         assert_eq!(names.len(), 17);
         assert!(!names.contains(&"Day theme"));
         assert!(!names.contains(&"Night theme"));
+    }
+
+    #[test]
+    fn the_groups_come_in_the_order_the_screen_shows_them() {
+        let settings = Settings::default();
+        let labels: Vec<&str> = items(&settings, false)
+            .into_iter()
+            .filter_map(|item| match item {
+                SettingsItem::Group(name) => Some(name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(labels, GROUPS);
+
+        // Look ends with the sample, so a font or size change is seen at once.
+        let items = items(&settings, false);
+        let sample = items
+            .iter()
+            .position(|item| *item == SettingsItem::Sample)
+            .expect("the sample line is on the screen");
+        assert_eq!(items[sample - 1], SettingsItem::Row(SettingRow::Size));
+        assert_eq!(items[sample + 1], SettingsItem::Group("Writing"));
+    }
+
+    #[test]
+    fn moving_skips_group_labels_and_the_sample() {
+        let settings = Settings::default();
+        let mut state = SettingsState::default();
+        let count = rows(&settings, false).len();
+        let mut seen = Vec::new();
+        for _ in 0..count {
+            seen.push(state.row(&settings));
+            state.move_by(&settings, 1);
+        }
+        assert_eq!(seen.len(), count);
+        assert_eq!(seen[0], SettingRow::Theme);
+        assert_eq!(seen[count - 1], SettingRow::About);
+        assert_eq!(state.row(&settings), SettingRow::Theme);
+        // The cursor only ever lands on value rows, never a label or sample.
+        for index in 0..count {
+            state.select(&settings, index);
+            let selected = state.row(&settings);
+            assert!(rows(&settings, false).contains(&selected));
+        }
     }
 
     #[test]
@@ -807,13 +1005,35 @@ mod tests {
         assert_eq!(state.value(SettingRow::DayTheme, &settings), "Light");
         assert_eq!(state.value(SettingRow::NightTheme, &settings), "Dark");
         assert_eq!(state.value(SettingRow::Font, &settings), "Serif");
-        assert_eq!(state.value(SettingRow::Size, &settings), "19 px");
+        assert_eq!(state.value(SettingRow::Size, &settings), "19");
         assert_eq!(state.value(SettingRow::DailyGoal, &settings), "500 words");
         assert_eq!(state.value(SettingRow::GoalProgress, &settings), "Numbers");
         assert_eq!(state.value(SettingRow::FocusMode, &settings), "Off");
         assert_eq!(state.value(SettingRow::Typewriter, &settings), "Off");
         assert_eq!(state.value(SettingRow::Keyboard, &settings), "US");
+        assert_eq!(state.value(SettingRow::Wifi, &settings), "Open");
+        assert_eq!(state.value(SettingRow::SyncBackends, &settings), "Open");
         assert_eq!(state.value(SettingRow::Update, &settings), "Up to date");
+    }
+
+    #[test]
+    fn every_row_has_one_plain_hint_and_the_typewriter_one_is_the_issues() {
+        let settings = Settings::default();
+        let mut state = SettingsState::default();
+        for index in 0..rows(&settings, false).len() {
+            state.select(&settings, index);
+            let hint = state.hint_for(&settings);
+            assert!(!hint.is_empty(), "{:?} has no hint", state.row(&settings));
+            assert!(
+                !hint.contains("GPL") && !hint.contains("px"),
+                "the hint should use plain words: {hint:?}"
+            );
+        }
+        select(&mut state, &settings, SettingRow::Typewriter);
+        assert_eq!(
+            state.hint_for(&settings),
+            "Backspace and Delete do nothing. Keep moving forward."
+        );
     }
 
     #[test]
@@ -831,23 +1051,19 @@ mod tests {
             "Sepia in the day (07:00–19:00), Writer's Study at night."
         );
 
-        // A fixed theme needs no explanation.
+        // A fixed theme is its own explanation.
         settings.theme = ThemeChoice::Mist;
-        assert_eq!(state.hint_for(&settings), "");
-
-        // The About sentence is never stale on another row.
-        let mut state = SettingsState::default();
-        state.select(&settings, 0);
-        state.about = true;
-        state.move_by(&settings, 1);
-        assert!(!state.about);
+        assert_eq!(
+            state.hint_for(&settings),
+            "This paper and ink stay until you change them."
+        );
     }
 
     #[test]
     fn the_day_and_night_rows_appear_only_while_automatic_is_chosen() {
         let mut settings = Settings::default();
         let mut state = SettingsState::default();
-        assert_eq!(rows(&settings).len(), 19);
+        assert_eq!(rows(&settings, false).len(), 19);
         state.move_by(&settings, 1);
         assert_eq!(state.row(&settings), SettingRow::DayTheme);
         state.move_by(&settings, 1);
@@ -858,7 +1074,7 @@ mod tests {
         select(&mut state, &settings, SettingRow::Theme);
         state.change(&mut settings, 1);
         assert_eq!(settings.theme, ThemeChoice::Light);
-        assert_eq!(rows(&settings).len(), 17);
+        assert_eq!(rows(&settings, false).len(), 17);
         state.move_by(&settings, 1);
         assert_eq!(state.row(&settings), SettingRow::Font);
     }
@@ -967,39 +1183,109 @@ mod tests {
     }
 
     #[test]
-    fn the_update_row_reads_the_daemons_status_string() {
-        use crate::daemon::{DaemonClient, FakeDaemon};
-        let fake = FakeDaemon::new();
+    fn the_update_row_moves_to_the_top_only_when_one_is_ready() {
         let settings = Settings::default();
-        let mut state = SettingsState {
-            update: UpdateState::from_wire(fake.update_status().unwrap()),
-            ..SettingsState::default()
-        };
-        assert!(state.update.ready());
-        select(&mut state, &settings, SettingRow::Update);
+        let mut state = SettingsState::default();
+
+        // Up to date: the row is the last of Device.
+        state.set_update(UpdateState::from_wire("none"));
+        let list = rows(&settings, state.update.has_top_row());
+        assert_eq!(list.first(), Some(&SettingRow::Theme));
+        assert_eq!(list.last(), Some(&SettingRow::About));
+        assert_eq!(state.row(&settings), SettingRow::Theme);
+        assert_eq!(state.value(SettingRow::Update, &settings), "Up to date");
+
+        // Ready: one clear row at the top, and no second Update at the bottom.
+        state.set_update(UpdateState::from_wire("ready:0.2.0"));
+        let list = rows(&settings, state.update.has_top_row());
+        assert_eq!(list.first(), Some(&SettingRow::Update));
         assert_eq!(
-            state.value(SettingRow::Update, &settings),
-            "Update ready (0.2.0) · Apply"
+            list.iter()
+                .filter(|row| **row == SettingRow::Update)
+                .count(),
+            1
         );
-        fake.set_update("none");
-        state.update = UpdateState::from_wire(fake.update_status().unwrap());
-        assert!(!state.update.ready());
+        assert!(state.update.has_top_row());
+        // A ready update that arrives later leaves the cursor where it was;
+        // on a fresh screen the first answer lands on the update row instead.
+        assert_eq!(state.row(&settings), SettingRow::Theme);
+        state.select(&settings, 0);
+        assert_eq!(state.row(&settings), SettingRow::Update);
+        assert_eq!(
+            state.update.top_label(),
+            "Update ready (0.2.0) — Enter to restart and update"
+        );
+        assert_eq!(state.activate(&settings), SettingsEffect::ApplyUpdate);
     }
 
     #[test]
-    fn navigation_rows_open_screens_and_update_applies_only_when_ready() {
+    fn the_update_row_stays_at_the_bottom_while_nothing_is_ready() {
+        let settings = Settings::default();
+        let mut state = SettingsState::default();
+        state.set_update(UpdateState::from_wire("none"));
+        select(&mut state, &settings, SettingRow::Update);
+        assert_eq!(state.activate(&settings), SettingsEffect::None);
+        assert_eq!(state.value(SettingRow::Update, &settings), "Up to date");
+        state.set_update(UpdateState::from_wire("error network"));
+        assert_eq!(
+            state.value(SettingRow::Update, &settings),
+            "Could not check for updates"
+        );
+    }
+
+    #[test]
+    fn navigation_rows_open_screens_and_values_do_not_change_on_enter() {
         let settings = Settings::default();
         let mut state = SettingsState::default();
         select(&mut state, &settings, SettingRow::Wifi);
         assert_eq!(state.activate(&settings), SettingsEffect::OpenWifi);
         select(&mut state, &settings, SettingRow::SyncBackends);
         assert_eq!(state.activate(&settings), SettingsEffect::OpenSync);
-        select(&mut state, &settings, SettingRow::Update);
-        state.update = UpdateState::from_wire("none");
+
+        // Enter on a value row is not a change; Left/Right is.
+        select(&mut state, &settings, SettingRow::Font);
         assert_eq!(state.activate(&settings), SettingsEffect::None);
-        state.update = UpdateState::from_wire("ready:1.0");
-        assert!(state.update.ready());
-        assert_eq!(state.update.label(), "Update ready (1.0) · Apply");
-        assert_eq!(state.activate(&settings), SettingsEffect::ApplyUpdate);
+        assert_eq!(settings.font, FontChoice::Serif);
+        select(&mut state, &settings, SettingRow::Theme);
+        assert_eq!(state.activate(&settings), SettingsEffect::None);
+        assert_eq!(settings.theme, ThemeChoice::Automatic);
+    }
+
+    #[test]
+    fn the_hint_bar_names_enter_only_where_it_opens_something() {
+        let settings = Settings::default();
+        let mut state = SettingsState::default();
+        state.set_update(UpdateState::from_wire("none"));
+        for index in 0..rows(&settings, false).len() {
+            state.select(&settings, index);
+            let row = state.row(&settings);
+            let opens = matches!(row, SettingRow::Wifi | SettingRow::SyncBackends);
+            let hints = hints_for(&state, &settings);
+            assert_eq!(
+                hints.iter().any(|(key, _)| *key == "Enter"),
+                opens,
+                "{row:?}: the hint bar should name Enter only where it opens a screen"
+            );
+        }
+
+        state.set_update(UpdateState::from_wire("ready:0.2.0"));
+        state.select(&settings, 0);
+        assert!(hints_for(&state, &settings)
+            .iter()
+            .any(|(key, word)| *key == "Enter" && *word == "Update"));
+    }
+
+    #[test]
+    fn a_late_update_keeps_the_cursor_on_the_same_setting() {
+        let settings = Settings::default();
+        let mut state = SettingsState::default();
+        state.set_update(UpdateState::from_wire("none"));
+        select(&mut state, &settings, SettingRow::Font);
+        assert_eq!(state.row(&settings), SettingRow::Font);
+
+        state.set_update(UpdateState::from_wire("ready:0.2.0"));
+        assert_eq!(state.row(&settings), SettingRow::Font);
+        state.set_update(UpdateState::from_wire("none"));
+        assert_eq!(state.row(&settings), SettingRow::Font);
     }
 }
