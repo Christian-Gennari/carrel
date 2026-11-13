@@ -5,6 +5,7 @@
 //! the path the daemon returns.
 
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -14,7 +15,7 @@ use gtk::{gdk, glib};
 use crate::daemon::{Client, Drive};
 use crate::editor::EditorPage;
 use crate::nav::Navigator;
-use crate::store::Store;
+use crate::store::{display_path, Store};
 use crate::ui;
 
 const HINTS: [(&str, &str); 3] = [("Enter", "Next"), ("↑ ↓", "Move"), ("Esc", "Back")];
@@ -152,7 +153,9 @@ impl ExportState {
         match self.step {
             ExportStep::What => vec![
                 match &self.current_file {
-                    Some(path) => format!("Current file · {path}"),
+                    Some(path) => {
+                        format!("Current file · {}", display_path(Path::new(path)))
+                    }
                     None => "Current file · no file open".to_owned(),
                 },
                 "A folder…".to_owned(),
@@ -413,6 +416,7 @@ pub struct ExportPage {
     screen: Rc<ui::Screen>,
     list: gtk::ListBox,
     list_scroller: gtk::ScrolledWindow,
+    list_fade: gtk::Overlay,
     note: gtk::Label,
     done_heading: gtk::Label,
     done_detail: gtk::Label,
@@ -435,7 +439,8 @@ impl ExportPage {
 
         let list = ui::list();
         let list_scroller = ui::scroller(&list);
-        screen.content.append(&list_scroller);
+        let list_fade = ui::fade_top(&list_scroller);
+        screen.content.append(&list_fade);
 
         let note = gtk::Label::new(None);
         note.set_xalign(0.0);
@@ -459,6 +464,7 @@ impl ExportPage {
             screen,
             list,
             list_scroller,
+            list_fade,
             note,
             done_heading,
             done_detail,
@@ -680,6 +686,13 @@ impl ExportPage {
                 state.outcome_detail(),
             )
         };
+        {
+            let state = self.state.borrow();
+            let importing = state.what == Some(What::Import)
+                || matches!(state.outcome.as_ref(), Some(ExportOutcome::Imported { .. }));
+            self.screen
+                .set_title(if importing { "Import" } else { "Export" });
+        }
         self.screen.set_status(self.state.borrow().step_title());
         for (index, row) in rows.iter().enumerate() {
             let element = gtk::ListBoxRow::new();
@@ -698,6 +711,7 @@ impl ExportPage {
         }
         self.list.set_visible(!rows.is_empty());
         self.list_scroller.set_visible(!rows.is_empty());
+        self.list_fade.set_visible(!rows.is_empty());
         ui::select(&self.list, selected);
         if let Some(row) = self.list.row_at_index(selected as i32) {
             ui::scroll_to_row(&self.list_scroller, &self.list, &row);
