@@ -195,6 +195,66 @@ shoot_all() {
     CARREL_SHOT_KEYS="Down,Down,F2" shoot files-rename-$theme_a "$theme_a" true true files ""
     CARREL_SHOT_KEYS="Down,Down,Delete" shoot files-delete-$theme_a "$theme_a" true true files ""
 
+    # --- UI round 6 (Files, issue #27) -------------------------------------
+    # Type-to-search, the Recent group, a marked conflict copy with its
+    # resolution card, and the move list. Light (theme_a) and dark (theme_b)
+    # for the six review states, then every theme for the new Conflict tag.
+    mkdir -p "$root/Letters"
+    cat > "$root/Letters/Letters.md" <<'EOF'
+# Letters
+
+The reply took a week to arrive.
+EOF
+    cat > "$root/Novel/Chapter two.md" <<'EOF'
+# Chapter two
+
+The platform emptied in the rain.
+EOF
+    conflict="Notes (conflict 2026-11-13 0912 from Studio).md"
+    cat > "$root/$conflict" <<'EOF'
+# Notes
+
+- buy ink
+- call the studio back
+EOF
+    python3 - "$root" <<'PY'
+import json, sys
+path = f"{sys.argv[1]}/.carrel/state.json"
+try:
+    with open(path, encoding="utf-8") as handle:
+        state = json.load(handle)
+except (OSError, ValueError):
+    state = {}
+state["last_file"] = "The quiet morning.md"
+state["recent"] = [
+    "The quiet morning.md",
+    "Novel/Chapter one.md",
+    "Notes.md",
+    "Letters/Letters.md",
+    "Novel/Chapter two.md",
+]
+with open(path, "w", encoding="utf-8") as handle:
+    json.dump(state, handle)
+PY
+
+    shoot files-recent-$theme_a "$theme_a" true true files ""
+    shoot files-recent-$theme_b "$theme_b" true true files ""
+    CARREL_SHOT_KEYS="c,h,a,p,t,e,r" shoot files-search-$theme_a "$theme_a" true true files ""
+    CARREL_SHOT_KEYS="c,h,a,p,t,e,r" shoot files-search-$theme_b "$theme_b" true true files ""
+    CARREL_SHOT_KEYS="z,z,z,q,x" shoot files-search-none-$theme_a "$theme_a" true true files ""
+    CARREL_SHOT_KEYS="z,z,z,q,x" shoot files-search-none-$theme_b "$theme_b" true true files ""
+    CARREL_SHOT_KEYS="c,o,n,f,l,i,c,t" shoot files-conflict-$theme_a "$theme_a" true true files ""
+    CARREL_SHOT_KEYS="c,o,n,f,l,i,c,t" shoot files-conflict-$theme_b "$theme_b" true true files ""
+    CARREL_SHOT_KEYS="c,o,n,f,l,i,c,t,Return" shoot files-conflict-dialog-$theme_a "$theme_a" true true files ""
+    CARREL_SHOT_KEYS="c,o,n,f,l,i,c,t,Return" shoot files-conflict-dialog-$theme_b "$theme_b" true true files ""
+    CARREL_SHOT_KEYS="shift+m" shoot files-move-$theme_a "$theme_a" true true files ""
+    CARREL_SHOT_KEYS="shift+m" shoot files-move-$theme_b "$theme_b" true true files ""
+    for slug in light sepia mist study dark high-contrast; do
+        CARREL_SHOT_KEYS="c,o,n,f,l,i,c,t" shoot files-theme-$slug "$slug" true true files ""
+    done
+    rm -f "$root/$conflict"
+    # --- end UI round 6 (Files) --------------------------------------------
+
     # History: the list with its preview, another version previewed, and the
     # restore confirmation.
     shoot history-list-$theme_a "$theme_a" true true history ""
