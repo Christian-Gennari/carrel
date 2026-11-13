@@ -355,8 +355,7 @@ impl CommandPalette {
         message.add_css_class("command-message");
         message.set_visible(false);
 
-        let hint = ui::hint_bar(&PALETTE_HINTS);
-        hint.add_css_class("card-hint-bar");
+        let hint = ui::card_hint_bar(&PALETTE_HINTS);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.add_css_class("command-palette");
@@ -808,8 +807,7 @@ impl KeySheet {
         columns.attach(&group(&GROUPS[2]), 0, 1, 1, 1);
         columns.attach(&group(&GROUPS[3]), 1, 1, 1, 1);
 
-        let hint = ui::hint_bar(&[("Esc", "Close")]);
-        hint.add_css_class("card-hint-bar");
+        let hint = ui::card_hint_bar(&[("Esc", "Close")]);
         hint.set_margin_top(18);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);

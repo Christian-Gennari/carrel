@@ -472,7 +472,7 @@ scrollbar {{
 }}
 /* The footer of every floating card: palette, Quotes, key sheet. One rule,
    one place, so the cards end the same way. */
-.card-hint-bar {{
+.hint-bar.card-hint-bar {{
     padding: 9px 16px 10px 16px;
     border-top: 1px solid {border};
 }}
@@ -564,9 +564,9 @@ scrollbar {{
 button:disabled, button:disabled label {{
     color: {muted};
 }}
-.file-row:hover, .setting-row:hover, .quote-row:hover, .ui-row:hover {{
-    background-color: {hover};
-}}
+/* No hover tint on rows: Carrel is driven by keys, and a pointer resting on
+   the screen (a touchpad, a VM's mouse) would light a second row beside the
+   selected one. A click still selects. */
 .file-row:selected, .setting-row:selected, .quote-row:selected, .ui-row:selected {{
     background-color: {selection};
     color: {selected_text};
