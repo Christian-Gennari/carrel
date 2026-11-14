@@ -70,7 +70,7 @@ BASE_CMDLINE = (
     "console=tty0 console=ttyS0,115200 systemd.getty_auto=no audit=0 "
     "ro rootfstype=erofs"
 )
-VERSION = os.environ.get("CARREL_VERSION", "0.2.1")
+VERSION = os.environ.get("CARREL_VERSION", "0.2.2")
 UPDATE_VERSION = os.environ.get("CARREL_UPDATE_VERSION", "0.3.0")
 
 SYSTEMD_REPART = "/usr/bin/systemd-repart"
@@ -290,15 +290,30 @@ def entry_conf(
     sort_key: str, extra: str = "",
 ) -> str:
     """A Boot Loader Specification Type #1 entry for systemd-boot."""
+    initrd, modules = initrd_paths(version, kver)
     return (
         f"title {title}\n"
         f"version {version}\n"
         f"sort-key {sort_key}\n"
         f"linux /carrel/{kver}/vmlinuz\n"
-        "initrd /carrel/initrd\n"
-        f"initrd /carrel/{kver}/kernel-modules.initrd\n"
+        f"initrd {initrd}\n"
+        f"initrd {modules}\n"
         f"options {cmdline(slot, roothash, extra)}\n"
     )
+
+
+# Releases up to 0.2.2 must use the shared /carrel/initrd: a 0.1.0/0.2.0
+# device's update code installs only the root, verity, signature and entry, so
+# it never receives /carrel/<kernel-version>/initrd.  0.3.0 and later install
+# the initrd in the kernel archive (kernel.transfer) and name the per-kernel
+# copy, which leaves the previous slot's initrd untouched.
+LEGACY_INITRD_VERSIONS = ("0.1.0", "0.2.0", "0.2.1", "0.2.2")
+
+
+def initrd_paths(version: str, kver: str) -> tuple[str, str]:
+    if version in LEGACY_INITRD_VERSIONS:
+        return "/carrel/initrd", f"/carrel/{kver}/kernel-modules.initrd"
+    return f"/carrel/{kver}/initrd", f"/carrel/{kver}/kernel-modules.initrd"
 
 
 def cmdline(slot: str, roothash: str, extra: str = "") -> str:
@@ -311,7 +326,9 @@ def cmdline(slot: str, roothash: str, extra: str = "") -> str:
     return f"{line} {extra}".strip()
 
 
-def grub_cfg(kver: str) -> str:
+def grub_cfg(kver: str, version: str) -> str:
+    initrd, modules = initrd_paths(version, kver)
+
     def entry(ident: str, title: str, slot: str, extra: str = "") -> str:
         cmd = (
             f"roothash=${{carrel_{slot}_roothash}} {BASE_CMDLINE} "
@@ -322,7 +339,7 @@ def grub_cfg(kver: str) -> str:
         return (
             f'menuentry "{title}" --id {ident} {{\n'
             f"    linux /carrel/{kver}/vmlinuz {cmd}\n"
-            f"    initrd /carrel/initrd /carrel/{kver}/kernel-modules.initrd\n"
+            f"    initrd {initrd} {modules}\n"
             "}\n"
         )
 
@@ -458,6 +475,14 @@ def main() -> int:
     with tempfile.TemporaryDirectory(dir=out) as tmp:
         work = Path(tmp)
 
+        # Keep a per-kernel copy of the shared initrd.  Releases from 0.3.0
+        # name it in their entries and install it with the kernel transfer;
+        # the copy in the image lets the offline 0.3.0 fixture and an
+        # unchanged-kernel update boot without downloading it again.
+        shared_initrd = work / "initrd"
+        esp.copy_out("/carrel/initrd", shared_initrd)
+        esp.copy_in(shared_initrd, f"/carrel/{kver}/initrd")
+
         # Drop what mkosi installed: its single-slot UKI, its loader entries
         # and its (unsigned) systemd-boot.  The Debian-signed chain replaces
         # them below.
@@ -501,7 +526,7 @@ def main() -> int:
             work, "loader.conf",
         )
 
-        esp.write(grub_cfg(kver), "/grub/grub.cfg", work, "grub.cfg")
+        esp.write(grub_cfg(kver, VERSION), "/grub/grub.cfg", work, "grub.cfg")
         env = work / "grubenv"
         run("grub-editenv", env, "create")
         run(

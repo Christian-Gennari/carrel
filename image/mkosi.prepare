@@ -16,6 +16,30 @@ url="https://github.com/typst/typst/releases/download/v${version}/typst-x86_64-u
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
+# The kernel is pinned to 6.12.116+deb13-amd64, the kernel that 0.1.0 and
+# 0.2.0 devices carry on their ESP.  Their update code installs only the
+# root, verity hash, signature and boot entry, so a 0.2.2 payload whose entry
+# names a different kernel would never appear in systemd-boot on those
+# devices.  Debian's mirror only keeps the newest 6.12.x, so fetch the signed
+# package from snapshot.debian.org; version and checksum are pinned here.
+kernel_version=6.12.116+deb13-amd64
+kernel_deb_version=6.12.116-1
+kernel_sha256=0cee1131391727e0974245f197cfb22f3d8715ac2428574b290aaf16ff6eda1c
+kernel_url="https://snapshot.debian.org/archive/debian-security/20261108T202647Z/pool/updates/main/l/linux-signed-amd64/linux-image-${kernel_version}_${kernel_deb_version}_amd64.deb"
+
+curl -fsSL "$kernel_url" -o "$tmp/linux-image.deb"
+echo "$kernel_sha256  $tmp/linux-image.deb" | sha256sum -c -
+# mkosi-chroot mounts a private /tmp, so put the package in the image's /root
+# (not a mount) where dpkg can see it.
+install -m 0644 "$tmp/linux-image.deb" "$BUILDROOT/root/linux-image.deb"
+mkosi-chroot dpkg -i /root/linux-image.deb
+rm -f "$BUILDROOT/root/linux-image.deb"
+if [ ! -f "$BUILDROOT/boot/vmlinuz-$kernel_version" ] || \
+   [ ! -d "$BUILDROOT/usr/lib/modules/$kernel_version" ]; then
+    echo "mkosi.prepare: the pinned $kernel_version kernel was not installed" >&2
+    exit 1
+fi
+
 curl -fsSL "$url" -o "$tmp/typst.tar.xz"
 echo "$sha256  $tmp/typst.tar.xz" | sha256sum -c -
 tar -xJf "$tmp/typst.tar.xz" -C "$tmp"

@@ -1,9 +1,11 @@
 //! Signed online updates.
 //!
 //! `systemd-sysupdate` downloads a release (root, verity hash, verity
-//! signature and boot entry) from the URL baked into the image.  The manifest
-//! `SHA256SUMS` is verified against the public keyring installed in the image
-//! (`/usr/lib/systemd/import-pubring.gpg`).
+//! signature, boot entry, and the kernel and initrds for a kernel change)
+//! from the URL baked into the image.  The manifest `SHA256SUMS` is verified
+//! against the public keyring installed in the image
+//! (`/usr/lib/systemd/import-pubring.gpg`).  The kernel files are versioned
+//! by the kernel version, so they are a second sysupdate pass.
 //!
 //! Network access is never opened here: the daemon calls
 //! [`Updater::check_and_stage`] from inside an existing sync session's radio
@@ -230,7 +232,31 @@ impl Updater {
         // Remove files from an older staged version so the progress count and
         // the eventual payload only contain this release.
         remove_staged_files(&staged, &version)?;
-        let log_path = self.dir.join("sysupdate.log");
+        self.run_update(&definitions, &staged, 4, "sysupdate.log")?;
+
+        // The kernel and initrds are versioned by the kernel, not the
+        // release, so they are a second sysupdate pass.  A release without
+        // them (up to 0.2.2) makes this a no-op.
+        let kernel_definitions = self.write_kernel_definitions(&url, &staged)?;
+        self.run_update(&kernel_definitions, &staged, 5, "sysupdate-kernel.log")?;
+
+        let ready = UpdateState::ready(&version);
+        fs::write(self.dir.join(READY_FILE), format!("{version}\n"))?;
+        self.write_status(&ready)?;
+        Ok(ready)
+    }
+
+    /// Run one sysupdate pass and report the staged-file percentage until it
+    /// exits.  `expected` is the number of files the pass can leave in the
+    /// staging directory (four release files plus the kernel archive).
+    fn run_update(
+        &self,
+        definitions: &Path,
+        staged: &Path,
+        expected: u8,
+        log_name: &str,
+    ) -> Result<()> {
+        let log_path = self.dir.join(log_name);
         let log = fs::File::create(&log_path)?;
         let mut child = Command::new(&self.sysupdate)
             .arg(format!("--definitions={}", definitions.display()))
@@ -247,22 +273,18 @@ impl Updater {
                     let message = read_tail(&log_path, 400);
                     let state = UpdateState::error(message.clone());
                     self.write_status(&state)?;
-                    bail!("downloading update {version} failed: {message}");
+                    bail!("downloading update failed: {message}");
                 }
                 break;
             }
-            let now = staged_percent(&staged, &version);
+            let now = staged_percent(staged, expected);
             if now != percent {
                 percent = now;
                 self.write_status(&UpdateState::downloading(percent))?;
             }
             sleep(Duration::from_millis(500));
         }
-
-        let ready = UpdateState::ready(&version);
-        fs::write(self.dir.join(READY_FILE), format!("{version}\n"))?;
-        self.write_status(&ready)?;
-        Ok(ready)
+        Ok(())
     }
 
     fn write_definitions(&self, url: &str, staged: &Path, slot: char) -> Result<PathBuf> {
@@ -290,6 +312,32 @@ impl Updater {
             );
             fs::write(definitions.join(format!("{name}.transfer")), text)?;
         }
+        Ok(definitions)
+    }
+
+    /// The kernel and initrds are versioned by the kernel version, not the
+    /// release version, so they need their own sysupdate pass (all transfers
+    /// in one directory must offer the same @v).  They travel as one tar
+    /// archive so the ESP gets a single /carrel/<kernel-version>/ directory.
+    fn write_kernel_definitions(&self, url: &str, staged: &Path) -> Result<PathBuf> {
+        let definitions = self.dir.join("online-kernel.d");
+        fs::create_dir_all(&definitions)?;
+        let url = url.trim_end_matches('/');
+        let pattern = "carrel-kernel-@v.tar";
+        let text = format!(
+            "[Transfer]\n\
+             InstancesMax=1\n\n\
+             [Source]\n\
+             Type=url-file\n\
+             Path={url}\n\
+             MatchPattern={pattern}\n\n\
+             [Target]\n\
+             Type=regular-file\n\
+             Path={}\n\
+             MatchPattern={pattern}\n",
+            staged.display(),
+        );
+        fs::write(definitions.join("10-kernel.transfer"), text)?;
         Ok(definitions)
     }
 
@@ -360,18 +408,20 @@ fn remove_staged_files(staged: &Path, version: &str) -> Result<()> {
     Ok(())
 }
 
-fn staged_percent(staged: &Path, version: &str) -> u8 {
+fn staged_percent(staged: &Path, expected: u8) -> u8 {
     let mut files = 0u8;
     if let Ok(entries) = fs::read_dir(staged) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().to_string();
-            if !name.starts_with(".#") && name.contains(version) {
+            if !name.starts_with(".#") {
                 files = files.saturating_add(1);
             }
         }
     }
-    // root, verity hash, signature and boot entry.
-    files.min(4) * 100 / 4
+    if expected == 0 {
+        return 0;
+    }
+    files.min(expected) * 100 / expected
 }
 
 fn looks_like_update_error(text: &str) -> bool {

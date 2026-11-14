@@ -31,6 +31,12 @@ UPDATE_PUBKEY  ?= $(ROOT)/image/keys/update-pubring.gpg
 IMAGE_VERSION  ?= $(shell sed -n 's/^ImageVersion=//p' "$(CURDIR)/image/mkosi.conf")
 RELEASE_VERSION ?= $(IMAGE_VERSION)
 TEST_RELEASE_VERSION ?= 0.3.0
+# The online-update fixture labels its kernel with this version so the boot
+# test exercises the kernel transfer and the per-kernel ESP directory even
+# when the fixture's real kernel is the image's.  It is test-only; the kernel
+# bytes are the image's, and --allow-kernel-change is safe because the
+# fixture is applied by 0.2.2+ devices, which all have the kernel transfer.
+TEST_RELEASE_KERNEL ?= 6.12.117+deb13-amd64
 DIST_DIR       := $(OUT)/dist
 
 # Where an installed device looks for signed update payloads: the files of the
@@ -125,7 +131,8 @@ _release-test:
 	python3 "$(ROOT)/image/release.py" --image "$(IMAGE)" \
 		--out "$(OUT)/release-test" --version "$(TEST_RELEASE_VERSION)" \
 		--verity-key "$(VERITY_KEY)" --verity-cert "$(VERITY_CERT)" \
-		--update-secret "$(UPDATE_SECRET)"
+		--update-secret "$(UPDATE_SECRET)" \
+		--kernel-version "$(TEST_RELEASE_KERNEL)" --allow-kernel-change
 
 clean:
 	rm -rf "$(OUT)" "$(PKG_CACHE)" "$(ROOT)/mkosi.workspace"

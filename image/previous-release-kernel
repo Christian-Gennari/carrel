@@ -1,0 +1,10 @@
+# The kernel version that devices still in the field carry on their ESP.
+#
+# 0.1.0 and 0.2.0 ship 6.12.116+deb13-amd64.  0.2.1 shipped
+# 6.12.117+deb13-amd64, but its update could not boot on those devices, so
+# every device that could install it stayed on its old release; it is not in
+# the field.  image/release.py refuses to build an update payload whose
+# kernel differs from this value unless --allow-kernel-change is passed, and
+# that flag may only be used once every release still in the field supports
+# the kernel transfer (0.2.2 and later).
+6.12.116+deb13-amd64

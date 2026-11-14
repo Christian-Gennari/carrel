@@ -30,8 +30,23 @@ base=/data/.carrel/update
 [ -d "$base/payload" ] || exit 0
 
 defs=/run/carrel-update.d
-mkdir -p "$defs"
-rm -f "$defs"/*.transfer
+kdefs=/run/carrel-update-kernel.d
+mkdir -p "$defs" "$kdefs"
+rm -f "$defs"/*.transfer "$kdefs"/*.transfer
+# Kernel and initrds first: their version is the kernel version, not the
+# release version, so they are a separate sysupdate pass (see
+# kernel.transfer).  They must be on the ESP before the new entry can name
+# them.  A payload without a kernel archive (up to 0.2.2) makes this a no-op.
+cp "/usr/lib/carrel/sysupdate/kernel.transfer" "$kdefs/10-kernel.transfer"
+log "installing the update kernel and initrds"
+SYSTEMD_LOG_LEVEL=debug /usr/lib/systemd/systemd-sysupdate \
+    --definitions="$kdefs" list --json=pretty >>/dev/ttyS0 2>&1 || true
+if ! SYSTEMD_LOG_LEVEL=debug /usr/lib/systemd/systemd-sysupdate \
+        --definitions="$kdefs" update >>/dev/ttyS0 2>&1; then
+    log "kernel update failed; keeping slot $slot"
+    exit 1
+fi
+
 # Boot entry last: it is the entry point of the update.  Root, verity hashes and the
 # signature must be in place before anything can select the new kernel.
 cp "/usr/lib/carrel/sysupdate/root.transfer" "$defs/10-root.transfer"
