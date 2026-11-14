@@ -82,6 +82,13 @@ def grubenv_get(path: Path, key: str) -> str:
     return ""
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;?!]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[()][A-Za-z0-9]")
+# 0.1.0 has no audit=0 on the kernel command line, so audit lines can land in
+# the middle of a systemd line and even inside an ANSI escape sequence on the
+# serial console.  Removing them (and their newline) lets the split line join
+# again before ANSI_RE runs.
+AUDIT_RE = re.compile(
+    r"\[\s*\d+\.\d+\][^\r\n]*(?:audit:|kauditd_printk_skb)[^\r\n]*(?:\r?\n)?"
+)
 
 KEY = {
     " ": "spc",
@@ -100,7 +107,7 @@ class BootError(RuntimeError):
 
 
 def clean_serial(text: str) -> str:
-    return ANSI_RE.sub("", text)
+    return ANSI_RE.sub("", AUDIT_RE.sub("", text))
 
 
 def run(*args: object, **kwargs: object) -> subprocess.CompletedProcess:
@@ -682,6 +689,8 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
                "GRUB slot B has no verity root hash", failures)
         kernels = list((boot / "carrel").glob("*/vmlinuz"))
         expect(bool(kernels), "ESP has no kernel for the boot entries", failures)
+        expect(any((kernel.parent / "initrd").is_file() for kernel in kernels),
+               "the ESP has no per-kernel initrd for the update transfer", failures)
         # The kernel is Debian's signed kernel: shim verifies it for
         # systemd-boot.
         expect(all(pe_is_signed(kernel) for kernel in kernels),
@@ -746,6 +755,7 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         "/usr/lib/carrel/sysupdate/sig.transfer",
         "/usr/lib/carrel/sysupdate/entry-a.transfer",
         "/usr/lib/carrel/sysupdate/entry-b.transfer",
+        "/usr/lib/carrel/sysupdate/kernel.transfer",
         "/usr/lib/carrel/repart-grow/50-data.conf",
         "/usr/lib/carrel/update-url",
         "/usr/lib/systemd/import-pubring.gpg",
