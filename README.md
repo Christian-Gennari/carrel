@@ -2,10 +2,16 @@
   <img src="brand/carrel-mark-primary.svg" alt="" width="96" height="96">
 </p>
 
-<h1 align="center">Carrel</h1>
+<h1 align="center">Carrel OS</h1>
 
 <p align="center">
-A free operating system that turns an old laptop into a quiet, distraction-free writing machine.
+  <strong>Your computer. Just for writing.</strong>
+</p>
+
+<p align="center">
+  An operating system for writing. Carrel OS turns an ordinary laptop into a
+  calm, dedicated writing environment. No desktop distractions. No
+  notifications. Just your words.
 </p>
 
 <p align="center">
@@ -20,9 +26,9 @@ A free operating system that turns an old laptop into a quiet, distraction-free 
   </tr>
 </table>
 
-Open the lid and the cursor is on screen, at the last word you wrote. There is
-no desktop, no browser and no notifications. Carrel runs one app, and that app
-is a Markdown editor.
+Carrel OS is free and open source. Open the lid and the cursor is on screen, at
+the last word you wrote. Carrel runs one app, and that app is a Markdown editor.
+There is no browser to open and no desktop to arrange.
 
 ## Why Carrel
 
@@ -39,7 +45,7 @@ is a Markdown editor.
 - **Secure Boot can stay on.** Carrel boots through Debian's signed `shim`.
 - **No AI writes for you.** The device never generates text.
 
-## Get Carrel
+## Get Carrel OS
 
 Download the image from [carrel.nostos.page](https://carrel.nostos.page) or from
 [GitHub Releases](https://github.com/Christian-Gennari/carrel/releases).
@@ -79,7 +85,7 @@ the network goes off again. The protocol is in
 
 ## Status
 
-Carrel 0.2.2 is a preview release. The whole system is tested automatically
+Carrel OS 0.2.2 is a preview release. The whole system is tested automatically
 in QEMU: boot on UEFI, Secure Boot and BIOS, install to a blank disk, power
 cut, update with rollback, recovery menu, and the signed release image.
 Testing on real laptops starts with this release, so expect rough edges and

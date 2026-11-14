@@ -365,7 +365,7 @@ impl SettingsState {
             SettingRow::Language => settings.language.clone(),
             SettingRow::TimeZone => settings.time_zone.clone(),
             SettingRow::Update => self.update.label(),
-            SettingRow::About => format!("Carrel {}", env!("CARGO_PKG_VERSION")),
+            SettingRow::About => format!("Carrel OS {}", env!("CARGO_PKG_VERSION")),
         }
     }
 
