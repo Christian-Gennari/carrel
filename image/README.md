@@ -342,6 +342,7 @@ Boot, BIOS) with QMP:
 - serve `out/release-test/` (payloads at 0.3.0) over HTTP inside QEMU, reject a bad manifest
   signature, then stage the good release through the daemon, call
   `ApplyUpdate` over D-Bus, reboot into 0.3.0 and assert the new slot label;
+  `--expect-version` (default 0.3.0) is the version that update must boot
 - `secureboot`: boot the image, install it to a blank disk and boot the
   installed disk with OVMF's Microsoft keys enrolled and Secure Boot enforcing;
   assert the installer made Carrel the first UEFI boot entry;

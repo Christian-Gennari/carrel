@@ -1177,7 +1177,7 @@ def root_version(disk: Path, slot: str, out: Path) -> str:
 
 
 def scenario_online_update(disk: Path, release_dir: Path, out: Path,
-                           timeout: float) -> None:
+                           timeout: float, expect_version: str = "0.3.0") -> None:
     if not (release_dir / "SHA256SUMS.gpg").is_file():
         raise BootError(f"no signed release in {release_dir}; run make release")
 
@@ -1217,13 +1217,14 @@ def scenario_online_update(disk: Path, release_dir: Path, out: Path,
                 qemu.powerdown()
 
     version = root_version(disk, "b", out)
-    if version != "0.3.0":
+    if version != expect_version:
         raise BootError(f"online update booted slot B but its version is {version!r}")
     parts = read_gpt(disk)
     label = part_by_uuid(parts, ROOT_B_UUID)["name"]
-    if "0.3.0" not in label:
+    if expect_version not in label:
         raise BootError(f"online update did not relabel slot B: {label}")
-    print("online: PASS (bad signature rejected, good update booted 0.3.0)", flush=True)
+    print(f"online: PASS (bad signature rejected, good update booted {expect_version})",
+          flush=True)
 
 
 def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
@@ -1334,6 +1335,8 @@ def main() -> int:
                                  "secureboot", "update-secureboot", "release"))
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="seconds for one boot (default 300)")
+    parser.add_argument("--expect-version", default="0.3.0",
+                        help="version the online update must boot (default 0.3.0)")
     args = parser.parse_args()
 
     args.image = args.image.resolve()
@@ -1383,7 +1386,8 @@ def main() -> int:
             scenario_update(installed, args.update_dir, args.out, args.timeout, "bios")
             clear_update(installed, args.out)
         if args.scenario in ("all", "online"):
-            scenario_online_update(installed, args.release_dir, args.out, args.timeout)
+            scenario_online_update(installed, args.release_dir, args.out, args.timeout,
+                                   args.expect_version)
         # Secure Boot: OVMF with the Microsoft keys, enforcing.
         if args.scenario in ("all", "secureboot"):
             scenario_boot("uefi", args.image, args.out, args.timeout, secure=True)
