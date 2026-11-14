@@ -33,7 +33,7 @@ systemd-repart creates the table from `mkosi.repart/`:
 | data | ≥ 2 GiB | ext4 | grows to fill the disk |
 
 The two root slots are labelled `carrel-root-<version>`
-(`carrel-root-0.2.1` and `carrel-root-0` in a fresh image). The version in the
+(`carrel-root-0.2.2` and `carrel-root-0` in a fresh image). The version in the
 label is what systemd-sysupdate compares; both slots deliberately share the
 same label prefix so sysupdate can pick the older one. The data and hash
 partition UUIDs are fixed (`1111…`/`2222…` for roots, `5555…`/`6666…` for
@@ -238,6 +238,33 @@ window. `UpdateStatus()` returns `none`, `available <version>`,
 stages the verified payload and starts `carrel-update.service`. `carreld
 update --url …` is the manual equivalent used by the QEMU online test.
 
+## Kernel and updates
+
+Devices on 0.1.0 and 0.2.0 carry `6.12.116+deb13-amd64` on their ESP, and
+their `apply-update` copies only the root, verity hash, signature and boot
+entry: a payload whose entry names a different kernel directory is invisible
+to systemd-boot on those devices. 0.2.2 is therefore built with that exact
+kernel. `mkosi.prepare` installs
+`linux-image-6.12.116+deb13-amd64` 6.12.116-1 from snapshot.debian.org with a
+pinned URL and SHA-256, because Debian's mirror keeps only the newest 6.12.x.
+`image/previous-release-kernel` records the kernel of the releases still in
+the field; `image/release.py` refuses a payload with a different kernel
+unless `--allow-kernel-change` is passed, and that flag may only be used once
+every release still in the field has the kernel transfer (0.2.2 and later).
+
+From 0.2.2 on, every release also ships `carrel-kernel-<kernel>.tar`, an
+archive containing `vmlinuz`, `kernel-modules.initrd` and `initrd`. It is
+listed in `SHA256SUMS` and verified like the other payload files. Its `@v` is
+the kernel version, not the release version, so `carreld update` and
+`apply-update` run a second `systemd-sysupdate` pass for it and unpack it into
+`/carrel/<kernel-version>/` on the ESP (a directory transfer; systemd 257
+asserts on a wildcard followed by a slash in `MatchPattern`). The kernel pass
+runs before the root/entry pass. 0.3.0 and later entries (and the GRUB menu)
+name `/carrel/<kernel-version>/initrd`; 0.2.2 keeps the shared
+`/carrel/initrd` because a 0.1.0/0.2.0 device cannot install a new initrd.
+0.2.1 shipped 6.12.117 without the kernel transfer, so it cannot boot a 0.2.2
+payload and stays on 0.2.1 safely.
+
 ## Release file
 
 `make release` writes, next to the update payloads, `out/dist/`:
@@ -253,7 +280,8 @@ update --url …` is the manual equivalent used by the QEMU online test.
 version (`RELEASE_VERSION` defaults to it). To ship 1.0, set `ImageVersion` to
 1.0 and build. Every file name contains the version and every directory is
 flat, so the files of `out/dist/` and `out/release/` (without `README`) are
-uploaded unchanged as the assets of one GitHub Release.
+uploaded unchanged as the assets of one GitHub Release. `out/release/KERNEL`
+records the kernel version of the release for the next release's guard.
 
 The image is **shrunk to its content**: the data partition, which is empty in
 a fresh image, is recreated at 256 MiB and the image file ends right after it.
@@ -342,6 +370,7 @@ Boot, BIOS) with QMP:
 - serve `out/release-test/` (payloads at 0.3.0) over HTTP inside QEMU, reject a bad manifest
   signature, then stage the good release through the daemon, call
   `ApplyUpdate` over D-Bus, reboot into 0.3.0 and assert the new slot label;
+  `--expect-version` (default 0.3.0) is the version that update must boot
 - `secureboot`: boot the image, install it to a blank disk and boot the
   installed disk with OVMF's Microsoft keys enrolled and Secure Boot enforcing;
   assert the installer made Carrel the first UEFI boot entry;
@@ -356,9 +385,10 @@ Screenshots are written to `out/screenshot-*.png`.
 - Secure Boot: the initrd and the entry's `roothash=` are not authenticated
   by Debian's chain (see Secure Boot above). The real release key and the
   tier 1 hardware checks are part of WP10.
-- Both boot paths use the shared ESP kernel/initrd. A release that changes
-  the kernel must also update those files; the current release pipeline
-  changes the root filesystem and boot entries, not the shared kernel.
+- Both boot paths use the ESP kernel and initrds. 0.2.2 and later install a
+  new kernel with the update (see "Kernel and updates"); devices older than
+  0.2.2 can only be updated to a kernel they already have, and 0.2.1 has no
+  kernel transfer, so those two release lines stay on their version.
 - The `/etc` overlay is mounted by an early systemd service, after the
   manager has read the unit files from the read-only lower layer. Runtime
   writes to `/etc` persist on data, but early systemd configuration changes

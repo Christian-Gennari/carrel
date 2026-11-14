@@ -1,0 +1,25 @@
+# Kernel and initrds for the new slot.  This is a second systemd-sysupdate
+# pass: its @v is the *kernel* version, not the release version, while the
+# root/verity/entry transfers use the release version.  sysupdate only offers
+# a version when every transfer in one definition directory has it, so
+# apply-update runs the kernel transfer separately.
+#
+# The archive unpacks vmlinuz, kernel-modules.initrd and initrd into
+# /carrel/<kernel-version>/ on the ESP.  A directory transfer keeps the
+# version in one path element; sysupdate 257 asserts on wildcards followed by
+# a slash in MatchPattern (systemd issue #42895), and a flat archive also
+# installs the three files atomically.  A device that runs 0.2.2 or later
+# therefore follows a kernel change; the entry and GRUB menu name the same
+# path.
+[Transfer]
+
+[Source]
+Type=tar
+Path=/data/.carrel/update/payload
+MatchPattern=carrel-kernel-@v.tar
+
+[Target]
+Type=directory
+Path=/carrel
+PathRelativeTo=esp
+MatchPattern=@v

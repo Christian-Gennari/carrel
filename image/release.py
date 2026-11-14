@@ -59,6 +59,17 @@ def sign_manifest(manifest: Path, secret: Path) -> None:
         )
 
 
+def read_kernel_file(path: Path) -> str:
+    """The first non-comment line of a kernel-version file."""
+    if not path.is_file():
+        return ""
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            return line
+    return ""
+
+
 # The shipped image keeps a small data partition; the installed or flashed
 # system grows it to fill the disk on first boot (carrel-grow-data.service
 # runs systemd-repart, fstab's x-systemd.growfs grows the file system).
@@ -149,6 +160,16 @@ def main() -> int:
                              ".asc to this directory")
     parser.add_argument("--image-version", default=assemble.VERSION,
                         help="version of the built image (file name of the .img.xz)")
+    parser.add_argument("--previous-kernel",
+                        help="kernel version of the previous field release "
+                             "(default: image/previous-release-kernel)")
+    parser.add_argument("--allow-kernel-change", action="store_true",
+                        help="allow a payload whose kernel differs from the field "
+                             "kernel; only for a release whose predecessors support "
+                             "the kernel transfer")
+    parser.add_argument("--kernel-version",
+                        help="test fixture only: label the kernel files and entries "
+                             "with this version instead of the image's kernel")
     args = parser.parse_args()
 
     image = args.image.resolve()
@@ -173,6 +194,27 @@ def main() -> int:
     root_a = next(p for p in parts if p["uuid"] == assemble.ROOT_A_UUID)
     esp = assemble.Esp(image, esp_part["first"] * 512)
     kver = assemble.kernel_versions(esp)
+    current_kernel = args.kernel_version or kver
+
+    previous_kernel = args.previous_kernel
+    if previous_kernel is None:
+        previous_kernel = read_kernel_file(
+            Path(__file__).resolve().parent / "previous-release-kernel")
+    if previous_kernel and current_kernel != previous_kernel:
+        if not args.allow_kernel_change:
+            print(
+                f"release: refusing a {current_kernel} payload: the field kernel is "
+                f"{previous_kernel}.\n"
+                "Devices on releases before 0.2.2 install only the root, verity, "
+                "signature and\nboot entry, so they can only boot the kernel they "
+                "already have on their ESP.  Pass\n--allow-kernel-change only when "
+                "every release still in the field has the kernel\ntransfer (0.2.2 "
+                "and later).",
+                file=sys.stderr,
+            )
+            return 2
+        print(f"release: kernel {current_kernel} differs from the field kernel "
+              f"{previous_kernel}; --allow-kernel-change was passed")
 
     with tempfile.TemporaryDirectory(dir=out) as tmp:
         work = Path(tmp)
@@ -195,10 +237,24 @@ def main() -> int:
         shutil.copyfile(root_image, out / f"carrel-root-{args.version}.raw")
         shutil.copyfile(hash_file, out / f"carrel-verity-{args.version}.raw")
         (out / f"carrel-verity-sig-{args.version}.sig").write_bytes(signature)
+        # The kernel and its initrds travel as one archive.  It unpacks into
+        # /carrel/<kernel-version>/ on the ESP, where the boot entry names the
+        # files; the kernel transfer in the image is a directory transfer.
+        kernel_files = work / "kernel"
+        kernel_files.mkdir()
+        for name, esp_path in (
+            ("vmlinuz", f"/carrel/{kver}/vmlinuz"),
+            ("kernel-modules.initrd", f"/carrel/{kver}/kernel-modules.initrd"),
+            ("initrd", f"/carrel/{kver}/initrd"),
+        ):
+            esp.copy_out(esp_path, kernel_files / name)
+        run("tar", "-C", kernel_files, "-cf",
+            out / f"carrel-kernel-{current_kernel}.tar",
+            "vmlinuz", "kernel-modules.initrd", "initrd")
         for slot in ("a", "b"):
             (out / f"carrel-{slot}-{args.version}.conf").write_text(
                 assemble.entry_conf(
-                    slot, "Carrel", args.version, kver, roothash,
+                    slot, "Carrel", args.version, current_kernel, roothash,
                     assemble.SORT_KEY[slot],
                 )
             )
@@ -215,6 +271,11 @@ def main() -> int:
     manifest.write_text("".join(lines))
     sign_manifest(manifest, args.update_secret)
 
+    # Not part of SHA256SUMS: sysupdate never downloads it.  It records the
+    # kernel of this release so the next release's guard and support can read
+    # it from the GitHub assets.
+    (out / "KERNEL").write_text(current_kernel + "\n")
+
     (out / "README").write_text(
         f"""Carrel {args.version} online update
 
@@ -230,8 +291,11 @@ Files:
   carrel-verity-sig-{args.version}.sig    signed verity root hash
   carrel-a-{args.version}.conf             slot A boot entry
   carrel-b-{args.version}.conf             slot B boot entry
+  carrel-kernel-{current_kernel}.tar       kernel, module initrd and initrd
+                                          (unpacks into /carrel/{current_kernel}/)
+  KERNEL                                  kernel version (metadata, not downloaded)
 
-The root hash is {roothash}.
+The root hash is {roothash}.  The kernel is {current_kernel}.
 """
     )
     print(f"release: {out} ({args.version}, roothash {roothash})")
