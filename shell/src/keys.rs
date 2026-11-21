@@ -18,7 +18,7 @@ use crate::files::FilesPage;
 use crate::first_run::FirstRunPage;
 use crate::history::HistoryPage;
 use crate::nav::Navigator;
-use crate::palette::{CommandPalette, KeySheet};
+use crate::palette::{CommandPalette, KeySheet, RenameSheet};
 use crate::quotes::QuotePalette;
 use crate::settings_page::SettingsPage;
 use crate::sync::SyncPage;
@@ -40,6 +40,7 @@ pub struct Keys {
     first_run: Rc<FirstRunPage>,
     palette: Rc<CommandPalette>,
     key_sheet: Rc<KeySheet>,
+    rename_sheet: Rc<RenameSheet>,
 }
 
 impl Keys {
@@ -58,6 +59,7 @@ impl Keys {
         first_run: Rc<FirstRunPage>,
         palette: Rc<CommandPalette>,
         key_sheet: Rc<KeySheet>,
+        rename_sheet: Rc<RenameSheet>,
     ) -> Rc<Self> {
         Rc::new(Self {
             stack,
@@ -73,6 +75,7 @@ impl Keys {
             first_run,
             palette,
             key_sheet,
+            rename_sheet,
         })
     }
 
@@ -110,6 +113,13 @@ impl Keys {
             return self.first_run.handle_key(keyval, state);
         }
 
+        // While the rename card is open, Enter saves, Esc cancels, and all
+        // other keys propagate straight to its focused Entry without firing
+        // global shortcuts behind it.
+        if self.rename_sheet.is_open() {
+            return self.rename_sheet.handle_key(keyval, state);
+        }
+
         // While the palette is open every key belongs to it, so no letter
         // reaches the editor or a screen behind it.
         if self.palette.handle_key(keyval, state) == glib::Propagation::Stop {
@@ -138,6 +148,10 @@ impl Keys {
             }
             if key == gdk::Key::s && shift {
                 self.sync.sync_now();
+                return glib::Propagation::Stop;
+            }
+            if key == gdk::Key::r && shift && !self.dialog_open() {
+                self.rename_sheet.open();
                 return glib::Propagation::Stop;
             }
             if key == gdk::Key::e {

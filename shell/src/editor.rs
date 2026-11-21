@@ -1121,6 +1121,59 @@ impl EditorPage {
         }
     }
 
+    /// Rename the currently open document in place, keeping the buffer,
+    /// cursor position, and undo history intact.
+    pub fn rename_current(&self, raw_name: &str) -> Result<PathBuf, String> {
+        let Some(source) = self.current_rel() else {
+            return Err("No file is open.".to_owned());
+        };
+        let name = crate::files::validate_entry_name(raw_name).map_err(str::to_owned)?;
+        let new_name = crate::files::ensure_document_extension(name, &source, true);
+        let target = source
+            .parent()
+            .map_or_else(|| PathBuf::from(&new_name), |parent| parent.join(&new_name));
+        if target == source {
+            self.untitled.set(false);
+            return Ok(target);
+        }
+        if self.store.root().join(&target).exists() {
+            return Err(format!("“{}” already exists.", display_name(&new_name)));
+        }
+
+        if let Some(doc) = self.doc.borrow().as_ref() {
+            doc.flush()
+                .map_err(|error| format!("Cannot save before rename: {error}"))?;
+        }
+        let old_doc = self.doc.borrow_mut().take();
+        drop(old_doc);
+
+        match self.store.rename(&source, &target) {
+            Ok(()) => {
+                match self.store.open_document(&target) {
+                    Ok(doc) => {
+                        *self.doc.borrow_mut() = Some(doc);
+                    }
+                    Err(error) => {
+                        return Err(format!("Cannot reopen {}: {error}", target.display()));
+                    }
+                }
+                *self.current.borrow_mut() = Some(target.clone());
+                self.untitled.set(false);
+                if let Err(error) = self.store.set_last_file(Some(&target)) {
+                    eprintln!("carrel: could not remember last file: {error}");
+                }
+                self.update_document_name();
+                Ok(target)
+            }
+            Err(error) => {
+                if let Ok(doc) = self.store.open_document(&source) {
+                    *self.doc.borrow_mut() = Some(doc);
+                }
+                Err(format!("Cannot rename: {error}"))
+            }
+        }
+    }
+
     fn close_document(&self) {
         if let Some(doc) = self.doc.borrow_mut().take() {
             if let Err(error) = doc.flush() {
