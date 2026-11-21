@@ -198,20 +198,24 @@ impl Daemon1 {
     /// Snapshot the writing directory into local history now.
     #[zbus(name = "Commit")]
     async fn commit(&self) -> fdo::Result<()> {
-        self.core.commit("on demand").map(|_| ()).map_err(failed)
+        self.core
+            .commit_async("on demand")
+            .await
+            .map(|_| ())
+            .map_err(failed)
     }
 
     /// Versions of one file, newest first.
     #[zbus(name = "History")]
     async fn history(&self, path: String) -> fdo::Result<Vec<HistoryEntry>> {
-        self.core.history(&path).map_err(failed)
+        self.core.history_async(&path).await.map_err(failed)
     }
 
     /// Old text of `path` at `rev`. Read-only: the caller applies it as a new
     /// edit and history is never rewritten.
     #[zbus(name = "Restore")]
     async fn restore(&self, path: String, rev: String) -> fdo::Result<String> {
-        self.core.restore(&path, &rev).map_err(failed)
+        self.core.restore_async(&path, &rev).await.map_err(failed)
     }
 
     // ----- sync ------------------------------------------------------------

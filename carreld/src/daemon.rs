@@ -197,7 +197,7 @@ pub struct DaemonCore {
     drives: Arc<dyn Drives>,
     gdrive: Option<Arc<dyn GdriveRunner>>,
     events: Arc<dyn EventSink>,
-    history: Mutex<History>,
+    history: Arc<Mutex<History>>,
     update: Updater,
     status: Mutex<CoreStatus>,
 }
@@ -219,7 +219,7 @@ impl DaemonCore {
             drives: deps.drives,
             gdrive: deps.gdrive,
             events: deps.events,
-            history: Mutex::new(history),
+            history: Arc::new(Mutex::new(history)),
             update,
             status: Mutex::new(CoreStatus::default()),
         })
@@ -249,6 +249,21 @@ impl DaemonCore {
             .with_context(|| format!("commit history ({reason})"))
     }
 
+    /// Async commit on Tokio's blocking pool so git object compression/fsync
+    /// never blocks the runtime.
+    pub async fn commit_async(&self, reason: &str) -> Result<Option<String>> {
+        let history = Arc::clone(&self.history);
+        let reason = reason.to_string();
+        tokio::task::spawn_blocking(move || {
+            let history = history.lock().expect("history lock poisoned");
+            history
+                .commit(&reason)
+                .with_context(|| format!("commit history ({reason})"))
+        })
+        .await
+        .context("history commit task stopped")?
+    }
+
     /// Commit only when the writing directory has been quiet for `idle`.
     pub fn commit_if_idle(&self, now: SystemTime, idle: Duration) -> Result<Option<String>> {
         let history = self.history.lock().expect("history lock poisoned");
@@ -257,16 +272,58 @@ impl DaemonCore {
             .context("idle history commit")
     }
 
+    /// Async idle commit on Tokio's blocking pool.
+    pub async fn commit_if_idle_async(
+        &self,
+        now: SystemTime,
+        idle: Duration,
+    ) -> Result<Option<String>> {
+        let history = Arc::clone(&self.history);
+        tokio::task::spawn_blocking(move || {
+            let history = history.lock().expect("history lock poisoned");
+            history
+                .commit_if_idle(now, idle, "idle")
+                .context("idle history commit")
+        })
+        .await
+        .context("idle history commit task stopped")?
+    }
+
     /// Versions of one file, newest first.
     pub fn history(&self, path: &str) -> Result<Vec<HistoryEntry>> {
         let history = self.history.lock().expect("history lock poisoned");
         history.history(path)
     }
 
+    /// Async file history lookup on Tokio's blocking pool.
+    pub async fn history_async(&self, path: &str) -> Result<Vec<HistoryEntry>> {
+        let history = Arc::clone(&self.history);
+        let path = path.to_string();
+        tokio::task::spawn_blocking(move || {
+            let history = history.lock().expect("history lock poisoned");
+            history.history(&path)
+        })
+        .await
+        .context("history lookup task stopped")?
+    }
+
     /// Old text of `path` at `rev`; reads only, never changes history or the file.
     pub fn restore(&self, path: &str, rev: &str) -> Result<String> {
         let history = self.history.lock().expect("history lock poisoned");
         history.restore(path, rev)
+    }
+
+    /// Async restore read on Tokio's blocking pool.
+    pub async fn restore_async(&self, path: &str, rev: &str) -> Result<String> {
+        let history = Arc::clone(&self.history);
+        let path = path.to_string();
+        let rev = rev.to_string();
+        tokio::task::spawn_blocking(move || {
+            let history = history.lock().expect("history lock poisoned");
+            history.restore(&path, &rev)
+        })
+        .await
+        .context("history restore task stopped")?
     }
 
     /// Current history commit, for the Sync screen and tests.
@@ -351,7 +408,7 @@ impl DaemonCore {
     /// One sync, end to end: commit, radio on, every configured backend in
     /// order, radio off (also on error).
     pub async fn run_sync_now(&self) -> Result<SyncSummary> {
-        self.commit("before sync")?;
+        self.commit_async("before sync").await?;
         // The guard blocks the radio again when it drops, after both success and
         // failure. A panic unwinding through this function drops it as well.
         let _guard: RadioGuard = self.radio.hold("sync")?;
@@ -853,7 +910,7 @@ impl DaemonCore {
                 percent = battery.percent,
                 "battery low: committing history and suspending"
             );
-            self.commit("low battery")?;
+            self.commit_async("low battery").await?;
             // The signal was already emitted by the change above; a device that
             // starts at 3 % has no previous value, so it always emits here.
             self.session.suspend().await?;
@@ -889,7 +946,7 @@ impl DaemonCore {
 
     /// Called when logind says the system is about to sleep.
     pub async fn handle_sleep_pending(&self) {
-        match self.commit("before suspend") {
+        match self.commit_async("before suspend").await {
             Ok(Some(rev)) => tracing::info!(rev, "committed history before suspend"),
             Ok(None) => tracing::debug!("nothing to commit before suspend"),
             Err(error) => tracing::error!(%error, "history commit before suspend failed"),
@@ -918,7 +975,10 @@ impl DaemonTasks {
             loop {
                 ticker.tick().await;
                 core.radio().expire_window();
-                if let Err(error) = core.commit_if_idle(SystemTime::now(), IDLE_COMMIT) {
+                if let Err(error) = core
+                    .commit_if_idle_async(SystemTime::now(), IDLE_COMMIT)
+                    .await
+                {
                     tracing::warn!(%error, "idle history commit failed");
                 }
             }

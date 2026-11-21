@@ -42,6 +42,8 @@ pub struct HistoryEntry {
 pub struct History {
     writing_dir: PathBuf,
     repo: Repository,
+    #[cfg(test)]
+    file_reads: std::sync::atomic::AtomicUsize,
 }
 
 impl History {
@@ -77,6 +79,8 @@ impl History {
         Ok(Self {
             writing_dir: writing_dir.to_path_buf(),
             repo,
+            #[cfg(test)]
+            file_reads: std::sync::atomic::AtomicUsize::new(0),
         })
     }
 
@@ -85,10 +89,19 @@ impl History {
         writing_dir.join(".carrel").join("history.git")
     }
 
+    #[cfg(test)]
+    pub fn file_read_count(&self) -> usize {
+        self.file_reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Commit the current writing tree. Returns the new commit id, or `None`
     /// when nothing changed since the last commit.
     pub fn commit(&self, reason: &str) -> Result<Option<String>> {
-        let (files, _) = scan(&self.writing_dir)?;
+        let (files, _) = scan(
+            &self.writing_dir,
+            #[cfg(test)]
+            Some(&self.file_reads),
+        )?;
         self.commit_files(&files, reason)
     }
 
@@ -101,8 +114,10 @@ impl History {
         idle: Duration,
         reason: &str,
     ) -> Result<Option<String>> {
-        let (files, newest) = scan(&self.writing_dir)?;
-        if files.is_empty() {
+        // Check metadata / mtime first so periodic idle ticks do zero file
+        // content reads while the writer is actively typing.
+        let (has_files, newest) = newest_mtime(&self.writing_dir)?;
+        if !has_files {
             return Ok(None);
         }
         let Some(newest) = newest else {
@@ -111,6 +126,20 @@ impl History {
         let quiet_for = now.duration_since(newest).unwrap_or_default();
         if quiet_for < idle {
             return Ok(None);
+        }
+
+        let (files, scanned_newest) = scan(
+            &self.writing_dir,
+            #[cfg(test)]
+            Some(&self.file_reads),
+        )?;
+        if files.is_empty() {
+            return Ok(None);
+        }
+        if let Some(scanned_newest) = scanned_newest {
+            if now.duration_since(scanned_newest).unwrap_or_default() < idle {
+                return Ok(None);
+            }
         }
         self.commit_files(&files, reason)
     }
@@ -288,18 +317,47 @@ fn now_unix() -> i64 {
 /// modification time seen.
 type Scanned = (BTreeMap<String, Vec<u8>>, Option<SystemTime>);
 
-fn scan(root: &Path) -> Result<Scanned> {
+fn newest_mtime(root: &Path) -> Result<(bool, Option<SystemTime>)> {
+    let mut newest: Option<SystemTime> = None;
+    let mut has_files = false;
+    walk_entries(
+        root,
+        root,
+        None,
+        &mut has_files,
+        &mut newest,
+        #[cfg(test)]
+        None,
+    )?;
+    Ok((has_files, newest))
+}
+
+fn scan(
+    root: &Path,
+    #[cfg(test)] file_reads: Option<&std::sync::atomic::AtomicUsize>,
+) -> Result<Scanned> {
     let mut files = BTreeMap::new();
     let mut newest: Option<SystemTime> = None;
-    walk(root, root, &mut files, &mut newest)?;
+    let mut has_files = false;
+    walk_entries(
+        root,
+        root,
+        Some(&mut files),
+        &mut has_files,
+        &mut newest,
+        #[cfg(test)]
+        file_reads,
+    )?;
     Ok((files, newest))
 }
 
-fn walk(
+fn walk_entries(
     root: &Path,
     directory: &Path,
-    files: &mut BTreeMap<String, Vec<u8>>,
+    mut files: Option<&mut BTreeMap<String, Vec<u8>>>,
+    has_files: &mut bool,
     newest: &mut Option<SystemTime>,
+    #[cfg(test)] file_reads: Option<&std::sync::atomic::AtomicUsize>,
 ) -> Result<()> {
     let entries = fs::read_dir(directory)
         .with_context(|| format!("read directory {}", directory.display()))?;
@@ -324,7 +382,15 @@ fn walk(
         }
         let path = entry.path();
         if metadata.is_dir() {
-            walk(root, &path, files, newest)?;
+            walk_entries(
+                root,
+                &path,
+                files.as_deref_mut(),
+                has_files,
+                newest,
+                #[cfg(test)]
+                file_reads,
+            )?;
             continue;
         }
         if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
@@ -340,12 +406,21 @@ fn walk(
         if safe_relative_path(&relative).is_err() {
             continue;
         }
-        match fs::read(&path) {
-            Ok(content) => {
-                files.insert(relative, content);
+        *has_files = true;
+        if let Some(files) = files.as_deref_mut() {
+            #[cfg(test)]
+            if let Some(counter) = file_reads {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
-            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+            match fs::read(&path) {
+                Ok(content) => {
+                    files.insert(relative, content);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => {
+                    return Err(error).with_context(|| format!("read {}", path.display()))
+                }
+            }
         }
     }
     Ok(())
@@ -560,5 +635,30 @@ mod tests {
             .message()
             .unwrap_or_default()
             .starts_with("before sync"));
+    }
+
+    #[test]
+    fn commit_if_idle_skips_file_reads_when_not_idle() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = History::open(dir.path()).unwrap();
+        write(dir.path(), "draft.md", "actively edited text");
+        let now = SystemTime::now();
+
+        let result = history
+            .commit_if_idle(now, Duration::from_secs(300), "idle")
+            .unwrap();
+        assert!(result.is_none());
+        assert_eq!(
+            history.file_read_count(),
+            0,
+            "commit_if_idle must not read file contents when not idle"
+        );
+
+        set_age(dir.path(), "draft.md", Duration::from_secs(600));
+        let commit = history
+            .commit_if_idle(now, Duration::from_secs(300), "idle")
+            .unwrap();
+        assert!(commit.is_some());
+        assert_eq!(history.file_read_count(), 1);
     }
 }
