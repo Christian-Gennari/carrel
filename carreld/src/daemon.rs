@@ -46,6 +46,11 @@ pub const TICK: Duration = Duration::from_secs(30);
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(600);
 const PAIRING_POLL: Duration = Duration::from_secs(2);
 
+/// How long pairing waits for a saved Wi-Fi network after unblocking the radio.
+const PAIRING_CONNECTIVITY_WAIT: Duration = Duration::from_secs(3);
+const PAIRING_CONNECTIVITY_POLL: Duration = Duration::from_millis(250);
+const PAIRING_OFFLINE_MESSAGE: &str = "No Wi-Fi connection. Connect to Wi-Fi before pairing.";
+
 /// Default Nostos endpoint from `spec/02-sync-protocol.md`.
 pub const NOSTOS_URL: &str = "https://app.nostos.page/carrel/v1";
 
@@ -200,6 +205,10 @@ pub struct DaemonCore {
     history: Mutex<History>,
     update: Updater,
     status: Mutex<CoreStatus>,
+    #[cfg(test)]
+    oauth_app: Mutex<Option<OAuthApp>>,
+    #[cfg(test)]
+    pairing_connectivity_timing: Mutex<(Duration, Duration)>,
 }
 
 impl DaemonCore {
@@ -222,6 +231,13 @@ impl DaemonCore {
             history: Mutex::new(history),
             update,
             status: Mutex::new(CoreStatus::default()),
+            #[cfg(test)]
+            oauth_app: Mutex::new(None),
+            #[cfg(test)]
+            pairing_connectivity_timing: Mutex::new((
+                PAIRING_CONNECTIVITY_WAIT,
+                PAIRING_CONNECTIVITY_POLL,
+            )),
         })
     }
 
@@ -599,6 +615,7 @@ impl DaemonCore {
             status.pairing_running = true;
         }
 
+        let radio_was_on = self.radio.is_on();
         let guard = match self.radio.hold("pairing") {
             Ok(guard) => guard,
             Err(error) => {
@@ -606,6 +623,11 @@ impl DaemonCore {
                 return Err(error);
             }
         };
+        if let Err(error) = self.ensure_pairing_connectivity(radio_was_on).await {
+            drop(guard);
+            self.finish_pairing_attempt();
+            return Err(error);
+        }
         let session = match start_session(&url).await {
             Ok(session) => session,
             Err(error) => {
@@ -672,7 +694,8 @@ impl DaemonCore {
             status.pairing_running = true;
         }
         // Fail before touching the radio when the image has no OAuth client.
-        let client = match OAuthApp::load()
+        let client = match self
+            .load_oauth_app()
             .and_then(|app| OAuthClient::new(app, OAuthEndpoints::from_env_or_default()))
         {
             Ok(client) => client,
@@ -681,6 +704,7 @@ impl DaemonCore {
                 return Err(error);
             }
         };
+        let radio_was_on = self.radio.is_on();
         let guard = match self.radio.hold("pairing") {
             Ok(guard) => guard,
             Err(error) => {
@@ -688,6 +712,11 @@ impl DaemonCore {
                 return Err(error);
             }
         };
+        if let Err(error) = self.ensure_pairing_connectivity(radio_was_on).await {
+            drop(guard);
+            self.finish_pairing_attempt();
+            return Err(error);
+        }
         let device = match client.start_device_flow().await {
             Ok(device) => device,
             Err(error) => {
@@ -740,6 +769,65 @@ impl DaemonCore {
             }
         });
         Ok(info)
+    }
+
+    fn load_oauth_app(&self) -> Result<OAuthApp> {
+        #[cfg(test)]
+        if let Some(app) = self
+            .oauth_app
+            .lock()
+            .expect("oauth_app lock poisoned")
+            .clone()
+        {
+            return Ok(app);
+        }
+        OAuthApp::load()
+    }
+
+    fn pairing_connectivity_timing(&self) -> (Duration, Duration) {
+        #[cfg(test)]
+        {
+            *self
+                .pairing_connectivity_timing
+                .lock()
+                .expect("pairing_connectivity_timing lock poisoned")
+        }
+        #[cfg(not(test))]
+        {
+            (PAIRING_CONNECTIVITY_WAIT, PAIRING_CONNECTIVITY_POLL)
+        }
+    }
+
+    async fn ensure_pairing_connectivity(&self, radio_was_on: bool) -> Result<()> {
+        let (wait_limit, poll_interval) = self.pairing_connectivity_timing();
+        let deadline = if radio_was_on {
+            tokio::time::Instant::now()
+        } else {
+            tokio::time::Instant::now() + wait_limit
+        };
+        loop {
+            match self.network.connectivity().await {
+                Ok(Connectivity::None) => {
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        bail!("{PAIRING_OFFLINE_MESSAGE}");
+                    }
+                    let wait = poll_interval.min(deadline - now);
+                    tokio::time::sleep(wait).await;
+                }
+                Ok(Connectivity::Portal) => bail!("{PORTAL_MESSAGE}"),
+                Ok(Connectivity::Full | Connectivity::Limited | Connectivity::Unknown) => {
+                    return Ok(());
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        %error,
+                        "could not read network connectivity before pairing"
+                    );
+                    return Ok(());
+                }
+            }
+        }
     }
 
     fn finish_pairing_attempt(&self) {
@@ -1131,6 +1219,7 @@ mod tests {
     struct FakeNetwork {
         networks: StdMutex<Vec<WifiNetwork>>,
         connectivity: StdMutex<Connectivity>,
+        remaining_none: AtomicUsize,
         calls: StdMutex<Vec<String>>,
         fail_scan: AtomicBool,
     }
@@ -1145,6 +1234,7 @@ mod tests {
                     connected: false,
                 }]),
                 connectivity: StdMutex::new(Connectivity::Full),
+                remaining_none: AtomicUsize::new(0),
                 calls: StdMutex::new(Vec::new()),
                 fail_scan: AtomicBool::new(false),
             })
@@ -1176,6 +1266,15 @@ mod tests {
         }
 
         async fn connectivity(&self) -> Result<Connectivity> {
+            let remaining = self.remaining_none.load(Ordering::SeqCst);
+            if remaining > 0
+                && self
+                    .remaining_none
+                    .compare_exchange(remaining, remaining - 1, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+            {
+                return Ok(Connectivity::None);
+            }
             Ok(*self.connectivity.lock().unwrap())
         }
     }
@@ -1910,5 +2009,75 @@ mod tests {
         let error = harness.core.run_sync_now().await.unwrap_err();
         assert!(error.to_string().contains("not paired"), "{error:#}");
         assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn pairing_offline_fails_with_clear_wifi_error_and_reblocks_radio() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        *harness.core.pairing_connectivity_timing.lock().unwrap() =
+            (Duration::from_millis(20), Duration::from_millis(5));
+        *harness.network.connectivity.lock().unwrap() = Connectivity::None;
+
+        let error = harness.core.pair("nostos", "").await.unwrap_err();
+        assert_eq!(error.to_string(), PAIRING_OFFLINE_MESSAGE);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+
+        // pairing_running was cleared so a subsequent pairing attempt (e.g. self-hosted) runs cleanly.
+        let error = harness
+            .core
+            .pair("self-hosted", "https://studio.local")
+            .await
+            .unwrap_err();
+        assert_eq!(error.to_string(), PAIRING_OFFLINE_MESSAGE);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn gdrive_pairing_offline_fails_with_clear_wifi_error_and_reblocks_radio() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        *harness.core.pairing_connectivity_timing.lock().unwrap() =
+            (Duration::from_millis(20), Duration::from_millis(5));
+        *harness.network.connectivity.lock().unwrap() = Connectivity::None;
+        *harness.core.oauth_app.lock().unwrap() = Some(OAuthApp {
+            client_id: "test-client".into(),
+            client_secret: "test-secret".into(),
+        });
+
+        let error = harness.core.pair("gdrive", "").await.unwrap_err();
+        assert_eq!(error.to_string(), PAIRING_OFFLINE_MESSAGE);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+
+        // pairing_running was cleared so retrying is allowed.
+        let error = harness.core.pair("google-drive", "").await.unwrap_err();
+        assert_eq!(error.to_string(), PAIRING_OFFLINE_MESSAGE);
+    }
+
+    #[tokio::test]
+    async fn pairing_over_a_portal_returns_the_portal_message() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        *harness.network.connectivity.lock().unwrap() = Connectivity::Portal;
+
+        let error = harness.core.pair("nostos", "").await.unwrap_err();
+        assert_eq!(error.to_string(), PORTAL_MESSAGE);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn pairing_waits_briefly_for_saved_wifi_after_unblocking_radio() {
+        let harness = Harness::new(FakeRunner::new(false), plugged_in(80));
+        *harness.core.pairing_connectivity_timing.lock().unwrap() =
+            (Duration::from_millis(200), Duration::from_millis(5));
+        harness.network.remaining_none.store(3, Ordering::SeqCst);
+
+        harness
+            .core
+            .ensure_pairing_connectivity(false)
+            .await
+            .unwrap();
+        assert_eq!(harness.network.remaining_none.load(Ordering::SeqCst), 0);
     }
 }
