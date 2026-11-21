@@ -38,10 +38,24 @@ pub struct HistoryEntry {
     pub delta: i64,
 }
 
+/// Lightweight metadata fingerprint of the writing directory used to skip
+/// repeated file-content reads and tree builds while nothing changes during
+/// idle ticks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TreeFingerprint {
+    root_mtime: Option<SystemTime>,
+    newest_mtime: Option<SystemTime>,
+    dir_count: usize,
+    file_count: usize,
+    total_bytes: u64,
+    entries_hash: u64,
+}
+
 /// The history repository of one writing directory.
 pub struct History {
     writing_dir: PathBuf,
     repo: Repository,
+    clean_fingerprint: std::sync::Mutex<Option<TreeFingerprint>>,
     #[cfg(test)]
     file_reads: std::sync::atomic::AtomicUsize,
 }
@@ -79,6 +93,7 @@ impl History {
         Ok(Self {
             writing_dir: writing_dir.to_path_buf(),
             repo,
+            clean_fingerprint: std::sync::Mutex::new(None),
             #[cfg(test)]
             file_reads: std::sync::atomic::AtomicUsize::new(0),
         })
@@ -94,15 +109,27 @@ impl History {
         self.file_reads.load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    fn set_clean_fingerprint(&self, fingerprint: Option<TreeFingerprint>) {
+        *self
+            .clean_fingerprint
+            .lock()
+            .expect("history fingerprint mutex") = fingerprint;
+    }
+
     /// Commit the current writing tree. Returns the new commit id, or `None`
     /// when nothing changed since the last commit.
     pub fn commit(&self, reason: &str) -> Result<Option<String>> {
-        let (files, _) = scan(
+        self.set_clean_fingerprint(None);
+        let (files, fingerprint) = scan(
             &self.writing_dir,
             #[cfg(test)]
             Some(&self.file_reads),
         )?;
-        self.commit_files(&files, reason)
+        let result = self.commit_files(&files, reason)?;
+        if !files.is_empty() {
+            self.set_clean_fingerprint(Some(fingerprint));
+        }
+        Ok(result)
     }
 
     /// Commit only when nothing in the writing directory changed for `idle`.
@@ -115,33 +142,47 @@ impl History {
         reason: &str,
     ) -> Result<Option<String>> {
         // Check metadata / mtime first so periodic idle ticks do zero file
-        // content reads while the writer is actively typing.
-        let (has_files, newest) = newest_mtime(&self.writing_dir)?;
+        // content reads while the writer is actively typing or while the tree
+        // remains unchanged since the last idle commit/check.
+        let (has_files, fingerprint) = inspect_tree(&self.writing_dir)?;
         if !has_files {
+            self.set_clean_fingerprint(None);
             return Ok(None);
         }
-        let Some(newest) = newest else {
+        let Some(newest) = fingerprint.newest_mtime else {
             return Ok(None);
         };
         let quiet_for = now.duration_since(newest).unwrap_or_default();
         if quiet_for < idle {
             return Ok(None);
         }
+        if self
+            .clean_fingerprint
+            .lock()
+            .expect("history fingerprint mutex")
+            .as_ref()
+            == Some(&fingerprint)
+        {
+            return Ok(None);
+        }
 
-        let (files, scanned_newest) = scan(
+        let (files, scanned_fingerprint) = scan(
             &self.writing_dir,
             #[cfg(test)]
             Some(&self.file_reads),
         )?;
         if files.is_empty() {
+            self.set_clean_fingerprint(None);
             return Ok(None);
         }
-        if let Some(scanned_newest) = scanned_newest {
+        if let Some(scanned_newest) = scanned_fingerprint.newest_mtime {
             if now.duration_since(scanned_newest).unwrap_or_default() < idle {
                 return Ok(None);
             }
         }
-        self.commit_files(&files, reason)
+        let result = self.commit_files(&files, reason)?;
+        self.set_clean_fingerprint(Some(scanned_fingerprint));
+        Ok(result)
     }
 
     fn commit_files(
@@ -313,42 +354,87 @@ fn now_unix() -> i64 {
 }
 
 /// Read every regular file below `root`, skipping hidden directories (such as
-/// `.carrel/`), symlinks and temporary files. Returns the files and the newest
-/// modification time seen.
-type Scanned = (BTreeMap<String, Vec<u8>>, Option<SystemTime>);
+/// `.carrel/`), symlinks and temporary files. Returns the files and a metadata
+/// fingerprint (including `root`'s own modification time).
+type Scanned = (BTreeMap<String, Vec<u8>>, TreeFingerprint);
 
-fn newest_mtime(root: &Path) -> Result<(bool, Option<SystemTime>)> {
-    let mut newest: Option<SystemTime> = None;
+fn update_newest(newest: &mut Option<SystemTime>, candidate: Option<SystemTime>) {
+    if let Some(modified) = candidate {
+        *newest = Some(match *newest {
+            Some(current) if current > modified => current,
+            _ => modified,
+        });
+    }
+}
+
+fn hash_entry(kind: u8, relative: &str, len: u64, modified: Option<SystemTime>) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    kind.hash(&mut hasher);
+    relative.hash(&mut hasher);
+    len.hash(&mut hasher);
+    if let Some(modified) = modified {
+        if let Ok(since_epoch) = modified.duration_since(SystemTime::UNIX_EPOCH) {
+            1u8.hash(&mut hasher);
+            since_epoch.as_secs().hash(&mut hasher);
+            since_epoch.subsec_nanos().hash(&mut hasher);
+        }
+    }
+    hasher.finish()
+}
+
+fn inspect_tree(root: &Path) -> Result<(bool, TreeFingerprint)> {
+    let root_meta =
+        fs::metadata(root).with_context(|| format!("stat directory {}", root.display()))?;
+    let root_mtime = root_meta.modified().ok();
+    let mut fp = TreeFingerprint {
+        root_mtime,
+        newest_mtime: root_mtime,
+        dir_count: 0,
+        file_count: 0,
+        total_bytes: 0,
+        entries_hash: 0,
+    };
     let mut has_files = false;
     walk_entries(
         root,
         root,
         None,
         &mut has_files,
-        &mut newest,
+        &mut fp,
         #[cfg(test)]
         None,
     )?;
-    Ok((has_files, newest))
+    Ok((has_files, fp))
 }
 
 fn scan(
     root: &Path,
     #[cfg(test)] file_reads: Option<&std::sync::atomic::AtomicUsize>,
 ) -> Result<Scanned> {
+    let root_meta =
+        fs::metadata(root).with_context(|| format!("stat directory {}", root.display()))?;
+    let root_mtime = root_meta.modified().ok();
     let mut files = BTreeMap::new();
-    let mut newest: Option<SystemTime> = None;
+    let mut fp = TreeFingerprint {
+        root_mtime,
+        newest_mtime: root_mtime,
+        dir_count: 0,
+        file_count: 0,
+        total_bytes: 0,
+        entries_hash: 0,
+    };
     let mut has_files = false;
     walk_entries(
         root,
         root,
         Some(&mut files),
         &mut has_files,
-        &mut newest,
+        &mut fp,
         #[cfg(test)]
         file_reads,
     )?;
-    Ok((files, newest))
+    Ok((files, fp))
 }
 
 fn walk_entries(
@@ -356,7 +442,7 @@ fn walk_entries(
     directory: &Path,
     mut files: Option<&mut BTreeMap<String, Vec<u8>>>,
     has_files: &mut bool,
-    newest: &mut Option<SystemTime>,
+    fp: &mut TreeFingerprint,
     #[cfg(test)] file_reads: Option<&std::sync::atomic::AtomicUsize>,
 ) -> Result<()> {
     let entries = fs::read_dir(directory)
@@ -374,28 +460,7 @@ fn walk_entries(
             continue;
         }
         let metadata = entry.metadata()?;
-        if let Ok(modified) = metadata.modified() {
-            *newest = Some(match *newest {
-                Some(current) if current > modified => current,
-                _ => modified,
-            });
-        }
         let path = entry.path();
-        if metadata.is_dir() {
-            walk_entries(
-                root,
-                &path,
-                files.as_deref_mut(),
-                has_files,
-                newest,
-                #[cfg(test)]
-                file_reads,
-            )?;
-            continue;
-        }
-        if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
-            continue;
-        }
         let Ok(relative) = path.strip_prefix(root) else {
             continue;
         };
@@ -406,7 +471,27 @@ fn walk_entries(
         if safe_relative_path(&relative).is_err() {
             continue;
         }
-        *has_files = true;
+        let modified = metadata.modified().ok();
+        if metadata.is_dir() {
+            update_newest(&mut fp.newest_mtime, modified);
+            fp.dir_count += 1;
+            fp.entries_hash = fp
+                .entries_hash
+                .wrapping_add(hash_entry(1, &relative, 0, modified));
+            walk_entries(
+                root,
+                &path,
+                files.as_deref_mut(),
+                has_files,
+                fp,
+                #[cfg(test)]
+                file_reads,
+            )?;
+            continue;
+        }
+        if !metadata.is_file() || metadata.len() > MAX_FILE_BYTES {
+            continue;
+        }
         if let Some(files) = files.as_deref_mut() {
             #[cfg(test)]
             if let Some(counter) = file_reads {
@@ -414,7 +499,7 @@ fn walk_entries(
             }
             match fs::read(&path) {
                 Ok(content) => {
-                    files.insert(relative, content);
+                    files.insert(relative.clone(), content);
                 }
                 Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
                 Err(error) => {
@@ -422,6 +507,13 @@ fn walk_entries(
                 }
             }
         }
+        update_newest(&mut fp.newest_mtime, modified);
+        fp.file_count += 1;
+        fp.total_bytes = fp.total_bytes.saturating_add(metadata.len());
+        fp.entries_hash =
+            fp.entries_hash
+                .wrapping_add(hash_entry(2, &relative, metadata.len(), modified));
+        *has_files = true;
     }
     Ok(())
 }
@@ -477,9 +569,17 @@ mod tests {
 
     fn set_age(root: &Path, path: &str, age: Duration) {
         let target = root.join(path);
-        let file = File::options().write(true).open(target).unwrap();
+        let file = File::options().write(true).open(&target).unwrap();
         let modified = SystemTime::now() - age;
         file.set_modified(modified).unwrap();
+        let mut parent = target.parent();
+        while let Some(dir) = parent {
+            File::open(dir).unwrap().set_modified(modified).unwrap();
+            if dir == root {
+                break;
+            }
+            parent = dir.parent();
+        }
     }
 
     #[test]
@@ -660,5 +760,101 @@ mod tests {
             .unwrap();
         assert!(commit.is_some());
         assert_eq!(history.file_read_count(), 1);
+    }
+
+    #[test]
+    fn top_level_delete_and_rename_respect_idle_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = History::open(dir.path()).unwrap();
+        write(dir.path(), "keep.md", "keep");
+        write(dir.path(), "drop.md", "drop");
+        assert!(history.commit("initial").unwrap().is_some());
+        let reads_after_initial = history.file_read_count();
+
+        set_age(dir.path(), "keep.md", Duration::from_secs(600));
+        set_age(dir.path(), "drop.md", Duration::from_secs(600));
+
+        // Deleting a top-level file refreshes writing_dir mtime, so commit_if_idle waits
+        // without scanning file contents until the idle window elapses.
+        fs::remove_file(dir.path().join("drop.md")).unwrap();
+        let now = SystemTime::now();
+        assert!(history
+            .commit_if_idle(now, Duration::from_secs(300), "idle")
+            .unwrap()
+            .is_none());
+        assert_eq!(history.file_read_count(), reads_after_initial);
+
+        let later = now + Duration::from_secs(301);
+        let _ = history
+            .commit_if_idle(later, Duration::from_secs(300), "idle")
+            .unwrap();
+        assert_eq!(history.file_read_count(), reads_after_initial + 1);
+
+        // Renaming a top-level file also refreshes writing_dir mtime, so commit_if_idle waits.
+        set_age(dir.path(), "keep.md", Duration::from_secs(600));
+        fs::rename(dir.path().join("keep.md"), dir.path().join("renamed.md")).unwrap();
+        let reads_before_rename_wait = history.file_read_count();
+        let now2 = SystemTime::now();
+        assert!(history
+            .commit_if_idle(now2, Duration::from_secs(300), "idle")
+            .unwrap()
+            .is_none());
+        assert_eq!(history.file_read_count(), reads_before_rename_wait);
+
+        let later2 = now2 + Duration::from_secs(301);
+        let commit_after_rename = history
+            .commit_if_idle(later2, Duration::from_secs(300), "idle")
+            .unwrap();
+        assert!(commit_after_rename.is_some());
+        assert_eq!(history.history("renamed.md").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn commit_if_idle_skips_file_reads_across_repeated_idle_ticks() {
+        let dir = tempfile::tempdir().unwrap();
+        let history = History::open(dir.path()).unwrap();
+        write(dir.path(), "draft.md", "one two");
+        set_age(dir.path(), "draft.md", Duration::from_secs(600));
+
+        let now = SystemTime::now();
+        let first = history
+            .commit_if_idle(now, Duration::from_secs(300), "idle")
+            .unwrap();
+        assert!(first.is_some());
+        assert_eq!(history.file_read_count(), 1);
+
+        // Repeated 30s idle ticks must not re-read file contents while nothing changes.
+        for tick in 1..=5 {
+            let later = now + Duration::from_secs(30 * tick);
+            assert!(history
+                .commit_if_idle(later, Duration::from_secs(300), "idle")
+                .unwrap()
+                .is_none());
+            assert_eq!(
+                history.file_read_count(),
+                1,
+                "tick {tick} must not re-read unchanged idle files"
+            );
+        }
+
+        // Editing the file invalidates the fingerprint once idle again.
+        write(dir.path(), "draft.md", "one two three");
+        set_age(dir.path(), "draft.md", Duration::from_secs(600));
+        let second = history
+            .commit_if_idle(now, Duration::from_secs(300), "idle")
+            .unwrap();
+        assert!(second.is_some());
+        assert_eq!(history.file_read_count(), 2);
+
+        // Manual commit() updates the cached fingerprint so subsequent idle ticks stay free.
+        write(dir.path(), "draft.md", "one two three four");
+        assert!(history.commit("before sync").unwrap().is_some());
+        assert_eq!(history.file_read_count(), 3);
+        let future = SystemTime::now() + Duration::from_secs(600);
+        assert!(history
+            .commit_if_idle(future, Duration::from_secs(300), "idle")
+            .unwrap()
+            .is_none());
+        assert_eq!(history.file_read_count(), 3);
     }
 }

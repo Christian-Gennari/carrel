@@ -50,15 +50,70 @@ const CITE_LINK_TARGET: &[char] = &[
     ']', '(', 'n', 'o', 's', 't', 'o', 's', ':', 'c', 'i', 't', 'e', '/',
 ];
 
-/// Cached Markdown parse + word count for a single logical line (excluding `\n`).
+/// Cached Markdown parse + word count for a single logical line (excluding its
+/// trailing line break).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CachedLine {
     pub char_len: usize,
+    /// Character length of the trailing line break in `GtkTextBuffer`
+    /// (`2` for `\r\n`, `1` for `\n`, `\r`, or `\u{2029}`, `0` at EOF).
+    pub break_len: usize,
     pub words: u64,
     /// Line-relative spans (`0..=char_len`).
     pub spans: Vec<Span>,
     /// Line-relative `(start, end)` character ranges of `Kind::CiteLink`.
     pub cite_links: Vec<(usize, usize)>,
+}
+
+/// Iterator over `(line_text, break_char_len)` pairs matching `GtkTextBuffer`
+/// line boundaries (`\r\n`, `\r`, `\n`, and `\u{2029}`).
+///
+/// Always yields at least one line (even for `""`), and yields a trailing empty
+/// line when `text` ends with a line break, matching `GtkTextBuffer::line_count()`.
+struct GtkLines<'a> {
+    rest: &'a str,
+    done: bool,
+}
+
+impl<'a> GtkLines<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            rest: text,
+            done: false,
+        }
+    }
+}
+
+impl<'a> Iterator for GtkLines<'a> {
+    type Item = (&'a str, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        for (idx, ch) in self.rest.char_indices() {
+            match ch {
+                '\r' => {
+                    let line = &self.rest[..idx];
+                    if self.rest[idx + 1..].starts_with('\n') {
+                        self.rest = &self.rest[idx + 2..];
+                        return Some((line, 2));
+                    } else {
+                        self.rest = &self.rest[idx + 1..];
+                        return Some((line, 1));
+                    }
+                }
+                '\n' | '\u{2029}' => {
+                    let line = &self.rest[..idx];
+                    self.rest = &self.rest[idx + ch.len_utf8()..];
+                    return Some((line, 1));
+                }
+                _ => {}
+            }
+        }
+        self.done = true;
+        Some((self.rest, 0))
+    }
 }
 
 /// Per-line cache for incremental Markdown styling and O(1) document word count.
@@ -77,30 +132,36 @@ impl LineCache {
         self.lines.clear();
         self.total_words = 0;
         let mut scratch = Vec::new();
-        for line in text.split('\n') {
-            let cached = scan_cached_line(line, &mut scratch);
+        for (line, break_len) in GtkLines::new(text) {
+            let cached = scan_cached_line(line, break_len, &mut scratch);
             self.total_words += cached.words;
             self.lines.push(cached);
         }
     }
 
     /// Replace `old_start_line..=old_end_line` with the lines in `new_text`
-    /// (`new_text.split('\n')`) and return the count of newly inserted lines.
+    /// (split on GTK line breaks `\r\n`, `\r`, `\n`, `\u{2029}`) and return the
+    /// count of newly inserted lines. `trailing_break_len` is applied to the
+    /// final inserted line.
     pub fn replace_lines(
         &mut self,
         old_start_line: usize,
         old_end_line: usize,
         new_text: &str,
+        trailing_break_len: usize,
     ) -> usize {
         for line in &self.lines[old_start_line..=old_end_line] {
             self.total_words = self.total_words.saturating_sub(line.words);
         }
         let mut scratch = Vec::new();
         let mut replacement = Vec::new();
-        for line in new_text.split('\n') {
-            let cached = scan_cached_line(line, &mut scratch);
+        for (line, break_len) in GtkLines::new(new_text) {
+            let cached = scan_cached_line(line, break_len, &mut scratch);
             self.total_words += cached.words;
             replacement.push(cached);
+        }
+        if let Some(last) = replacement.last_mut() {
+            last.break_len = trailing_break_len;
         }
         let count = replacement.len();
         self.lines
@@ -109,7 +170,7 @@ impl LineCache {
     }
 }
 
-fn scan_cached_line(line: &str, scratch: &mut Vec<char>) -> CachedLine {
+fn scan_cached_line(line: &str, break_len: usize, scratch: &mut Vec<char>) -> CachedLine {
     scratch.clear();
     scratch.extend(line.chars());
     let char_len = scratch.len();
@@ -124,6 +185,7 @@ fn scan_cached_line(line: &str, scratch: &mut Vec<char>) -> CachedLine {
     let words = crate::store::stats::count_words(line);
     CachedLine {
         char_len,
+        break_len,
         words,
         spans,
         cite_links,
@@ -137,7 +199,7 @@ pub fn spans(text: &str) -> Vec<Span> {
     let mut scratch = Vec::new();
     let mut line_start = 0usize;
 
-    for line in text.split('\n') {
+    for (line, break_len) in GtkLines::new(text) {
         scratch.clear();
         scratch.extend(line.chars());
         let line_len = scratch.len();
@@ -149,7 +211,7 @@ pub fn spans(text: &str) -> Vec<Span> {
                 span.end += line_start;
             }
         }
-        line_start += line_len + 1;
+        line_start += line_len + break_len;
     }
 
     spans.retain(|span| span.start < span.end);
@@ -701,7 +763,7 @@ mod tests {
                     kind: span.kind,
                 });
             }
-            offset += line.char_len + 1;
+            offset += line.char_len + line.break_len;
         }
         out
     }
@@ -717,7 +779,7 @@ mod tests {
         assert_eq!(flatten_cache_spans(&cache), spans(initial));
 
         // Replace one line (line 2) with two lines (line split).
-        let inserted = cache.replace_lines(2, 2, "Plain line\nwith *italic* and _more_.");
+        let inserted = cache.replace_lines(2, 2, "Plain line\nwith *italic* and _more_.", 1);
         assert_eq!(inserted, 2);
         let after_split =
             "# Title\n\nPlain line\nwith *italic* and _more_.\n> quoted line\nSee [^1](nostos:cite/a1).\n";
@@ -728,7 +790,7 @@ mod tests {
         assert_eq!(flatten_cache_spans(&cache), spans(after_split));
 
         // Merge lines 2..=3 back into a single line with UTF-8 + bare citation.
-        let inserted = cache.replace_lines(2, 3, "Café nostos:cite/bar-9.");
+        let inserted = cache.replace_lines(2, 3, "Café nostos:cite/bar-9.", 1);
         assert_eq!(inserted, 1);
         let after_merge =
             "# Title\n\nCafé nostos:cite/bar-9.\n> quoted line\nSee [^1](nostos:cite/a1).\n";
@@ -737,6 +799,30 @@ mod tests {
             crate::store::stats::count_words(after_merge)
         );
         assert_eq!(flatten_cache_spans(&cache), spans(after_merge));
+    }
+
+    #[test]
+    fn line_cache_handles_cr_crlf_and_paragraph_separator() {
+        let initial = "# Head\r\nPlain\r**bold** middle\u{2029}*soft* end";
+        let mut cache = LineCache::new();
+        cache.rebuild(initial);
+
+        assert_eq!(cache.lines.len(), 4);
+        assert_eq!(cache.lines[0].break_len, 2);
+        assert_eq!(cache.lines[1].break_len, 1);
+        assert_eq!(cache.lines[2].break_len, 1);
+        assert_eq!(cache.lines[3].break_len, 0);
+        assert_eq!(cache.total_words, crate::store::stats::count_words(initial));
+        assert_eq!(flatten_cache_spans(&cache), spans(initial));
+
+        // Replace line 1 ("Plain") with three lines separated by \r, \r\n, \u{2029}.
+        let inserted = cache.replace_lines(1, 1, "one\r**two**\r\n_three_\u{2029}four", 1);
+        assert_eq!(inserted, 4);
+        let updated =
+            "# Head\r\none\r**two**\r\n_three_\u{2029}four\r**bold** middle\u{2029}*soft* end";
+        assert_eq!(cache.lines.len(), 7);
+        assert_eq!(cache.total_words, crate::store::stats::count_words(updated));
+        assert_eq!(flatten_cache_spans(&cache), spans(updated));
     }
 
     #[test]

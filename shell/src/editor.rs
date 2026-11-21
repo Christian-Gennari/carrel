@@ -90,6 +90,7 @@ pub struct EditorPage {
     dirty_start: gtk::TextMark,
     dirty_end: gtk::TextMark,
     has_dirty: Cell<bool>,
+    dirty_needs_strip: Cell<bool>,
     line_cache: RefCell<LineCache>,
     /// The citation link the cursor is currently inside (drawn raw).
     cite_open: Cell<Option<OpenCite>>,
@@ -308,6 +309,7 @@ impl EditorPage {
             dirty_start,
             dirty_end,
             has_dirty: Cell::new(false),
+            dirty_needs_strip: Cell::new(false),
             line_cache: RefCell::new(line_cache),
             cite_open: Cell::new(None),
             status_generation: Cell::new(0),
@@ -328,6 +330,11 @@ impl EditorPage {
                 return;
             }
             page.mark_dirty_range(location, location);
+            // Multi-character inserts (such as pastes or IME commits) may
+            // carry or introduce tags, so never skip strip_range for them.
+            if text.chars().count() > 1 {
+                page.dirty_needs_strip.set(true);
+            }
             let offset = location.offset().max(0) as usize;
             if let Some(doc) = page.doc.borrow().as_ref() {
                 if let Err(error) = doc.apply(offset, 0, text) {
@@ -340,6 +347,16 @@ impl EditorPage {
                 page.start_hint.set_visible(false);
             }
             page.note_edit();
+        });
+
+        let weak = Rc::downgrade(self);
+        self.buffer.connect_paste_done(move |_, _| {
+            let Some(page) = weak.upgrade() else {
+                return;
+            };
+            if !page.loading.get() {
+                page.dirty_needs_strip.set(true);
+            }
         });
 
         let weak = Rc::downgrade(self);
@@ -566,6 +583,7 @@ impl EditorPage {
 
     fn restyle_full(&self) {
         self.has_dirty.set(false);
+        self.dirty_needs_strip.set(false);
         let text = self.buffer_text();
         {
             let mut cache = self.line_cache.borrow_mut();
@@ -587,7 +605,7 @@ impl EditorPage {
                 self.tags
                     .paint_line(&self.buffer, line_offset, cached, line_open);
             }
-            line_offset += cached.char_len + 1;
+            line_offset += cached.char_len + cached.break_len;
         }
         drop(cache);
         self.sync_focus();
@@ -598,6 +616,7 @@ impl EditorPage {
             return;
         }
         self.has_dirty.set(false);
+        let needs_strip = self.dirty_needs_strip.replace(false);
 
         let start_iter = self.buffer.iter_at_mark(&self.dirty_start);
         let end_iter = self.buffer.iter_at_mark(&self.dirty_end);
@@ -629,32 +648,53 @@ impl EditorPage {
             .buffer
             .iter_at_line(start_line as i32)
             .unwrap_or_else(|| self.buffer.start_iter());
-        let text_to = if new_end_line + 1 < new_line_count {
-            let mut next = self
+        let (text_to, trailing_break_len) = if new_end_line + 1 < new_line_count {
+            let next = self
                 .buffer
                 .iter_at_line((new_end_line + 1) as i32)
                 .unwrap_or_else(|| self.buffer.end_iter());
-            next.backward_char();
-            next
+            let mut line_end = self
+                .buffer
+                .iter_at_line(new_end_line as i32)
+                .unwrap_or_else(|| self.buffer.start_iter());
+            if !line_end.ends_line() {
+                line_end.forward_to_line_end();
+            }
+            let break_len = (next.offset() - line_end.offset()).max(0) as usize;
+            (line_end, break_len)
         } else {
-            self.buffer.end_iter()
+            (self.buffer.end_iter(), 0)
         };
         let dirty_text = self.buffer.text(&from, &text_to, true);
 
         let old_cite = self.cite_open.get();
+        let mut cache_mismatch = false;
         let can_skip_strip = {
             let mut cache = self.line_cache.borrow_mut();
             let single_line_no_newlines =
                 delta_lines == 0 && start_line == new_end_line && old_end_line == start_line;
-            let old_had_no_spans = single_line_no_newlines
+            let old_had_no_spans = !needs_strip
+                && single_line_no_newlines
                 && cache.lines[start_line].spans.is_empty()
                 && old_cite.map(|c| c.line) != Some(start_line);
-            let replaced_count = cache.replace_lines(start_line, old_end_line, &dirty_text);
-            debug_assert_eq!(replaced_count, new_end_line - start_line + 1);
-            let new_has_no_spans =
-                single_line_no_newlines && cache.lines[start_line].spans.is_empty();
-            old_had_no_spans && new_has_no_spans
+            let replaced_count =
+                cache.replace_lines(start_line, old_end_line, &dirty_text, trailing_break_len);
+            if replaced_count != new_end_line - start_line + 1
+                || cache.lines.len() != new_line_count
+            {
+                cache_mismatch = true;
+                false
+            } else {
+                let new_has_no_spans =
+                    single_line_no_newlines && cache.lines[start_line].spans.is_empty();
+                old_had_no_spans && new_has_no_spans
+            }
         };
+
+        if cache_mismatch {
+            self.restyle_full();
+            return;
+        }
 
         if !can_skip_strip {
             let strip_to = if new_end_line + 1 < new_line_count {
@@ -693,7 +733,7 @@ impl EditorPage {
                 self.tags
                     .paint_line(&self.buffer, line_offset, cached, line_open);
             }
-            line_offset += cached.char_len + 1;
+            line_offset += cached.char_len + cached.break_len;
         }
 
         if let Some(old_c) = shifted_old_cite {
@@ -1815,12 +1855,15 @@ impl Lines for BufferLines<'_> {
     }
 
     fn end(&self, line: i32) -> i32 {
-        // The line break itself belongs to the line, so the next line starts
-        // one character later. (`forward_to_line_end` skips empty lines.)
-        if line + 1 < self.count() {
-            self.start(line + 1) - 1
-        } else {
-            self.buffer.end_iter().offset()
+        // The line break itself belongs to the line; advance to the line's
+        // terminator so `\r\n` (2 chars) is excluded just like `\n` (1 char).
+        // (`forward_to_line_end` skips empty lines, so guard with `ends_line`.)
+        let Some(mut iter) = self.buffer.iter_at_line(line) else {
+            return self.buffer.end_iter().offset();
+        };
+        if !iter.ends_line() {
+            iter.forward_to_line_end();
         }
+        iter.offset()
     }
 }
