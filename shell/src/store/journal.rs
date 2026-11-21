@@ -233,6 +233,12 @@ impl Journal {
         self.file.sync_data()
     }
 
+    /// Duplicate the underlying append-only file descriptor so background syncs
+    /// can call `sync_data()` without holding the state mutex.
+    pub fn try_clone_file(&self) -> io::Result<File> {
+        self.file.try_clone()
+    }
+
     /// Cut the journal back to a byte length (used for a corrupt tail).
     pub fn truncate_to(&mut self, len: u64) -> io::Result<()> {
         self.file.set_len(len)?;

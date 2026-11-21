@@ -76,7 +76,7 @@ impl SyncState {
             .with_context(|| format!("open sync state {}", path.display()))?;
         conn.busy_timeout(std::time::Duration::from_secs(10))?;
         conn.execute_batch(
-            "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA foreign_keys = ON;",
+            "PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;",
         )?;
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn })

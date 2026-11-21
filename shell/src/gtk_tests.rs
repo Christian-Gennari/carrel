@@ -68,6 +68,9 @@ fn gtk_scenarios() {
     markdown_markers_lists_quotes_and_citations_are_styled();
     the_caret_line_holds_its_height();
     // --- end UI round 5 (Editor, issue #32) ---
+    incremental_restyle_matches_full_restyle_across_edits_and_cites();
+    pasting_cr_crlf_and_paragraph_separator_never_panics_and_styles_accurately();
+    intra_buffer_rich_paste_strips_stale_tags();
     keystroke_baseline();
     the_wifi_fix_returns_to_sync_and_syncs();
     offline_pairing_from_sync_prompts_wifi_and_resumes_pairing();
@@ -1256,6 +1259,214 @@ fn markdown_markers_lists_quotes_and_citations_are_styled() {
     assert!(has(bare, "carrel-cite-hidden"));
     assert!(has(bare + "nostos:cite/".len(), "carrel-cite"));
     assert_eq!(contents(&buffer), text, "the stored Markdown is untouched");
+}
+
+fn incremental_restyle_matches_full_restyle_across_edits_and_cites() {
+    let initial = "# Title\n\nPlain paragraph here.\n> Quote line\nFirst [^1](nostos:cite/c1) ref.\nSecond nostos:cite/c2 ref.\n";
+    let shell = TestShell::new(&[("Inc.md", initial)], "Inc.md");
+    let buffer = shell.editor.buffer();
+
+    let snapshot_tags = || -> Vec<Vec<String>> {
+        let len = buffer.char_count();
+        (0..len)
+            .map(|offset| {
+                let mut names: Vec<String> = buffer
+                    .iter_at_offset(offset)
+                    .tags()
+                    .into_iter()
+                    .filter_map(|tag| tag.name().map(|s| s.to_string()))
+                    .collect();
+                names.sort();
+                names
+            })
+            .collect()
+    };
+
+    let has = |offset: usize, name: &str| {
+        buffer
+            .iter_at_offset(offset as i32)
+            .tags()
+            .iter()
+            .any(|tag| tag.name().as_deref() == Some(name))
+    };
+
+    // Split line 2 and type **loud** across multiple edits before settling.
+    let split_at = contents(&buffer).find("here.").unwrap() as i32;
+    buffer.place_cursor(&buffer.iter_at_offset(split_at));
+    buffer.insert_at_cursor("\n**loud** ");
+    settle();
+
+    let text = contents(&buffer);
+    let loud_at = text.find("loud").unwrap();
+    assert!(has(loud_at, "carrel-bold"));
+    assert!(has(loud_at - 2, "carrel-dim"));
+    // Bottom line word count matches full-text count_words.
+    let expected_words = crate::store::stats::count_words(&text);
+    assert!(
+        shell
+            .editor
+            .bottom_line_text()
+            .contains(&format!("{expected_words} words")),
+        "status line should reflect {expected_words} words, got {:?}",
+        shell.editor.bottom_line_text()
+    );
+
+    // Move cursor inside first citation (shifted down by 1 line!) -> opens it.
+    let cite1_pos = text.find("nostos:cite/c1").unwrap();
+    shell.editor.select_range(cite1_pos as i32, 0);
+    settle();
+    assert!(has(cite1_pos, "carrel-dim"));
+    assert!(!has(cite1_pos, "carrel-cite-hidden"));
+
+    // Move cursor to second citation -> closes first, opens second.
+    let cite2_pos = text.find("nostos:cite/c2").unwrap();
+    shell.editor.select_range(cite2_pos as i32, 0);
+    settle();
+    assert!(has(cite1_pos, "carrel-cite-hidden"));
+    assert!(has(cite2_pos, "carrel-dim"));
+    assert!(!has(cite2_pos, "carrel-cite-hidden"));
+
+    // Delete across the split newline to merge lines back together.
+    let del_start = text.find("\n**loud** ").unwrap() as i32;
+    let mut from = buffer.iter_at_offset(del_start);
+    let mut to = buffer.iter_at_offset(del_start + 1);
+    buffer.delete(&mut from, &mut to);
+    settle();
+
+    // Incremental restyle tags must match a forced full restyle tag-for-tag.
+    let incremental_tags = snapshot_tags();
+    shell.editor.reapply_style();
+    settle();
+    let full_tags = snapshot_tags();
+    assert_eq!(incremental_tags, full_tags);
+}
+
+fn pasting_cr_crlf_and_paragraph_separator_never_panics_and_styles_accurately() {
+    let initial = "# Head\n\nPlain line.\nAfter **still bold**.\n";
+    let shell = TestShell::new(&[("LineBreaks.md", initial)], "LineBreaks.md");
+    let buffer = shell.editor.buffer();
+
+    let snapshot_tags = || -> Vec<Vec<String>> {
+        let len = buffer.char_count();
+        (0..len)
+            .map(|offset| {
+                let mut names: Vec<String> = buffer
+                    .iter_at_offset(offset)
+                    .tags()
+                    .into_iter()
+                    .filter_map(|tag| tag.name().map(|s| s.to_string()))
+                    .collect();
+                names.sort();
+                names
+            })
+            .collect()
+    };
+
+    let char_at = |text: &str, needle: &str| -> usize {
+        let byte_idx = text.find(needle).expect("needle in buffer text");
+        text[..byte_idx].chars().count()
+    };
+    let has = |offset: usize, name: &str| {
+        buffer
+            .iter_at_offset(offset as i32)
+            .tags()
+            .iter()
+            .any(|tag| tag.name().as_deref() == Some(name))
+    };
+
+    // Paste text containing lone \r, \r\n, and \u{2029} onto the plain line.
+    let insert_at = char_at(initial, "line.") as i32;
+    buffer.place_cursor(&buffer.iter_at_offset(insert_at));
+    buffer.insert_at_cursor("one\r**two**\r\n_three_\u{2029}four ");
+    settle();
+
+    let text = contents(&buffer);
+    assert!(has(char_at(&text, "two"), "carrel-bold"));
+    assert!(has(char_at(&text, "**two**"), "carrel-dim"));
+    assert!(has(char_at(&text, "three"), "carrel-italic"));
+    assert!(has(char_at(&text, "_three_"), "carrel-dim"));
+    assert!(has(char_at(&text, "still bold"), "carrel-bold"));
+
+    let expected_words = crate::store::stats::count_words(&text);
+    assert!(
+        shell
+            .editor
+            .bottom_line_text()
+            .contains(&format!("{expected_words} words")),
+        "expected {expected_words} words in {:?}",
+        shell.editor.bottom_line_text()
+    );
+
+    let incremental_tags = snapshot_tags();
+    shell.editor.reapply_style();
+    settle();
+    let full_tags = snapshot_tags();
+    assert_eq!(incremental_tags, full_tags);
+
+    // Also verify inserting \n immediately after a lone \r (merging into \r\n)
+    // stays consistent between incremental and full restyle.
+    let after_cr = char_at(&text, "**two**") as i32;
+    buffer.place_cursor(&buffer.iter_at_offset(after_cr));
+    buffer.insert_at_cursor("\n");
+    settle();
+    let incremental_tags = snapshot_tags();
+    shell.editor.reapply_style();
+    settle();
+    let full_tags = snapshot_tags();
+    assert_eq!(incremental_tags, full_tags);
+}
+
+fn intra_buffer_rich_paste_strips_stale_tags() {
+    let initial = "**bold**\nplain\n";
+    let shell = TestShell::new(&[("RichPaste.md", initial)], "RichPaste.md");
+    let buffer = shell.editor.buffer();
+    let clipboard = gdk::Display::default().expect("display").clipboard();
+
+    let has = |offset: i32, name: &str| {
+        buffer
+            .iter_at_offset(offset)
+            .tags()
+            .iter()
+            .any(|tag| tag.name().as_deref() == Some(name))
+    };
+
+    // Select "bold" without its "**" delimiters and copy intra-buffer rich text.
+    assert!(has(2, "carrel-bold"));
+    shell.editor.select_range(2, 4);
+    buffer.copy_clipboard(&clipboard);
+
+    // Paste onto the plain line: the stale carrel-bold tag must be stripped.
+    let plain_end = "**bold**\nplain".chars().count() as i32;
+    buffer.place_cursor(&buffer.iter_at_offset(plain_end));
+    buffer.paste_clipboard(&clipboard, None, true);
+    pump(|| contents(&buffer).contains("plainbold"));
+    settle();
+
+    let text = contents(&buffer);
+    assert_eq!(text, "**bold**\nplainbold\n");
+    let pasted_start = text.find("plainbold").expect("pasted line") + "plain".len();
+    for offset in pasted_start..pasted_start + 4 {
+        assert!(
+            !has(offset as i32, "carrel-bold"),
+            "pasted text at offset {offset} must not retain stale carrel-bold tag"
+        );
+    }
+
+    // Even a single copied bold character pasted onto a plain line must be stripped.
+    shell.editor.select_range(2, 1);
+    buffer.copy_clipboard(&clipboard);
+    let end_of_line = contents(&buffer).find("\n").expect("first newline");
+    let second_line_end = end_of_line + 1 + "plainbold".len();
+    buffer.place_cursor(&buffer.iter_at_offset(second_line_end as i32));
+    buffer.paste_clipboard(&clipboard, None, true);
+    pump(|| contents(&buffer).contains("plainboldb"));
+    settle();
+
+    let pasted_char_offset = contents(&buffer).find("plainboldb").unwrap() + "plainbold".len();
+    assert!(
+        !has(pasted_char_offset as i32, "carrel-bold"),
+        "single-char paste must not retain stale carrel-bold tag"
+    );
 }
 
 /// Typewriter scrolling: once the caret is past the middle, its line holds

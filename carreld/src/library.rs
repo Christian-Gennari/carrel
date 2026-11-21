@@ -440,14 +440,23 @@ fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
 /// recorded as unavailable and is not an error. Any other failure ends the
 /// sync, exactly like the file endpoints.
 pub async fn sync_library(client: &HttpClient, state_dir: &Path) -> Result<LibraryReport> {
-    let mut cache = LibraryCache::from_state_dir(state_dir)?;
+    let state_dir_owned = state_dir.to_path_buf();
+    let (mut cache, mut since) =
+        tokio::task::spawn_blocking(move || -> Result<(LibraryCache, String)> {
+            let cache = LibraryCache::from_state_dir(&state_dir_owned)?;
+            let since = cache.cursor()?;
+            Ok((cache, since))
+        })
+        .await
+        .context("open library cache")??;
     let mut report = LibraryReport::default();
-    let mut since = cache.cursor()?;
 
     for _ in 0..MAX_PAGES {
         let response = client.get(&endpoints::library_since(&since)).await?;
         if response.status == 404 {
-            cache.mark_unavailable()?;
+            tokio::task::spawn_blocking(move || cache.mark_unavailable())
+                .await
+                .context("mark library unavailable")??;
             report.unavailable = true;
             return Ok(report);
         }
@@ -465,7 +474,15 @@ pub async fn sync_library(client: &HttpClient, state_dir: &Path) -> Result<Libra
             page.cursor.clone()
         };
         let empty = page.books.is_empty() && page.items.is_empty() && page.deleted.is_empty();
-        let applied = cache.apply_page(&page, &next)?;
+        let next_for_blocking = next.clone();
+        let (returned_cache, applied) =
+            tokio::task::spawn_blocking(move || -> Result<(LibraryCache, LibraryApply)> {
+                let applied = cache.apply_page(&page, &next_for_blocking)?;
+                Ok((cache, applied))
+            })
+            .await
+            .context("apply library page")??;
+        cache = returned_cache;
         report.books += applied.books;
         report.items += applied.items;
         report.deleted += applied.deleted;

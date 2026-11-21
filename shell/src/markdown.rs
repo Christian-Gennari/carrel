@@ -45,23 +45,173 @@ pub struct Span {
     pub kind: Kind,
 }
 
+const CITE_SCHEME: &[char] = &['n', 'o', 's', 't', 'o', 's', ':', 'c', 'i', 't', 'e', '/'];
+const CITE_LINK_TARGET: &[char] = &[
+    ']', '(', 'n', 'o', 's', 't', 'o', 's', ':', 'c', 'i', 't', 'e', '/',
+];
+
+/// Cached Markdown parse + word count for a single logical line (excluding its
+/// trailing line break).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedLine {
+    pub char_len: usize,
+    /// Character length of the trailing line break in `GtkTextBuffer`
+    /// (`2` for `\r\n`, `1` for `\n`, `\r`, or `\u{2029}`, `0` at EOF).
+    pub break_len: usize,
+    pub words: u64,
+    /// Line-relative spans (`0..=char_len`).
+    pub spans: Vec<Span>,
+    /// Line-relative `(start, end)` character ranges of `Kind::CiteLink`.
+    pub cite_links: Vec<(usize, usize)>,
+}
+
+/// Iterator over `(line_text, break_char_len)` pairs matching `GtkTextBuffer`
+/// line boundaries (`\r\n`, `\r`, `\n`, and `\u{2029}`).
+///
+/// Always yields at least one line (even for `""`), and yields a trailing empty
+/// line when `text` ends with a line break, matching `GtkTextBuffer::line_count()`.
+struct GtkLines<'a> {
+    rest: &'a str,
+    done: bool,
+}
+
+impl<'a> GtkLines<'a> {
+    fn new(text: &'a str) -> Self {
+        Self {
+            rest: text,
+            done: false,
+        }
+    }
+}
+
+impl<'a> Iterator for GtkLines<'a> {
+    type Item = (&'a str, usize);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.done {
+            return None;
+        }
+        for (idx, ch) in self.rest.char_indices() {
+            match ch {
+                '\r' => {
+                    let line = &self.rest[..idx];
+                    if self.rest[idx + 1..].starts_with('\n') {
+                        self.rest = &self.rest[idx + 2..];
+                        return Some((line, 2));
+                    } else {
+                        self.rest = &self.rest[idx + 1..];
+                        return Some((line, 1));
+                    }
+                }
+                '\n' | '\u{2029}' => {
+                    let line = &self.rest[..idx];
+                    self.rest = &self.rest[idx + ch.len_utf8()..];
+                    return Some((line, 1));
+                }
+                _ => {}
+            }
+        }
+        self.done = true;
+        Some((self.rest, 0))
+    }
+}
+
+/// Per-line cache for incremental Markdown styling and O(1) document word count.
+#[derive(Debug, Default, Clone)]
+pub struct LineCache {
+    pub lines: Vec<CachedLine>,
+    pub total_words: u64,
+}
+
+impl LineCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn rebuild(&mut self, text: &str) {
+        self.lines.clear();
+        self.total_words = 0;
+        let mut scratch = Vec::new();
+        for (line, break_len) in GtkLines::new(text) {
+            let cached = scan_cached_line(line, break_len, &mut scratch);
+            self.total_words += cached.words;
+            self.lines.push(cached);
+        }
+    }
+
+    /// Replace `old_start_line..=old_end_line` with the lines in `new_text`
+    /// (split on GTK line breaks `\r\n`, `\r`, `\n`, `\u{2029}`) and return the
+    /// count of newly inserted lines. `trailing_break_len` is applied to the
+    /// final inserted line.
+    pub fn replace_lines(
+        &mut self,
+        old_start_line: usize,
+        old_end_line: usize,
+        new_text: &str,
+        trailing_break_len: usize,
+    ) -> usize {
+        for line in &self.lines[old_start_line..=old_end_line] {
+            self.total_words = self.total_words.saturating_sub(line.words);
+        }
+        let mut scratch = Vec::new();
+        let mut replacement = Vec::new();
+        for (line, break_len) in GtkLines::new(new_text) {
+            let cached = scan_cached_line(line, break_len, &mut scratch);
+            self.total_words += cached.words;
+            replacement.push(cached);
+        }
+        if let Some(last) = replacement.last_mut() {
+            last.break_len = trailing_break_len;
+        }
+        let count = replacement.len();
+        self.lines
+            .splice(old_start_line..=old_end_line, replacement);
+        count
+    }
+}
+
+fn scan_cached_line(line: &str, break_len: usize, scratch: &mut Vec<char>) -> CachedLine {
+    scratch.clear();
+    scratch.extend(line.chars());
+    let char_len = scratch.len();
+    let mut spans = Vec::new();
+    scan_line(scratch, 0, char_len, &mut spans);
+    spans.retain(|span| span.start < span.end);
+    let cite_links = spans
+        .iter()
+        .filter(|span| span.kind == Kind::CiteLink)
+        .map(|span| (span.start, span.end))
+        .collect();
+    let words = crate::store::stats::count_words(line);
+    CachedLine {
+        char_len,
+        break_len,
+        words,
+        spans,
+        cite_links,
+    }
+}
+
 /// Character ranges for `text`. Offsets count characters, not bytes, because
 /// that is what GTK text buffers use.
 pub fn spans(text: &str) -> Vec<Span> {
-    let chars: Vec<char> = text.chars().collect();
     let mut spans = Vec::new();
+    let mut scratch = Vec::new();
     let mut line_start = 0usize;
 
-    while line_start <= chars.len() {
-        let line_end = chars[line_start..]
-            .iter()
-            .position(|&ch| ch == '\n')
-            .map_or(chars.len(), |offset| line_start + offset);
-        scan_line(&chars, line_start, line_end, &mut spans);
-        if line_end == chars.len() {
-            break;
+    for (line, break_len) in GtkLines::new(text) {
+        scratch.clear();
+        scratch.extend(line.chars());
+        let line_len = scratch.len();
+        let before = spans.len();
+        scan_line(&scratch, 0, line_len, &mut spans);
+        if line_start != 0 {
+            for span in &mut spans[before..] {
+                span.start += line_start;
+                span.end += line_start;
+            }
         }
-        line_start = line_end + 1;
+        line_start += line_len + break_len;
     }
 
     spans.retain(|span| span.start < span.end);
@@ -144,18 +294,17 @@ fn scan_line(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) {
         }
 
         if ch == '*' || ch == '_' {
-            if let Some(next) = scan_emphasis(chars, index, end) {
-                spans.extend(next.spans);
-                index = next.after;
+            if let Some(after) = scan_emphasis(chars, index, end, spans) {
+                index = after;
                 continue;
             }
         }
 
-        if starts_with(chars, index, end, "nostos:cite/") {
+        if ch == 'n' && starts_with_chars(chars, index, end, CITE_SCHEME) {
             // A bare target has no label: hide the scheme and keep the id as
             // the quiet marker. The buffer text itself is never touched, so
             // the file on disk stays exactly as it was stored.
-            let scheme_end = index + "nostos:cite/".chars().count();
+            let scheme_end = index + CITE_SCHEME.len();
             let mut link_end = scheme_end;
             // Ids are slugs. Stopping at the first other character keeps
             // sentence punctuation and the `)` of a broken link outside the
@@ -227,7 +376,6 @@ fn list_marker(chars: &[char], start: usize, end: usize) -> Option<(usize, usize
 /// the link's syntax stays plain, and the target inside it is not mistaken
 /// for a bare marker. `None` when the text does not look like such a link.
 fn broken_cite_link_end(chars: &[char], start: usize, end: usize) -> Option<usize> {
-    const TARGET: &str = "](nostos:cite/";
     let mut close = start + 1;
     while close < end && chars[close] != ']' {
         if chars[close] == '[' {
@@ -235,10 +383,10 @@ fn broken_cite_link_end(chars: &[char], start: usize, end: usize) -> Option<usiz
         }
         close += 1;
     }
-    if close >= end || !starts_with(chars, close, end, TARGET) {
+    if close >= end || !starts_with_chars(chars, close, end, CITE_LINK_TARGET) {
         return None;
     }
-    let mut at = close + TARGET.chars().count();
+    let mut at = close + CITE_LINK_TARGET.len();
     while at < end && !chars[at].is_whitespace() && chars[at] != ')' {
         at += 1;
     }
@@ -257,7 +405,6 @@ fn scan_cite_link(
     end: usize,
     spans: &mut Vec<Span>,
 ) -> Option<usize> {
-    const TARGET: &str = "](nostos:cite/";
     let mut close = start + 1;
     while close < end && chars[close] != ']' {
         if chars[close] == '[' {
@@ -265,10 +412,10 @@ fn scan_cite_link(
         }
         close += 1;
     }
-    if close >= end || !starts_with(chars, close, end, TARGET) {
+    if close >= end || !starts_with_chars(chars, close, end, CITE_LINK_TARGET) {
         return None;
     }
-    let id_start = close + TARGET.chars().count();
+    let id_start = close + CITE_LINK_TARGET.len();
     let mut link_end = id_start;
     while link_end < end && chars[link_end] != ')' && !chars[link_end].is_whitespace() {
         link_end += 1;
@@ -313,12 +460,7 @@ fn scan_cite_link(
     Some(link_end)
 }
 
-struct Emphasis {
-    spans: Vec<Span>,
-    after: usize,
-}
-
-fn scan_emphasis(chars: &[char], start: usize, end: usize) -> Option<Emphasis> {
+fn scan_emphasis(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) -> Option<usize> {
     let marker = chars[start];
 
     // Underscores inside a word are not emphasis (`snake_case`).
@@ -344,7 +486,6 @@ fn scan_emphasis(chars: &[char], start: usize, end: usize) -> Option<Emphasis> {
             continue;
         }
         if let Some(close) = find_closing(chars, content_start, end, marker, width) {
-            let mut spans = Vec::new();
             if width >= 2 {
                 spans.push(Span {
                     start: content_start,
@@ -381,10 +522,7 @@ fn scan_emphasis(chars: &[char], start: usize, end: usize) -> Option<Emphasis> {
                     });
                 }
             }
-            return Some(Emphasis {
-                spans,
-                after: close + width,
-            });
+            return Some(close + width);
         }
     }
     None
@@ -416,9 +554,9 @@ fn find_closing(
     None
 }
 
-fn starts_with(chars: &[char], start: usize, end: usize, needle: &str) -> bool {
-    let needle: Vec<char> = needle.chars().collect();
-    start + needle.len() <= end && chars[start..start + needle.len()] == needle[..]
+#[inline]
+fn starts_with_chars(chars: &[char], start: usize, end: usize, needle: &[char]) -> bool {
+    start + needle.len() <= end && chars[start..start + needle.len()] == *needle
 }
 
 #[cfg(test)]
@@ -612,5 +750,86 @@ mod tests {
     fn unmatched_markers_stay_plain() {
         assert!(spans("**not closed").is_empty());
         assert!(spans("*not closed").is_empty());
+    }
+
+    fn flatten_cache_spans(cache: &LineCache) -> Vec<Span> {
+        let mut out = Vec::new();
+        let mut offset = 0usize;
+        for line in &cache.lines {
+            for span in &line.spans {
+                out.push(Span {
+                    start: offset + span.start,
+                    end: offset + span.end,
+                    kind: span.kind,
+                });
+            }
+            offset += line.char_len + line.break_len;
+        }
+        out
+    }
+
+    #[test]
+    fn line_cache_matches_full_scan_across_edits() {
+        let initial =
+            "# Title\n\nPlain line with **bold**.\n> quoted line\nSee [^1](nostos:cite/a1).\n";
+        let mut cache = LineCache::new();
+        cache.rebuild(initial);
+
+        assert_eq!(cache.total_words, crate::store::stats::count_words(initial));
+        assert_eq!(flatten_cache_spans(&cache), spans(initial));
+
+        // Replace one line (line 2) with two lines (line split).
+        let inserted = cache.replace_lines(2, 2, "Plain line\nwith *italic* and _more_.", 1);
+        assert_eq!(inserted, 2);
+        let after_split =
+            "# Title\n\nPlain line\nwith *italic* and _more_.\n> quoted line\nSee [^1](nostos:cite/a1).\n";
+        assert_eq!(
+            cache.total_words,
+            crate::store::stats::count_words(after_split)
+        );
+        assert_eq!(flatten_cache_spans(&cache), spans(after_split));
+
+        // Merge lines 2..=3 back into a single line with UTF-8 + bare citation.
+        let inserted = cache.replace_lines(2, 3, "Café nostos:cite/bar-9.", 1);
+        assert_eq!(inserted, 1);
+        let after_merge =
+            "# Title\n\nCafé nostos:cite/bar-9.\n> quoted line\nSee [^1](nostos:cite/a1).\n";
+        assert_eq!(
+            cache.total_words,
+            crate::store::stats::count_words(after_merge)
+        );
+        assert_eq!(flatten_cache_spans(&cache), spans(after_merge));
+    }
+
+    #[test]
+    fn line_cache_handles_cr_crlf_and_paragraph_separator() {
+        let initial = "# Head\r\nPlain\r**bold** middle\u{2029}*soft* end";
+        let mut cache = LineCache::new();
+        cache.rebuild(initial);
+
+        assert_eq!(cache.lines.len(), 4);
+        assert_eq!(cache.lines[0].break_len, 2);
+        assert_eq!(cache.lines[1].break_len, 1);
+        assert_eq!(cache.lines[2].break_len, 1);
+        assert_eq!(cache.lines[3].break_len, 0);
+        assert_eq!(cache.total_words, crate::store::stats::count_words(initial));
+        assert_eq!(flatten_cache_spans(&cache), spans(initial));
+
+        // Replace line 1 ("Plain") with three lines separated by \r, \r\n, \u{2029}.
+        let inserted = cache.replace_lines(1, 1, "one\r**two**\r\n_three_\u{2029}four", 1);
+        assert_eq!(inserted, 4);
+        let updated =
+            "# Head\r\none\r**two**\r\n_three_\u{2029}four\r**bold** middle\u{2029}*soft* end";
+        assert_eq!(cache.lines.len(), 7);
+        assert_eq!(cache.total_words, crate::store::stats::count_words(updated));
+        assert_eq!(flatten_cache_spans(&cache), spans(updated));
+    }
+
+    #[test]
+    fn bare_citation_and_non_citation_n_words() {
+        let text = "note nothing nostos:cite nostos:cite/ nostos:cite/ok-1.";
+        assert!(has(text, Kind::CiteMarker, "ok-1"));
+        assert!(has(text, Kind::CiteHidden, "nostos:cite/"));
+        assert!(!has(text, Kind::CiteMarker, "nostos:cite"));
     }
 }
