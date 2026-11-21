@@ -293,6 +293,8 @@ impl QuotePalette {
         message_hint.set_visible(false);
 
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        column.add_css_class("quote-card");
+        column.set_overflow(gtk::Overflow::Hidden);
         column.set_width_request(POPOVER_WIDTH);
         column.append(&heading);
         column.append(&message);
@@ -303,6 +305,9 @@ impl QuotePalette {
         let popover = gtk::Popover::new();
         popover.add_css_class("quote-popover");
         popover.set_child(Some(&column));
+        if let Some(contents) = column.parent() {
+            contents.set_overflow(gtk::Overflow::Hidden);
+        }
         popover.set_parent(&view);
         popover.set_autohide(false);
         popover.set_has_arrow(false);
@@ -779,7 +784,6 @@ impl QuotePalette {
 
 fn result_row(hit: &LibraryHit) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
-    row.add_css_class("ui-row");
     row.add_css_class("quote-row");
 
     let text = gtk::Label::new(Some(&hit.text));

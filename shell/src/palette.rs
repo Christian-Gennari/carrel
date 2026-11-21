@@ -359,6 +359,7 @@ impl CommandPalette {
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.add_css_class("command-palette");
+        widget.set_overflow(gtk::Overflow::Hidden);
         widget.set_halign(gtk::Align::Center);
         widget.set_valign(gtk::Align::Start);
         widget.set_margin_top(PALETTE_TOP);
@@ -725,7 +726,6 @@ impl CommandPalette {
 /// One row: the name, then the key caps at the right edge.
 fn row_widget(row: &PaletteRow) -> gtk::ListBoxRow {
     let element = gtk::ListBoxRow::new();
-    element.add_css_class("ui-row");
     element.add_css_class("command-row");
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     let name = gtk::Label::new(Some(&row.label));

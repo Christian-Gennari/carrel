@@ -444,7 +444,8 @@ scrollbar {{
     box-shadow: 0 18px 48px {shadow};
 }}
 .command-query-row {{
-    padding: 14px 16px 12px 16px;
+    margin: 0 20px 4px 20px;
+    padding: 16px 0 12px 0;
     border-bottom: 1px solid {border};
 }}
 .command-query {{
@@ -456,10 +457,7 @@ scrollbar {{
 }}
 .command-list {{
     background-color: transparent;
-}}
-.command-row {{
-    padding: 9px 14px;
-    border-radius: 6px;
+    padding: 4px 0;
 }}
 .command-name {{
     color: {text};
@@ -468,12 +466,14 @@ scrollbar {{
 .command-message {{
     color: {muted};
     font-size: {secondary}px;
-    padding: 16px;
+    padding: 18px 20px;
 }}
-/* The footer of every floating card: palette, Quotes, key sheet. One rule,
-   one place, so the cards end the same way. */
+/* The footer of every floating card: palette, Quotes, key sheet. The inset
+   hairline keeps every card's edges on one grid instead of stacking
+   full-width bordered boxes. */
 .hint-bar.card-hint-bar {{
-    padding: 9px 16px 10px 16px;
+    margin: 4px 20px 0 20px;
+    padding: 10px 0 14px 0;
     border-top: 1px solid {border};
 }}
 /* The key sheet: one centred card, grouped, with the same key caps. */
@@ -484,6 +484,10 @@ scrollbar {{
     border-radius: 12px;
     padding: 26px 30px 22px 30px;
     box-shadow: 0 18px 48px {shadow};
+}}
+.key-sheet .hint-bar.card-hint-bar {{
+    margin: 0;
+    padding: 14px 0 0 0;
 }}
 .key-sheet-title {{
     color: {text};
@@ -526,9 +530,17 @@ scrollbar {{
 .scroll-fade-top {{
     background-image: linear-gradient(to bottom, {background} 0%, {background_clear} 100%);
 }}
-.file-row, .setting-row, .quote-row, .ui-row {{
+.file-row, .setting-row, .ui-row {{
     padding: 10px 14px;
     border-radius: 8px;
+    color: {text};
+    font-size: {row}px;
+}}
+/* Rows inside floating cards run edge to edge with square corners so a
+   rounded selection never collides with the card's outer corner radius. */
+.command-row, .quote-row {{
+    padding: 10px 20px;
+    border-radius: 0;
     color: {text};
     font-size: {row}px;
 }}
@@ -569,11 +581,14 @@ button:disabled, button:disabled label {{
    selected one. A click still selects. GTK's own theme tints `row:hover`
    too, so this says it outright. */
 .file-row:hover:not(:selected), .setting-row:hover:not(:selected),
-.quote-row:hover:not(:selected), .ui-row:hover:not(:selected) {{
+.ui-row:hover:not(:selected), .command-row:hover:not(:selected),
+.quote-row:hover:not(:selected) {{
     background-color: transparent;
     background-image: none;
 }}
-.file-row:selected, .setting-row:selected, .quote-row:selected, .ui-row:selected {{
+.file-row:selected, .setting-row:selected,
+.ui-row:selected, .command-row:selected,
+.quote-row:selected {{
     background-color: {selection};
     color: {selected_text};
 }}
@@ -588,6 +603,14 @@ button:disabled, button:disabled label {{
 .ui-row:selected .setting-label,
 .command-row:selected .command-name,
 .quote-row:selected .quote-text {{
+    color: {selected_text};
+}}
+.command-row .key-cap {{
+    color: {muted};
+}}
+.command-row:selected .key-cap {{
+    background-color: transparent;
+    border-color: {selected_note};
     color: {selected_text};
 }}
 /* Secondary text on a selected row: a hint of the light, mixed onto the row. */
@@ -854,12 +877,12 @@ entry:focus, entry:focus-within {{
 .quote-message {{
     color: {muted};
     font-size: {preview}px;
-    padding: 12px 16px;
+    padding: 18px 20px;
 }}
 .quote-heading {{
     color: {dim};
     font-size: {hint}px;
-    padding: 10px 16px 2px 16px;
+    padding: 12px 20px 6px 20px;
 }}
 /* The palette at the caret: the same card shape as the command palette and
    the key sheet. It is a popover (its own surface), so it keeps no shadow:
@@ -877,6 +900,9 @@ popover.quote-popover > contents {{
     border-radius: 12px;
     padding: 0;
     box-shadow: none;
+}}
+.quote-card {{
+    border-radius: 11px;
 }}
 /* A QR code needs a white quiet zone on every theme to scan. The edge keeps
    that white card visible on white paper too. */
@@ -1162,6 +1188,79 @@ mod tests {
         }
         let popover = rule(&sheet, "popover.quote-popover > contents");
         assert!(popover.contains("box-shadow: none"), "{popover}");
+    }
+
+    #[test]
+    fn floating_card_rows_are_full_bleed_and_aligned_without_nested_boxes() {
+        for theme in Theme::ALL {
+            let palette = Palette::of(theme);
+            let sheet = css(&settings_for(theme, FontChoice::Serif));
+
+            // Card rows must be square and full-bleed, never inheriting
+            // .ui-row's 8 px rounded box or 14 px horizontal padding.
+            let open_rows = rule(&sheet, ".file-row, .setting-row, .ui-row");
+            assert!(open_rows.contains("border-radius: 8px"), "{open_rows}");
+            assert!(
+                !sheet.contains(".file-row, .setting-row, .quote-row, .ui-row"),
+                "quote-row must not share open-page rounded corners"
+            );
+
+            let card_rows = rule(&sheet, ".command-row, .quote-row");
+            assert!(card_rows.contains("border-radius: 0"), "{card_rows}");
+            assert!(card_rows.contains("padding: 10px 20px"), "{card_rows}");
+            let ui_pos = sheet.find(".file-row, .setting-row, .ui-row").unwrap();
+            let card_pos = sheet.find(".command-row, .quote-row").unwrap();
+            assert!(
+                card_pos > ui_pos,
+                "card row rule must come after open-page .ui-row"
+            );
+
+            // Query header, messages, headings, and card footer share one 20 px
+            // horizontal grid inside the palette and quotes cards.
+            let query_row = rule(&sheet, ".command-query-row");
+            assert!(query_row.contains("margin: 0 20px"), "{query_row}");
+            assert!(query_row.contains("padding: 16px 0 12px 0"), "{query_row}");
+
+            let cmd_msg = rule(&sheet, ".command-message");
+            assert!(cmd_msg.contains("padding: 18px 20px"), "{cmd_msg}");
+
+            let quote_msg = rule(&sheet, ".quote-message");
+            assert!(quote_msg.contains("padding: 18px 20px"), "{quote_msg}");
+
+            let quote_heading = rule(&sheet, ".quote-heading");
+            assert!(
+                quote_heading.contains("padding: 12px 20px 6px 20px"),
+                "{quote_heading}"
+            );
+
+            let card_footer = rule(&sheet, ".hint-bar.card-hint-bar");
+            assert!(
+                card_footer.contains("margin: 4px 20px 0 20px"),
+                "{card_footer}"
+            );
+
+            // Key sheet already has 30 px outer padding, so its footer must
+            // reset horizontal inset to align flush with its columns.
+            let key_footer = rule(&sheet, ".key-sheet .hint-bar.card-hint-bar");
+            assert!(key_footer.contains("margin: 0;"), "{key_footer}");
+            assert!(key_footer.contains("padding: 14px 0 0 0"), "{key_footer}");
+
+            // Concentric inner clip inside the 1 px bordered 12 px quote popover.
+            let quote_card = rule(&sheet, ".quote-card");
+            assert!(quote_card.contains("border-radius: 11px"), "{quote_card}");
+
+            // Key caps on a selected command row must integrate with the
+            // selection surface (especially in High contrast).
+            let selected_cap = rule(&sheet, ".command-row:selected .key-cap");
+            assert!(
+                selected_cap.contains("background-color: transparent"),
+                "{selected_cap}"
+            );
+            assert!(
+                selected_cap.contains(&format!("color: {}", palette.selected_text())),
+                "{selected_cap}"
+            );
+        }
     }
 
     #[test]
