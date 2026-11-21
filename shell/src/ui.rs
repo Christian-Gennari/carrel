@@ -1187,6 +1187,20 @@ pub fn local_date() -> String {
         .unwrap_or_default()
 }
 
+/// Whether a `gtk::Entry` currently holds keyboard focus. In GTK4 an entry
+/// delegates focus to its internal `gtk::Text` child, so `entry.has_focus()`
+/// stays false even when typing goes straight into it.
+pub fn entry_has_focus(entry: &gtk::Entry) -> bool {
+    if entry.has_focus() {
+        return true;
+    }
+    let Some(root) = entry.root() else {
+        return false;
+    };
+    root.focus()
+        .is_some_and(|focus| focus.is_ancestor(entry) && focus.has_focus())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
