@@ -953,7 +953,12 @@ impl FakeDaemon {
                     label: "CARREL USB".into(),
                     free_bytes: 12_400_000_000,
                 }],
-                update: "ready:0.2.0".into(),
+                // CARREL_FAKE_UPDATE=none: no update waiting (the website's
+                // Settings shot); otherwise one is ready, for Settings' top row.
+                update: match std::env::var("CARREL_FAKE_UPDATE").as_deref() {
+                    Ok("none") => "idle".into(),
+                    _ => "ready:0.2.0".into(),
+                },
                 pending_pair: None,
                 configured: true,
                 wifi_down: false,
