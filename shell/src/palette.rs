@@ -34,7 +34,7 @@ const PALETTE_WIDTH: i32 = 620;
 const PALETTE_TOP: i32 = 88;
 /// The tallest the list grows before it scrolls: the ten curated actions fit
 /// without a scroll, and the rest of the list scrolls under them.
-const LIST_MAX_HEIGHT: i32 = 424;
+const LIST_MAX_HEIGHT: i32 = 442;
 /// How many documents a file query lists.
 const FILE_LIMIT: usize = 20;
 
@@ -290,6 +290,9 @@ fn ready_version(wire: &str) -> Option<String> {
 pub struct CommandPalette {
     pub widget: gtk::Box,
     query_label: gtk::Label,
+    query_caret: gtk::Box,
+    hint: gtk::Box,
+    empty_hint: gtk::Box,
     list: gtk::ListBox,
     scroller: gtk::ScrolledWindow,
     message: gtk::Label,
@@ -335,11 +338,17 @@ impl CommandPalette {
     ) -> Rc<Self> {
         let query_label = gtk::Label::new(None);
         query_label.set_xalign(0.0);
-        query_label.set_hexpand(true);
         query_label.set_ellipsize(pango::EllipsizeMode::End);
         query_label.add_css_class("command-query");
+        // A thin, still caret: the query reads as a field being typed into,
+        // not a static heading. It sits before the placeholder and after the
+        // typed text, as in any text field.
+        let query_caret = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        query_caret.add_css_class("command-caret");
+        query_caret.set_valign(gtk::Align::Center);
         let query_row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         query_row.add_css_class("command-query-row");
+        query_row.append(&query_caret);
         query_row.append(&query_label);
 
         let list = ui::list();
@@ -360,6 +369,9 @@ impl CommandPalette {
         message.set_visible(false);
 
         let hint = ui::card_hint_bar(&PALETTE_HINTS);
+        // With nothing to run or move to, the footer offers only the way out.
+        let empty_hint = ui::card_hint_bar(&[("Esc", "Close")]);
+        empty_hint.set_visible(false);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.add_css_class("command-palette");
@@ -372,12 +384,16 @@ impl CommandPalette {
         widget.append(&scroller);
         widget.append(&message);
         widget.append(&hint);
+        widget.append(&empty_hint);
         widget.set_visible(false);
 
         let root = store.root().to_path_buf();
         let palette = Rc::new(Self {
             widget,
             query_label,
+            query_caret,
+            hint,
+            empty_hint,
             list,
             scroller,
             message,
@@ -694,9 +710,17 @@ impl CommandPalette {
         if query.is_empty() {
             self.query_label.set_text("Type to find an action");
             self.query_label.add_css_class("command-placeholder");
+            self.query_caret.remove_css_class("command-caret-after");
+            if let Some(row) = self.query_caret.parent().and_downcast::<gtk::Box>() {
+                row.reorder_child_after(&self.query_caret, None::<&gtk::Widget>);
+            }
         } else {
             self.query_label.set_text(&query);
             self.query_label.remove_css_class("command-placeholder");
+            self.query_caret.add_css_class("command-caret-after");
+            if let Some(row) = self.query_caret.parent().and_downcast::<gtk::Box>() {
+                row.reorder_child_after(&self.query_caret, Some(&self.query_label));
+            }
         }
     }
 
@@ -715,6 +739,8 @@ impl CommandPalette {
 
         self.scroller.set_visible(!empty);
         self.message.set_visible(empty);
+        self.hint.set_visible(!empty);
+        self.empty_hint.set_visible(empty);
         if empty {
             self.message.set_text(&format!(
                 "No actions or files match “{}”.",
@@ -734,12 +760,36 @@ fn row_widget(row: &PaletteRow) -> gtk::ListBoxRow {
     let element = gtk::ListBoxRow::new();
     element.add_css_class("command-row");
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 14);
-    let name = gtk::Label::new(Some(&row.label));
+    // A document reads as it does on the Files screen: its name, then its
+    // folder in the quieter ink, so "Open:" never crowds the title.
+    let (title, folder) = match row.label.strip_prefix("Open: ") {
+        Some(path) => match path.rsplit_once('/') {
+            Some((folder, name)) => (name.to_string(), Some(format!("{folder}/"))),
+            None => (path.to_string(), None),
+        },
+        None => (row.label.clone(), None),
+    };
+    let name = gtk::Label::new(Some(&title));
     name.set_xalign(0.0);
-    name.set_hexpand(true);
     name.set_ellipsize(pango::EllipsizeMode::End);
     name.add_css_class("command-name");
     line.append(&name);
+    let note = gtk::Label::new(folder.as_deref());
+    note.set_xalign(0.0);
+    note.set_hexpand(true);
+    note.set_ellipsize(pango::EllipsizeMode::End);
+    note.add_css_class("row-note");
+    note.set_visible(folder.is_some());
+    line.append(&note);
+    if folder.is_none() {
+        name.set_hexpand(true);
+    }
+    if matches!(row.action, Action::Open(_)) {
+        let kind = gtk::Label::new(Some("Document"));
+        kind.add_css_class("row-note");
+        kind.set_valign(gtk::Align::Center);
+        line.append(&kind);
+    }
     if !row.keys.is_empty() {
         let cap = gtk::Label::new(Some(row.keys));
         cap.add_css_class("key-cap");
@@ -1008,10 +1058,14 @@ impl KeySheet {
         columns.set_column_spacing(48);
         columns.set_column_homogeneous(true);
         columns.set_hexpand(true);
-        columns.attach(&group(&GROUPS[0]), 0, 0, 1, 1);
-        columns.attach(&group(&GROUPS[1]), 1, 0, 1, 1);
-        columns.attach(&group(&GROUPS[2]), 0, 1, 1, 1);
-        columns.attach(&group(&GROUPS[3]), 1, 1, 1, 1);
+        // One cap column per side of the card, so every word in a column
+        // starts on the same edge, across groups too.
+        let left = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
+        let right = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
+        columns.attach(&group(&GROUPS[0], &left), 0, 0, 1, 1);
+        columns.attach(&group(&GROUPS[1], &right), 1, 0, 1, 1);
+        columns.attach(&group(&GROUPS[2], &left), 0, 1, 1, 1);
+        columns.attach(&group(&GROUPS[3], &right), 1, 1, 1, 1);
 
         let hint = ui::card_hint_bar(&[("Esc", "Close")]);
         hint.set_margin_top(18);
@@ -1063,8 +1117,10 @@ impl KeySheet {
     }
 }
 
-/// One group: its heading, then a cap and its meaning per row.
-fn group((name, rows): &(&str, &[(&str, &str)])) -> gtk::Box {
+/// One group: its heading, then a cap and its meaning per row. `caps` keeps
+/// the cap cells of one card column the same width; each cap inside its cell
+/// keeps its own natural width, so short keys do not float in wide boxes.
+fn group((name, rows): &(&str, &[(&str, &str)]), caps: &gtk::SizeGroup) -> gtk::Box {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 10);
     let heading = gtk::Label::new(Some(name));
     heading.set_xalign(0.0);
@@ -1074,20 +1130,19 @@ fn group((name, rows): &(&str, &[(&str, &str)])) -> gtk::Box {
     let grid = gtk::Grid::new();
     grid.set_row_spacing(8);
     grid.set_column_spacing(14);
-    // One cap width per group, so every word starts on the same edge instead
-    // of stepping in and out with the length of the keys beside it.
-    let caps = gtk::SizeGroup::new(gtk::SizeGroupMode::Horizontal);
     for (index, (keys, word)) in rows.iter().enumerate() {
         let cap = gtk::Label::new(Some(keys));
         cap.add_css_class("key-cap");
         cap.set_halign(gtk::Align::Start);
         cap.set_valign(gtk::Align::Center);
-        caps.add_widget(&cap);
+        let cell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        cell.append(&cap);
+        caps.add_widget(&cell);
         let word = gtk::Label::new(Some(word));
         word.set_xalign(0.0);
         word.set_hexpand(true);
         word.add_css_class("key-word");
-        grid.attach(&cap, 0, index as i32, 1, 1);
+        grid.attach(&cell, 0, index as i32, 1, 1);
         grid.attach(&word, 1, index as i32, 1, 1);
     }
     column.append(&grid);

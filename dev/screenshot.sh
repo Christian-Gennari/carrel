@@ -10,6 +10,13 @@
 #   CARREL_SHOT_SIZES="1366x768 1920x1080"   the sizes to shoot (default)
 #   CARREL_SHOT_SIZE=1440x900                one size instead (optional)
 #   CARREL_SHOT_THEME_A / CARREL_SHOT_THEME_B   theme ids (default light/study)
+#   CARREL_SHOT_ONLY='^editor-'              shoot only names matching this
+#                                            extended regex (a quick re-check)
+#   CARREL_SHOT_SCALE=2                      draw at 2x: the size stays the
+#                                            logical size, the PNG is twice it
+#                                            (the website's 2560 px shots)
+#   XDG_DATA_HOME=/work/out/xdg-data         use the fonts in its fonts/ dir
+#                                            (Source Serif 4, as the image)
 #
 # Theme ids are deliberately just parameters: the theme round renames them
 # without touching a shot. Use lowercase slugs, because they become file names;
@@ -129,8 +136,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
+scale=${CARREL_SHOT_SCALE:-1}
+export GDK_SCALE=$scale
+
 start_display() {
-    Xvfb "$display" -screen 0 "${size}x24" -nolisten tcp \
+    physical=$(python3 -c 'import sys; w, h = sys.argv[1].split("x"); s = int(sys.argv[2]); print(f"{int(w) * s}x{int(h) * s}")' "$size" "$scale")
+    Xvfb "$display" -screen 0 "${physical}x24" -nolisten tcp \
         >"$shots/logs/xvfb-$size.log" 2>&1 &
     xvfb_pid=$!
     sleep 1
@@ -153,6 +164,9 @@ shoot() {
     start=$5
     battery=${6:-}
     shift 6 || true
+    if [ -n "${CARREL_SHOT_ONLY:-}" ] && ! [[ "$name" =~ $CARREL_SHOT_ONLY ]]; then
+        return 0
+    fi
     write_settings "$theme" "$first_run" "$bottom_line"
     cp "$out/essay.orig" "$root/The quiet morning.md"
     rm -rf "$root/.carrel/journal"

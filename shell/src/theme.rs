@@ -190,6 +190,16 @@ impl Palette {
         blend(self.selected_text(), &self.selection(), 0.72)
     }
 
+    /// The hairline around a key cap on a selected row: calm and integrated on
+    /// tinted selections, crisp and light on High contrast's solid accent.
+    pub fn selected_cap_border(&self) -> String {
+        if self.strong_selection {
+            blend(self.selected_text(), &self.selection(), 0.65)
+        } else {
+            blend(self.text, &self.selection(), 0.24)
+        }
+    }
+
     /// The visible hairline around a theme swatch. The theme's border token is
     /// a surface divider (about 1.2:1) and disappears when a swatch shows its
     /// own paper, so a swatch draws its edge from the ink instead, at 3:1.
@@ -217,6 +227,19 @@ impl Palette {
             rgba_css(self.background, 0.72)
         } else {
             rgba_css(self.text, 0.18)
+        }
+    }
+
+    /// A slightly firmer hairline for the Quotes popover, which has no drop
+    /// shadow under the software renderer and relies on its border alone to
+    /// separate from the editor paper beneath it.
+    pub fn popover_border(&self) -> String {
+        if self.strong_selection {
+            self.border.to_owned()
+        } else if self.is_dark() {
+            blend(self.text, self.background, 0.22)
+        } else {
+            blend(self.text, self.background, 0.18)
         }
     }
 
@@ -349,9 +372,11 @@ pub fn css(settings: &Settings) -> String {
     let edge = palette.edge();
     let text_selection = palette.text_selection();
     let selected_note = palette.selected_note();
+    let selected_cap_border = palette.selected_cap_border();
     let focus = palette.focus_ring();
     let scrim = palette.scrim();
     let shadow = palette.shadow();
+    let popover_border = palette.popover_border();
     let overlay_dim = rgba_css(background, 0.60);
     let background_clear = rgba_css(background, 0.0);
     let family = settings.font.css_family();
@@ -419,7 +444,7 @@ scrollbar {{
 .bottom-cap {{
     color: {dim};
     border: 1px solid {border};
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 0 6px;
     font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
     font-size: {hint}px;
@@ -440,12 +465,12 @@ scrollbar {{
     background-color: {background};
     color: {text};
     border: 1px solid {border};
-    border-radius: 12px;
+    border-radius: 4px;
     box-shadow: 0 18px 48px {shadow};
 }}
 .command-query-row {{
-    margin: 0 20px 4px 20px;
-    padding: 16px 0 12px 0;
+    margin: 0 20px 0 20px;
+    padding: 16px 0 13px 0;
     border-bottom: 1px solid {border};
 }}
 .command-query {{
@@ -455,9 +480,19 @@ scrollbar {{
 .command-query.command-placeholder {{
     color: {dim};
 }}
+.command-caret {{
+    background-color: {text};
+    min-width: 1px;
+    min-height: {caret}px;
+    margin-right: 2px;
+}}
+.command-caret.command-caret-after {{
+    margin-right: 0;
+    margin-left: 1px;
+}}
 .command-list {{
     background-color: transparent;
-    padding: 4px 0;
+    padding: 6px 0;
 }}
 .command-name {{
     color: {text};
@@ -466,14 +501,14 @@ scrollbar {{
 .command-message {{
     color: {muted};
     font-size: {secondary}px;
-    padding: 18px 20px;
+    padding: 20px 20px;
 }}
 /* The footer of every floating card: palette, Quotes, key sheet. The inset
    hairline keeps every card's edges on one grid instead of stacking
    full-width bordered boxes. */
 .hint-bar.card-hint-bar {{
-    margin: 4px 20px 0 20px;
-    padding: 10px 0 14px 0;
+    margin: 0 20px 0 20px;
+    padding: 11px 0 14px 0;
     border-top: 1px solid {border};
 }}
 /* The key sheet: one centred card, grouped, with the same key caps. */
@@ -481,7 +516,7 @@ scrollbar {{
     background-color: {background};
     color: {text};
     border: 1px solid {border};
-    border-radius: 12px;
+    border-radius: 4px;
     padding: 26px 30px 22px 30px;
     box-shadow: 0 18px 48px {shadow};
 }}
@@ -532,7 +567,7 @@ scrollbar {{
 }}
 .file-row, .setting-row, .ui-row {{
     padding: 10px 14px;
-    border-radius: 8px;
+    border-radius: 2px;
     color: {text};
     font-size: {row}px;
 }}
@@ -608,9 +643,10 @@ button:disabled, button:disabled label {{
 .command-row .key-cap {{
     color: {muted};
 }}
-.command-row:selected .key-cap {{
+.command-row:selected .key-cap,
+.ui-row:selected .key-cap {{
     background-color: transparent;
-    border-color: {selected_note};
+    border-color: {selected_cap_border};
     color: {selected_text};
 }}
 /* Secondary text on a selected row: a hint of the light, mixed onto the row. */
@@ -621,6 +657,7 @@ button:disabled, button:disabled label {{
 .setting-row:selected .row-note,
 .setting-row:selected .setting-value,
 .ui-row:selected .row-note,
+.command-row:selected .row-note,
 .quote-row:selected .quote-meta {{
     color: {selected_note};
 }}
@@ -655,25 +692,17 @@ button:disabled, button:disabled label {{
 .conflict-tag {{
     color: {text};
     border: 1px solid {dim};
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 0 7px;
     font-size: {hint}px;
     font-weight: 600;
-}}
-/* A hint under the selected row sits on that row's tint, so it takes a
-   little more ink to stay readable. */
-.file-row:selected .row-note,
-.setting-row:selected .row-note,
-.quote-row:selected .quote-meta,
-.ui-row:selected .row-note {{
-    color: {selected_note};
 }}
 /* Rename in place: the row itself becomes a field. */
 .renaming {{
     background-color: {surface};
     color: {text};
     border: 1px solid {border};
-    border-radius: 6px;
+    border-radius: 2px;
     padding: 2px 8px;
     font-size: {row}px;
 }}
@@ -684,7 +713,7 @@ button:disabled, button:disabled label {{
     background-color: {surface};
     color: {text};
     border: 1px solid {border};
-    border-radius: 6px;
+    border-radius: 2px;
     padding: 7px 16px;
     font-size: {button}px;
 }}
@@ -693,7 +722,7 @@ button {{
     background-image: none;
     color: {text};
     border: 1px solid {border};
-    border-radius: 6px;
+    border-radius: 2px;
     box-shadow: none;
     padding: 7px 18px;
     font-size: {button}px;
@@ -711,7 +740,7 @@ entry {{
     background-color: {surface};
     color: {text};
     border: 1px solid {border};
-    border-radius: 6px;
+    border-radius: 2px;
     padding: 8px 12px;
     font-size: {row}px;
     caret-color: {accent};
@@ -731,7 +760,7 @@ entry:focus, entry:focus-within {{
     background-color: {background};
     color: {text};
     border: 1px solid {border};
-    border-radius: 12px;
+    border-radius: 4px;
     padding: 26px 28px 22px 28px;
     box-shadow: 0 18px 48px {shadow};
 }}
@@ -752,7 +781,7 @@ entry:focus, entry:focus-within {{
     background-color: {surface};
     color: {text};
     border: 1px solid {border};
-    border-radius: 5px;
+    border-radius: 2px;
     padding: 1px 7px;
     font-family: "JetBrains Mono", "DejaVu Sans Mono", monospace;
     font-size: {hint}px;
@@ -807,7 +836,7 @@ entry:focus, entry:focus-within {{
 .battery-note {{
     color: {text};
     background-color: {surface};
-    border-radius: 7px;
+    border-radius: 2px;
     font-size: {hint}px;
     padding: 5px 14px;
 }}
@@ -865,6 +894,7 @@ entry:focus, entry:focus-within {{
 }}
 .quote-list {{
     background-color: transparent;
+    padding: 6px 0;
 }}
 .quote-text {{
     color: {text};
@@ -872,37 +902,40 @@ entry:focus, entry:focus-within {{
 }}
 .quote-meta {{
     color: {dim};
-    font-size: {secondary}px;
+    font-size: {hint}px;
 }}
 .quote-message {{
     color: {muted};
     font-size: {preview}px;
-    padding: 18px 20px;
+    padding: 20px 20px;
 }}
 .quote-heading {{
     color: {dim};
     font-size: {hint}px;
-    padding: 12px 20px 6px 20px;
+    padding: 12px 20px 2px 20px;
 }}
 /* The palette at the caret: the same card shape as the command palette and
    the key sheet. It is a popover (its own surface), so it keeps no shadow:
    under the software renderer a popover's shadow has no alpha to fade with
    and would draw as a black box. The surface itself is the theme's paper, so
-   the rounded corners show paper, not a dark edge. The accent stays on the
-   selected row only. */
+   the rounded corners show paper, not a dark edge, and inherits the writer's
+   chosen font family explicitly because a popover is a separate surface. The
+   accent stays on the selected row only. */
 popover.quote-popover {{
     background-color: {background};
+    font-family: {family};
 }}
 popover.quote-popover > contents {{
     background-color: {background};
     color: {text};
-    border: 1px solid {border};
-    border-radius: 12px;
+    font-family: {family};
+    border: 1px solid {popover_border};
+    border-radius: 4px;
     padding: 0;
     box-shadow: none;
 }}
 .quote-card {{
-    border-radius: 11px;
+    border-radius: 3px;
 }}
 /* A QR code needs a white quiet zone on every theme to scan. The edge keeps
    that white card visible on white paper too. */
@@ -910,7 +943,7 @@ popover.quote-popover > contents {{
     background-color: #FFFFFF;
     border: 1px solid {edge};
     padding: 10px;
-    border-radius: 6px;
+    border-radius: 2px;
 }}
 "#,
         background = background,
@@ -920,6 +953,7 @@ popover.quote-popover > contents {{
         dim = dim,
         muted = muted,
         border = border,
+        popover_border = popover_border,
         surface = surface,
         hover = hover,
         selection = selection,
@@ -927,6 +961,7 @@ popover.quote-popover > contents {{
         edge = edge,
         text_selection = text_selection,
         selected_note = selected_note,
+        selected_cap_border = selected_cap_border,
         focus = focus,
         scrim = scrim,
         shadow = shadow,
@@ -934,6 +969,7 @@ popover.quote-popover > contents {{
         background_clear = background_clear,
         family = family,
         size = size,
+        caret = size + size / 5,
         row = row,
         title = TITLE_PX,
         section = SECTION_PX,
@@ -1175,7 +1211,7 @@ mod tests {
         ] {
             let body = rule(&sheet, selector);
             assert!(
-                body.contains("border-radius: 12px"),
+                body.contains("border-radius: 4px"),
                 "{selector} has no shared corner"
             );
         }
@@ -1199,7 +1235,7 @@ mod tests {
             // Card rows must be square and full-bleed, never inheriting
             // .ui-row's 8 px rounded box or 14 px horizontal padding.
             let open_rows = rule(&sheet, ".file-row, .setting-row, .ui-row");
-            assert!(open_rows.contains("border-radius: 8px"), "{open_rows}");
+            assert!(open_rows.contains("border-radius: 2px"), "{open_rows}");
             assert!(
                 !sheet.contains(".file-row, .setting-row, .quote-row, .ui-row"),
                 "quote-row must not share open-page rounded corners"
@@ -1219,23 +1255,23 @@ mod tests {
             // horizontal grid inside the palette and quotes cards.
             let query_row = rule(&sheet, ".command-query-row");
             assert!(query_row.contains("margin: 0 20px"), "{query_row}");
-            assert!(query_row.contains("padding: 16px 0 12px 0"), "{query_row}");
+            assert!(query_row.contains("padding: 16px 0 13px 0"), "{query_row}");
 
             let cmd_msg = rule(&sheet, ".command-message");
-            assert!(cmd_msg.contains("padding: 18px 20px"), "{cmd_msg}");
+            assert!(cmd_msg.contains("padding: 20px 20px"), "{cmd_msg}");
 
             let quote_msg = rule(&sheet, ".quote-message");
-            assert!(quote_msg.contains("padding: 18px 20px"), "{quote_msg}");
+            assert!(quote_msg.contains("padding: 20px 20px"), "{quote_msg}");
 
             let quote_heading = rule(&sheet, ".quote-heading");
             assert!(
-                quote_heading.contains("padding: 12px 20px 6px 20px"),
+                quote_heading.contains("padding: 12px 20px 2px 20px"),
                 "{quote_heading}"
             );
 
             let card_footer = rule(&sheet, ".hint-bar.card-hint-bar");
             assert!(
-                card_footer.contains("margin: 4px 20px 0 20px"),
+                card_footer.contains("margin: 0 20px 0 20px"),
                 "{card_footer}"
             );
 
@@ -1245,13 +1281,16 @@ mod tests {
             assert!(key_footer.contains("margin: 0;"), "{key_footer}");
             assert!(key_footer.contains("padding: 14px 0 0 0"), "{key_footer}");
 
-            // Concentric inner clip inside the 1 px bordered 12 px quote popover.
+            // Concentric inner clip inside the 1 px bordered 4 px quote popover.
             let quote_card = rule(&sheet, ".quote-card");
-            assert!(quote_card.contains("border-radius: 11px"), "{quote_card}");
+            assert!(quote_card.contains("border-radius: 3px"), "{quote_card}");
 
             // Key caps on a selected command row must integrate with the
             // selection surface (especially in High contrast).
-            let selected_cap = rule(&sheet, ".command-row:selected .key-cap");
+            let selected_cap = rule(
+                &sheet,
+                ".command-row:selected .key-cap,\n.ui-row:selected .key-cap",
+            );
             assert!(
                 selected_cap.contains("background-color: transparent"),
                 "{selected_cap}"

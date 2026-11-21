@@ -1235,15 +1235,45 @@ fn markdown_markers_lists_quotes_and_citations_are_styled() {
     };
     let at = |needle: &str| text.find(needle).expect("fixture text");
 
-    assert!(has(at("#"), "carrel-dim"), "the heading marker");
+    // The caret is on the last line: every other line hides its syntax and
+    // keeps its style; list markers stay visible.
+    assert!(has(at("#"), "carrel-cite-hidden"), "the heading marker");
+    assert!(has(at("# ") + 1, "carrel-cite-hidden"), "and its space");
     assert!(has(at("Title"), "carrel-heading-1"), "the heading");
-    assert!(has(at("**"), "carrel-dim"), "the bold markers");
+    assert!(has(at("**"), "carrel-cite-hidden"), "the bold markers");
     assert!(has(at("bold"), "carrel-bold"));
-    assert!(has(at("_soft_"), "carrel-dim"), "the italic marker");
+    assert!(has(at("_soft_"), "carrel-cite-hidden"), "the italic marker");
     assert!(has(at("soft"), "carrel-italic"));
     assert!(has(at("- an"), "carrel-dim"), "the list marker");
-    assert!(has(at("> A"), "carrel-dim"), "the quote marker");
+    assert!(
+        !has(at("- an"), "carrel-cite-hidden"),
+        "a list marker never hides"
+    );
+    assert!(has(at("> A"), "carrel-cite-hidden"), "the quote marker");
     assert!(has(at("A small"), "carrel-quote"), "the quote block");
+
+    // On the caret's line the syntax shows, dimmed; the line it left hides
+    // its syntax again.
+    buffer.place_cursor(&buffer.iter_at_offset(at("bold") as i32));
+    settle();
+    assert!(
+        has(at("**"), "carrel-dim"),
+        "the caret line shows its markers"
+    );
+    assert!(!has(at("**"), "carrel-cite-hidden"));
+    assert!(has(at("#"), "carrel-cite-hidden"));
+    buffer.place_cursor(&buffer.iter_at_offset(at("Title") as i32));
+    settle();
+    assert!(
+        has(at("#"), "carrel-dim"),
+        "the heading marker on its own line"
+    );
+    assert!(
+        has(at("**"), "carrel-cite-hidden"),
+        "the line left hides again"
+    );
+    buffer.place_cursor(&buffer.end_iter());
+    settle();
 
     // A footnote link: the label is the marker, the syntax is hidden.
     assert!(has(at("[^1]") + 2, "carrel-cite"));
@@ -1382,9 +1412,10 @@ fn pasting_cr_crlf_and_paragraph_separator_never_panics_and_styles_accurately() 
 
     let text = contents(&buffer);
     assert!(has(char_at(&text, "two"), "carrel-bold"));
-    assert!(has(char_at(&text, "**two**"), "carrel-dim"));
+    // The caret ended on the "four" line, so these lines hide their syntax.
+    assert!(has(char_at(&text, "**two**"), "carrel-cite-hidden"));
     assert!(has(char_at(&text, "three"), "carrel-italic"));
-    assert!(has(char_at(&text, "_three_"), "carrel-dim"));
+    assert!(has(char_at(&text, "_three_"), "carrel-cite-hidden"));
     assert!(has(char_at(&text, "still bold"), "carrel-bold"));
 
     let expected_words = crate::store::stats::count_words(&text);

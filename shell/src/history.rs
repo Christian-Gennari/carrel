@@ -12,6 +12,7 @@ use gtk::{gdk, glib};
 
 use crate::daemon::{Client, HistoryEntry};
 use crate::editor::EditorPage;
+use crate::markdown::{self, Kind};
 use crate::nav::Navigator;
 use crate::settings::Settings;
 use crate::store::display_path;
@@ -727,6 +728,7 @@ impl HistoryPage {
                 }
             }
         }
+        style_markdown(&buffer, &palette);
         self.preview_scroller.vadjustment().set_value(0.0);
     }
 
@@ -992,6 +994,77 @@ fn delta_bar(delta: i64, largest: f64, ink: gdk::RGBA, dim: gdk::RGBA) -> gtk::D
         let _ = context.fill();
     });
     area
+}
+
+/// Draw the diff the way the page reads: bold, italic, headings and quotes in
+/// their style, citations as their quiet marker, and the Markdown syntax
+/// hidden. Emphasis syntax that is itself part of a change (an added `**`)
+/// stays visible and dimmed, so no change is ever invisible.
+fn style_markdown(buffer: &gtk::TextBuffer, palette: &theme::Palette) {
+    let table = buffer.tag_table();
+    let tag = |name: &str, setup: &dyn Fn(&gtk::TextTag)| {
+        let found = table.lookup(name).unwrap_or_else(|| {
+            let created = gtk::TextTag::new(Some(name));
+            table.add(&created);
+            created
+        });
+        setup(&found);
+        found
+    };
+    let dim = colour(&palette.dim());
+    let hidden = tag("md-hidden", &|t| t.set_invisible(true));
+    let marker = tag("md-marker", &|t| t.set_foreground_rgba(Some(&dim)));
+    let bold = tag("md-bold", &|t| t.set_weight(700));
+    let italic = tag("md-italic", &|t| t.set_style(gtk::pango::Style::Italic));
+    let quote = tag("md-quote", &|t| {
+        t.set_style(gtk::pango::Style::Italic);
+        t.set_left_margin(24);
+    });
+    let cite = tag("md-cite", &|t| {
+        t.set_scale(0.78);
+        t.set_rise(2 * gtk::pango::SCALE);
+        t.set_foreground_rgba(Some(&dim));
+    });
+    let cite_text = tag("md-cite-text", &|t| {
+        t.set_underline(gtk::pango::Underline::Single);
+    });
+    let heading = tag("md-heading", &|t| {
+        t.set_weight(700);
+        t.set_scale(1.15);
+    });
+
+    let text = buffer
+        .text(&buffer.start_iter(), &buffer.end_iter(), true)
+        .to_string();
+    let changed = |offset: usize| {
+        let iter = buffer.iter_at_offset(offset as i32);
+        iter.tags()
+            .iter()
+            .any(|t| matches!(t.name().as_deref(), Some("added") | Some("removed")))
+    };
+    for span in markdown::spans(&text) {
+        let syntax_changed = || (span.start..span.end).any(changed);
+        let chosen = match span.kind {
+            Kind::CiteLink => continue,
+            Kind::Bold => &bold,
+            Kind::Italic => &italic,
+            Kind::Heading(_) => &heading,
+            Kind::Quote => &quote,
+            Kind::CiteMarker => &cite,
+            Kind::CiteText => &cite_text,
+            Kind::ListMarker => &marker,
+            // A citation's link syntax always hides: its marker carries the
+            // change's tint, so an added or removed citation still shows.
+            Kind::CiteHidden => &hidden,
+            Kind::Marker if syntax_changed() => &marker,
+            Kind::Marker => &hidden,
+        };
+        buffer.apply_tag(
+            chosen,
+            &buffer.iter_at_offset(span.start as i32),
+            &buffer.iter_at_offset(span.end as i32),
+        );
+    }
 }
 
 #[cfg(test)]

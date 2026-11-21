@@ -95,6 +95,9 @@ pub struct EditorPage {
     line_cache: RefCell<LineCache>,
     /// The citation link the cursor is currently inside (drawn raw).
     cite_open: Cell<Option<OpenCite>>,
+    /// The logical line whose Markdown syntax is shown; every other line
+    /// hides it (spec/03-ui.md, "Markdown shown inline").
+    caret_line: Cell<Option<usize>>,
     status_generation: Cell<u64>,
     battery: Rc<dyn Battery>,
     save_error: Cell<bool>,
@@ -314,6 +317,7 @@ impl EditorPage {
             dirty_needs_strip: Cell::new(false),
             line_cache: RefCell::new(line_cache),
             cite_open: Cell::new(None),
+            caret_line: Cell::new(None),
             status_generation: Cell::new(0),
             battery,
             save_error: Cell::new(false),
@@ -397,6 +401,7 @@ impl EditorPage {
                 .unwrap_or(false);
             if is_insert && !page.loading.get() {
                 page.sync_cites();
+                page.sync_caret_line();
                 page.sync_focus();
                 scroll_to_cursor(&view, &buffer);
             }
@@ -578,6 +583,7 @@ impl EditorPage {
     fn restyle_now(&self) {
         self.restyle_dirty();
         self.sync_cites();
+        self.sync_caret_line();
         // Markdown tags and focus tags are separate; after a paint the focus
         // state only needs the cheap incremental check.
         self.sync_focus();
@@ -594,6 +600,8 @@ impl EditorPage {
 
         let open = self.cite_under_cursor();
         self.cite_open.set(open);
+        let caret = self.cursor_line();
+        self.caret_line.set(caret);
 
         let start = self.buffer.start_iter();
         let end = self.buffer.end_iter();
@@ -604,8 +612,13 @@ impl EditorPage {
         for (line_idx, cached) in cache.lines.iter().enumerate() {
             if !cached.spans.is_empty() {
                 let line_open = open.filter(|c| c.line == line_idx);
-                self.tags
-                    .paint_line(&self.buffer, line_offset, cached, line_open);
+                self.tags.paint_line(
+                    &self.buffer,
+                    line_offset,
+                    cached,
+                    line_open,
+                    caret == Some(line_idx),
+                );
             }
             line_offset += cached.char_len + cached.break_len;
         }
@@ -711,6 +724,18 @@ impl EditorPage {
 
         let new_cite = self.cite_under_cursor();
         self.cite_open.set(new_cite);
+        // The line that showed its syntax moves with inserted or removed
+        // lines above it, so `sync_caret_line` repaints the right one.
+        let caret = self.cursor_line();
+        if let Some(old) = self.caret_line.get() {
+            if old > old_end_line {
+                self.caret_line
+                    .set(Some((old as isize + delta_lines).max(0) as usize));
+            } else if old >= start_line {
+                // Repainted below with the current caret.
+                self.caret_line.set(caret);
+            }
+        }
 
         let shifted_old_cite = old_cite.and_then(|c| {
             if c.line < start_line {
@@ -732,8 +757,13 @@ impl EditorPage {
         for (line_idx, cached) in (start_line..).zip(&cache.lines[start_line..=new_end_line]) {
             if !cached.spans.is_empty() {
                 let line_open = new_cite.filter(|c| c.line == line_idx);
-                self.tags
-                    .paint_line(&self.buffer, line_offset, cached, line_open);
+                self.tags.paint_line(
+                    &self.buffer,
+                    line_offset,
+                    cached,
+                    line_open,
+                    caret == Some(line_idx),
+                );
             }
             line_offset += cached.char_len + cached.break_len;
         }
@@ -763,22 +793,46 @@ impl EditorPage {
         let Some(cached) = cache.lines.get(line_idx) else {
             return;
         };
-        let Some(from) = self.buffer.iter_at_line(line_idx as i32) else {
-            return;
-        };
-        let line_count = self.buffer.line_count().max(1) as usize;
-        let to = if line_idx + 1 < line_count {
-            self.buffer
-                .iter_at_line((line_idx + 1) as i32)
-                .unwrap_or_else(|| self.buffer.end_iter())
-        } else {
-            self.buffer.end_iter()
-        };
+        // The cache's own offsets, not GTK's line numbers: a lone `\r`
+        // followed later by `\n` is one break to the cache and two to GTK.
+        let line_offset: usize = cache.lines[..line_idx]
+            .iter()
+            .map(|line| line.char_len + line.break_len)
+            .sum();
+        let from = self.buffer.iter_at_offset(line_offset as i32);
+        let to = self
+            .buffer
+            .iter_at_offset((line_offset + cached.char_len + cached.break_len) as i32);
         self.tags.strip_range(&self.buffer, &from, &to);
         if !cached.spans.is_empty() {
-            let line_offset = from.offset().max(0) as usize;
+            let caret = cursor_line_in(cache, self.buffer.cursor_position()) == Some(line_idx);
             self.tags
-                .paint_line(&self.buffer, line_offset, cached, line_open);
+                .paint_line(&self.buffer, line_offset, cached, line_open, caret);
+        }
+    }
+
+    /// The line-cache line the caret is on.
+    fn cursor_line(&self) -> Option<usize> {
+        cursor_line_in(&self.line_cache.borrow(), self.buffer.cursor_position())
+    }
+
+    /// Show the Markdown syntax on the caret's line only: when the caret
+    /// changes line, the line it left hides its syntax again and the line it
+    /// entered shows it. Typing on one line costs nothing here.
+    fn sync_caret_line(&self) {
+        if self.has_dirty.get() {
+            return;
+        }
+        let current = self.cursor_line();
+        let previous = self.caret_line.get();
+        if current == previous {
+            return;
+        }
+        self.caret_line.set(current);
+        let cache = self.line_cache.borrow();
+        let open = self.cite_open.get();
+        for line in [previous, current].into_iter().flatten() {
+            self.repaint_single_line(&cache, line, open.filter(|c| c.line == line));
         }
     }
 
@@ -1718,6 +1772,22 @@ fn local_time() -> Option<String> {
         .map(|time| time.to_string())
 }
 
+/// The index of the cached line holding character `cursor`, by the cache's
+/// own offsets (the caret at the very end belongs to the last line).
+fn cursor_line_in(cache: &LineCache, cursor: i32) -> Option<usize> {
+    let cursor = usize::try_from(cursor).ok()?;
+    let mut start = 0usize;
+    let last = cache.lines.len().checked_sub(1)?;
+    for (index, line) in cache.lines.iter().enumerate() {
+        let end = start + line.char_len + line.break_len;
+        if cursor < end || index == last {
+            return Some(index);
+        }
+        start = end;
+    }
+    None
+}
+
 struct Tags {
     bold: gtk::TextTag,
     italic: gtk::TextTag,
@@ -1766,7 +1836,9 @@ impl Tags {
         // Small and raised, but a full digit: at 0.72 the marker reads as a
         // stray mark at 19 px.
         cite.set_scale(0.78);
-        cite.set_rise(6);
+        // Pango units: about 3 px, which stays inside the line's own ascent
+        // at 0.78 scale, so a line with a marker keeps the same height.
+        cite.set_rise(3 * pango::SCALE);
         // Citation markers use the dim text colour, not the accent.
         cite.set_foreground(Some(&palette.dim()));
 
@@ -1874,6 +1946,7 @@ impl Tags {
         line_offset: usize,
         cached: &CachedLine,
         open: Option<OpenCite>,
+        caret: bool,
     ) {
         for span in &cached.spans {
             let in_open = open.is_some_and(|c| span.start >= c.rel_start && span.end <= c.rel_end);
@@ -1885,7 +1958,9 @@ impl Tags {
                 Kind::CiteText => &self.cite_text,
                 Kind::Bold => &self.bold,
                 Kind::Italic => &self.italic,
-                Kind::Marker => &self.dim,
+                Kind::Marker if caret => &self.dim,
+                Kind::Marker => &self.hidden,
+                Kind::ListMarker => &self.dim,
                 Kind::Quote => &self.quote,
                 Kind::Heading(level) => &self.headings[usize::from(level.clamp(1, 6) - 1)],
             };

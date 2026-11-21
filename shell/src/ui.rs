@@ -739,9 +739,13 @@ fn setting_row(
     if let Some(swatch) = swatch {
         line.append(swatch);
     }
+    // The About mark signs the version, beside it, so the row's one-line
+    // hint keeps the same left edge as every other row's.
+    if mark {
+        line.append(&self::mark(16));
+    }
     line.append(&value);
 
-    // The About mark belongs with its sentence, never on its own.
     if note.is_empty() {
         row.set_child(Some(&line));
         return row;
@@ -750,9 +754,6 @@ fn setting_row(
     let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
     column.append(&line);
     let note_line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    if mark {
-        note_line.append(&self::mark(22));
-    }
     let note = gtk::Label::new(Some(note));
     note.set_xalign(0.0);
     note.set_wrap(true);
@@ -779,7 +780,7 @@ pub fn automatic_swatch(day: Theme, night: Theme) -> gtk::DrawingArea {
 /// Big enough to read as a small page, small enough to sit in a row.
 const SWATCH_WIDTH: i32 = 28;
 const SWATCH_HEIGHT: i32 = 18;
-const SWATCH_RADIUS: f64 = 4.0;
+const SWATCH_RADIUS: f64 = 1.5;
 
 fn swatch(theme: Theme, night: Option<Theme>) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
