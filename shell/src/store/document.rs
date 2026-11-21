@@ -8,7 +8,7 @@
 //! * after five seconds without edits, write the Markdown file atomically:
 //!   `name.md.tmp` → fsync → rename → fsync directory, then clear the journal.
 
-use std::fs;
+use std::fs::{self, File};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
@@ -50,8 +50,15 @@ struct DocInner {
     rel: PathBuf,
     path: PathBuf,
     cfg: SavePolicy,
+    /// Duplicate fd for `fdatasync` outside the state mutex.
+    journal_sync: File,
+    /// Serializes `save_snapshot` across the writer thread, `flush`, and
+    /// `save_now`. Always acquired before `state`, never while holding `state`.
+    save_lock: Mutex<()>,
     state: Mutex<DocState>,
     cv: Condvar,
+    #[cfg(test)]
+    before_atomic_write: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 struct DocState {
@@ -135,6 +142,7 @@ pub fn open(
         .max()
         .map_or(1, |seq| seq.saturating_add(1));
 
+    let journal_sync = journal.try_clone_file()?;
     let now = Instant::now();
     let state = DocState {
         text,
@@ -153,8 +161,12 @@ pub fn open(
         rel: rel.to_path_buf(),
         path,
         cfg,
+        journal_sync,
+        save_lock: Mutex::new(()),
         state: Mutex::new(state),
         cv: Condvar::new(),
+        #[cfg(test)]
+        before_atomic_write: Mutex::new(None),
     });
     let thread_inner = Arc::clone(&inner);
     let thread = thread::Builder::new()
@@ -203,6 +215,9 @@ impl Document {
 
     /// Record one edit and return its journal sequence number. The edit is
     /// acknowledged only after its record has been written to the journal.
+    ///
+    /// Never blocks on `fdatasync` or `atomic_write`: the background writer
+    /// drops `state` before flushing to disk.
     pub fn apply(&self, offset: usize, delete_len: usize, insert: &str) -> StoreResult<u64> {
         let mut state = self.inner.state.lock().expect("journal mutex");
         if state.closed {
@@ -239,21 +254,14 @@ impl Document {
     /// fdatasync the journal and, if needed, atomically save the Markdown
     /// file. Called before suspend, file switch and exit.
     pub fn flush(&self) -> StoreResult<()> {
-        let mut state = self.inner.state.lock().expect("journal mutex");
-        state.journal.sync_data()?;
-        if state.dirty {
-            save_locked(&self.inner, &mut state)?;
-        }
-        Ok(())
+        let _save_guard = self.inner.save_lock.lock().expect("save mutex");
+        save_snapshot(&self.inner, false, true)
     }
 
     /// Save now even if the idle timer has not fired.
     pub fn save_now(&self) -> StoreResult<()> {
-        let mut state = self.inner.state.lock().expect("journal mutex");
-        if state.dirty {
-            save_locked(&self.inner, &mut state)?;
-        }
-        Ok(())
+        let _save_guard = self.inner.save_lock.lock().expect("save mutex");
+        save_snapshot(&self.inner, false, false)
     }
 
     fn shutdown(&mut self) {
@@ -282,95 +290,167 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Save the current text and clear the journal. The caller holds the lock.
-fn save_locked(inner: &DocInner, state: &mut DocState) -> StoreResult<()> {
-    if !state.dirty {
-        return Ok(());
+/// Save a snapshot of the document without holding the state mutex across
+/// `fdatasync` or `atomic_write`. Caller must hold `inner.save_lock`.
+fn save_snapshot(inner: &DocInner, require_idle: bool, always_sync: bool) -> StoreResult<()> {
+    let snapshot = {
+        let mut state = inner.state.lock().expect("journal mutex");
+        if !state.dirty {
+            drop(state);
+            if always_sync {
+                inner.journal_sync.sync_data()?;
+            }
+            return Ok(());
+        }
+        if require_idle {
+            let now = Instant::now();
+            let is_idle = state
+                .last_edit
+                .is_some_and(|last| now >= last + inner.cfg.idle_save);
+            if !is_idle {
+                return Ok(());
+            }
+        }
+        // The checkpoint must be durable before the rename. Otherwise a power
+        // cut after the rename could leave a file that already contains the
+        // edits and a journal without the checkpoint that says so.
+        let checkpoint_seq = state.seq;
+        let snapshot_text = state.text.clone();
+        let checkpoint = Record::checkpoint(checkpoint_seq, now_ms(), &snapshot_text);
+        state.journal.append(&checkpoint)?;
+        state.seq = checkpoint_seq.saturating_add(1);
+        (checkpoint_seq, snapshot_text)
+    };
+
+    let (checkpoint_seq, snapshot_text) = snapshot;
+    inner.journal_sync.sync_data()?;
+
+    #[cfg(test)]
+    {
+        let hook = inner
+            .before_atomic_write
+            .lock()
+            .expect("hook mutex")
+            .clone();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
 
-    // The checkpoint must be durable before the rename. Otherwise a power cut
-    // after the rename could leave a file that already contains the edits and
-    // a journal without the checkpoint that says so.
-    let checkpoint = Record::checkpoint(state.seq, now_ms(), &state.text);
-    state.journal.append(&checkpoint)?;
-    state.seq = state.seq.saturating_add(1);
-    state.journal.sync_data()?;
+    atomic_write(&inner.path, snapshot_text.as_bytes())?;
 
-    atomic_write(&inner.path, state.text.as_bytes())?;
-    state.journal.clear()?;
-
-    state.dirty = false;
-    state.dirty_since = None;
-    state.last_edit = None;
+    let mut truncated = false;
+    {
+        let mut state = inner.state.lock().expect("journal mutex");
+        // Only clear the journal if no new edits arrived while we were syncing
+        // and writing. If edits arrived in flight, keep the journal (with the
+        // durable checkpoint) so crash recovery skips <= checkpoint_seq and
+        // replays only the newer edits.
+        if state.seq == checkpoint_seq.saturating_add(1) {
+            state.journal.truncate_to(0)?;
+            state.dirty = false;
+            state.dirty_since = None;
+            state.last_edit = None;
+            truncated = true;
+        }
+    }
+    if truncated {
+        inner.journal_sync.sync_data()?;
+    }
     Ok(())
 }
 
 fn writer_loop(inner: Arc<DocInner>) {
     loop {
-        let mut state = inner.state.lock().expect("journal mutex");
+        let (sync_due, sync_seq, sync_started, save_due, closed) = {
+            let mut state = inner.state.lock().expect("journal mutex");
 
-        if state.closed {
-            let _ = state.journal.sync_data();
-            if state.dirty {
-                let _ = save_locked(&inner, &mut state);
+            if state.closed {
+                (false, 0, Instant::now(), state.dirty, true)
+            } else {
+                let now = Instant::now();
+                let sync_deadline = state
+                    .dirty_since
+                    .map(|since| since + inner.cfg.sync_interval);
+                let save_deadline = if state.dirty {
+                    state.last_edit.map(|last| last + inner.cfg.idle_save)
+                } else {
+                    None
+                };
+                let next = match (sync_deadline, save_deadline) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+
+                match next {
+                    Some(deadline) if deadline > now => {
+                        let (guard, _) = inner
+                            .cv
+                            .wait_timeout(state, deadline.saturating_duration_since(now))
+                            .expect("journal mutex");
+                        state = guard;
+                    }
+                    Some(_) => {}
+                    None => {
+                        state = inner.cv.wait(state).expect("journal mutex");
+                    }
+                }
+
+                if state.closed {
+                    (false, 0, Instant::now(), state.dirty, true)
+                } else {
+                    let now = Instant::now();
+                    let sync_due = state
+                        .dirty_since
+                        .is_some_and(|since| now >= since + inner.cfg.sync_interval);
+                    let sync_seq = state.seq;
+                    let save_due = state.dirty
+                        && state
+                            .last_edit
+                            .is_some_and(|last| now >= last + inner.cfg.idle_save);
+                    (sync_due, sync_seq, now, save_due, false)
+                }
             }
+        };
+
+        if closed {
+            let _save_guard = inner.save_lock.lock().expect("save mutex");
+            let _ = save_snapshot(&inner, false, true);
             return;
         }
 
-        let now = Instant::now();
-        let sync_deadline = state
-            .dirty_since
-            .map(|since| since + inner.cfg.sync_interval);
-        let save_deadline = if state.dirty {
-            state.last_edit.map(|last| last + inner.cfg.idle_save)
-        } else {
-            None
-        };
-        let next = match (sync_deadline, save_deadline) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        };
-
-        match next {
-            Some(deadline) if deadline > now => {
-                let (guard, _) = inner
-                    .cv
-                    .wait_timeout(state, deadline.saturating_duration_since(now))
-                    .expect("journal mutex");
-                state = guard;
-            }
-            Some(_) => {}
-            None => {
-                state = inner.cv.wait(state).expect("journal mutex");
-            }
-        }
-
-        if state.closed {
-            continue;
-        }
-
-        let now = Instant::now();
-        if let Some(since) = state.dirty_since {
-            if now >= since + inner.cfg.sync_interval {
-                match state.journal.sync_data() {
-                    Ok(()) => state.dirty_since = None,
-                    Err(error) => {
-                        eprintln!("carrel: journal sync failed: {error}");
-                        // Don't spin; try again one interval later.
-                        state.dirty_since = Some(now);
+        if sync_due {
+            match inner.journal_sync.sync_data() {
+                Ok(()) => {
+                    let mut state = inner.state.lock().expect("journal mutex");
+                    if state.seq == sync_seq {
+                        state.dirty_since = None;
+                    } else if state.dirty {
+                        // Edits arrived while fdatasync was running; schedule the
+                        // next sync relative to when this sync started.
+                        state.dirty_since = Some(sync_started);
+                    }
+                }
+                Err(error) => {
+                    eprintln!("carrel: journal sync failed: {error}");
+                    // Don't spin; try again one interval later.
+                    let mut state = inner.state.lock().expect("journal mutex");
+                    if state.dirty {
+                        state.dirty_since = Some(Instant::now());
                     }
                 }
             }
         }
-        if state.dirty {
-            if let Some(last_edit) = state.last_edit {
-                if now >= last_edit + inner.cfg.idle_save {
-                    if let Err(error) = save_locked(&inner, &mut state) {
-                        eprintln!("carrel: save failed: {error}");
-                        // Retry after another idle period rather than
-                        // hammering a full disk.
-                        state.last_edit = Some(now);
-                    }
+
+        if save_due {
+            let _save_guard = inner.save_lock.lock().expect("save mutex");
+            if let Err(error) = save_snapshot(&inner, true, false) {
+                eprintln!("carrel: save failed: {error}");
+                // Retry after another idle period rather than hammering a full
+                // disk.
+                let mut state = inner.state.lock().expect("journal mutex");
+                if state.dirty {
+                    state.last_edit = Some(Instant::now());
                 }
             }
         }
@@ -583,5 +663,113 @@ mod tests {
         doc.apply(8, 2, "world").unwrap();
         assert_eq!(doc.text(), "héllo — world");
         assert_eq!(doc.char_len(), 13);
+    }
+
+    #[test]
+    fn apply_does_not_block_while_save_is_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        // Long idle_save so only our explicit save_now triggers during the hook.
+        let policy = SavePolicy {
+            sync_interval: Duration::from_secs(60),
+            idle_save: Duration::from_secs(60),
+        };
+        let store = Store::open_with_policy(dir.path(), policy).unwrap();
+        store.create_file(Path::new("note.md")).unwrap();
+        let journal_path = store.journal_path(Path::new("note.md"));
+        let doc = Arc::new(store.open_document(Path::new("note.md")).unwrap());
+        doc.apply(0, 0, "first").unwrap();
+
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let release_hook = Arc::clone(&release);
+        *doc.inner.before_atomic_write.lock().unwrap() = Some(Arc::new(move || {
+            let _ = entered_tx.send(());
+            let (lock, cv) = &*release_hook;
+            let mut go = lock.lock().unwrap();
+            while !*go {
+                go = cv.wait(go).unwrap();
+            }
+        }));
+
+        let saver_doc = Arc::clone(&doc);
+        let saver = thread::spawn(move || saver_doc.save_now().unwrap());
+        entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        // While save_now() is paused mid-save (right before atomic_write),
+        // Document::apply() must succeed without blocking.
+        let started = Instant::now();
+        doc.apply(5, 0, " second").unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "apply blocked on in-flight save: {:?}",
+            started.elapsed()
+        );
+
+        // Clear the hook and let the in-flight save finish.
+        *doc.inner.before_atomic_write.lock().unwrap() = None;
+        {
+            let (lock, cv) = &*release;
+            *lock.lock().unwrap() = true;
+            cv.notify_all();
+        }
+        saver.join().unwrap();
+
+        // Because a concurrent edit arrived mid-save, the journal must stay
+        // intact (dirty) so crash recovery replays only the post-checkpoint
+        // edit without double-applying "first".
+        assert!(doc.is_dirty());
+        assert!(std::fs::metadata(&journal_path).unwrap().len() > 0);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "first"
+        );
+
+        // Simulate reopening from disk + journal right after the save: the
+        // checkpoint skips "first" and replays only " second".
+        std::mem::forget(doc);
+        let reopened = store.open_document(Path::new("note.md")).unwrap();
+        assert_eq!(reopened.text(), "first second");
+        assert!(reopened.is_dirty());
+        reopened.flush().unwrap();
+        assert!(!reopened.is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "first second"
+        );
+    }
+
+    #[test]
+    fn concurrent_applies_and_saves_preserve_all_edits() {
+        let (_dir, store, _journal) = setup();
+        let doc = Arc::new(store.open_document(Path::new("note.md")).unwrap());
+
+        let writer_doc = Arc::clone(&doc);
+        let writer = thread::spawn(move || {
+            for i in 0..100 {
+                let len = writer_doc.char_len();
+                writer_doc.apply(len, 0, &format!("{i},")).unwrap();
+                thread::sleep(Duration::from_millis(1));
+            }
+        });
+
+        let saver_doc = Arc::clone(&doc);
+        let saver = thread::spawn(move || {
+            for _ in 0..30 {
+                saver_doc.save_now().unwrap();
+                thread::sleep(Duration::from_millis(3));
+            }
+        });
+
+        writer.join().unwrap();
+        saver.join().unwrap();
+        doc.flush().unwrap();
+
+        let expected: String = (0..100).map(|i| format!("{i},")).collect();
+        assert_eq!(doc.text(), expected);
+        assert!(!doc.is_dirty());
+        assert_eq!(
+            std::fs::read_to_string(store.root().join("note.md")).unwrap(),
+            expected
+        );
     }
 }

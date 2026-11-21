@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 
 pub use document::{Document, SavePolicy};
 pub use fsutil::atomic_write;
-pub use stats::DailyStats;
+pub use stats::{DailyStats, StatsWriter};
 pub use text::EditOutOfRange;
 
 pub const DEFAULT_ROOT: &str = "/data/writing";
@@ -414,8 +414,7 @@ impl Store {
     }
 
     pub fn save_stats(&self, stats: &DailyStats) -> io::Result<()> {
-        let json = serde_json::to_vec_pretty(stats).map_err(io::Error::other)?;
-        atomic_write(&self.carrel_dir().join("stats.json"), &json)
+        stats::write_stats(&self.carrel_dir().join("stats.json"), stats)
     }
 }
 
