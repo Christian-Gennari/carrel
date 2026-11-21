@@ -67,6 +67,9 @@ fn gtk_scenarios() {
     // --- end UI round 5 (Editor, issue #32) ---
     keystroke_baseline();
     the_wifi_fix_returns_to_sync_and_syncs();
+    offline_pairing_from_sync_prompts_wifi_and_resumes_pairing();
+    offline_self_hosted_pairing_preserves_url_across_wifi_handoff();
+    offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing();
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.
@@ -1740,6 +1743,136 @@ fn the_wifi_fix_returns_to_sync_and_syncs() {
         "Up to date",
         "the sync finished after the connection"
     );
+}
+
+/// Offline pairing from Sync surfaces the Wi-Fi prompt first, goes to Wi-Fi,
+/// and resumes pairing Nostos as soon as Wi-Fi connects (issue #55).
+fn offline_pairing_from_sync_prompts_wifi_and_resumes_pairing() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    shell.daemon.set_unpaired(true);
+    shell.daemon.set_wifi_down(true);
+    shell.press(
+        "Ctrl+Shift+S",
+        gdk::Key::s,
+        gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+    );
+    pump(|| shell.sync.hero() == "Not connected yet");
+
+    // Enter selects Nostos; pairing fails immediately because Wi-Fi is off.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    pump(|| shell.sync.actions().first() == Some(&Row::ChooseNetwork));
+    assert_eq!(shell.sync.hero(), "Connect to Wi-Fi first");
+    assert_eq!(shell.sync.detail(), "Set up Wi-Fi to pair with Nostos.");
+
+    // ChooseNetwork is already selected at index 0: Enter opens Wi-Fi.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    assert_eq!(shell.visible(), "wifi");
+    pump(|| shell.wifi.network_count() > 0);
+
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    let entry = gtk::Window::list_toplevels()
+        .iter()
+        .find_map(|window| mapped_entry(window.upcast_ref()))
+        .expect("the password field is open");
+    entry.set_text("quiet");
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+
+    pump(|| shell.visible() == "sync");
+    pump(|| shell.sync.pairing_code() == "K7Q-4MZ");
+    assert_eq!(shell.sync.pairing_code(), "K7Q-4MZ");
+    assert_eq!(shell.daemon.pairs(), 1);
+}
+
+/// Offline self-hosted pairing preserves the typed server URL across the
+/// Wi-Fi handoff and resumes pairing without asking for the URL again.
+fn offline_self_hosted_pairing_preserves_url_across_wifi_handoff() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    shell.daemon.set_unpaired(true);
+    shell.daemon.set_wifi_down(true);
+    shell.press(
+        "Ctrl+Shift+S",
+        gdk::Key::s,
+        gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+    );
+    pump(|| shell.sync.hero() == "Not connected yet");
+
+    // Down to Self-hosted server, Enter opens the URL prompt.
+    shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    let url_entry = gtk::Window::list_toplevels()
+        .iter()
+        .find_map(|window| mapped_entry(window.upcast_ref()))
+        .expect("the self-hosted URL field is open");
+    url_entry.set_text("https://studio.local:8443");
+    url_entry.emit_activate();
+
+    pump(|| shell.sync.actions().first() == Some(&Row::ChooseNetwork));
+    assert_eq!(shell.sync.hero(), "Connect to Wi-Fi first");
+    assert_eq!(
+        shell.sync.detail(),
+        "Set up Wi-Fi to pair with your server."
+    );
+
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    assert_eq!(shell.visible(), "wifi");
+    pump(|| shell.wifi.network_count() > 0);
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    let pw_entry = gtk::Window::list_toplevels()
+        .iter()
+        .find_map(|window| mapped_entry(window.upcast_ref()))
+        .expect("the password field is open");
+    pw_entry.set_text("quiet");
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+
+    pump(|| shell.visible() == "sync");
+    pump(|| shell.sync.pairing_code() == "M2V-9RT");
+    assert_eq!(shell.sync.pairing_code(), "M2V-9RT");
+    assert_eq!(shell.daemon.pairs(), 1);
+}
+
+/// Offline pairing started from First Run's sync step surfaces the Wi-Fi prompt
+/// and resumes pairing once Wi-Fi connects.
+fn offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    shell.daemon.set_unpaired(true);
+    shell.daemon.set_wifi_down(true);
+    shell.settings.borrow_mut().first_run_complete = false;
+    shell.first_run.start();
+    shell.nav.show("first_run");
+    settle();
+
+    // Start writing -> Connect sync? -> Down to Nostos -> Enter.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+
+    pump(|| shell.visible() == "sync");
+    pump(|| shell.sync.actions().first() == Some(&Row::ChooseNetwork));
+    assert_eq!(shell.sync.hero(), "Connect to Wi-Fi first");
+
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    assert_eq!(shell.visible(), "wifi");
+    pump(|| shell.wifi.network_count() > 0);
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    let pw_entry = gtk::Window::list_toplevels()
+        .iter()
+        .find_map(|window| mapped_entry(window.upcast_ref()))
+        .expect("the password field is open");
+    pw_entry.set_text("quiet");
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+
+    pump(|| shell.visible() == "sync");
+    pump(|| shell.sync.pairing_code() == "K7Q-4MZ");
+    assert_eq!(shell.sync.pairing_code(), "K7Q-4MZ");
+    assert_eq!(shell.daemon.pairs(), 1);
 }
 
 /// Print and write the table; fail when a count moved away from the baseline
