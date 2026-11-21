@@ -33,7 +33,7 @@ systemd-repart creates the table from `mkosi.repart/`:
 | data | ≥ 2 GiB | ext4 | grows to fill the disk |
 
 The two root slots are labelled `carrel-root-<version>`
-(`carrel-root-0.2.2` and `carrel-root-0` in a fresh image). The version in the
+(`carrel-root-0.2.3` and `carrel-root-0` in a fresh image). The version in the
 label is what systemd-sysupdate compares; both slots deliberately share the
 same label prefix so sysupdate can pick the older one. The data and hash
 partition UUIDs are fixed (`1111…`/`2222…` for roots, `5555…`/`6666…` for
@@ -260,8 +260,9 @@ the kernel version, not the release version, so `carreld update` and
 `/carrel/<kernel-version>/` on the ESP (a directory transfer; systemd 257
 asserts on a wildcard followed by a slash in `MatchPattern`). The kernel pass
 runs before the root/entry pass. 0.3.0 and later entries (and the GRUB menu)
-name `/carrel/<kernel-version>/initrd`; 0.2.2 keeps the shared
-`/carrel/initrd` because a 0.1.0/0.2.0 device cannot install a new initrd.
+name `/carrel/<kernel-version>/initrd`; every release before 0.3.0 (0.2.2,
+0.2.3) keeps the shared `/carrel/initrd` because a 0.1.0/0.2.0 device cannot
+install a new initrd and updates straight to the newest release.
 0.2.1 shipped 6.12.117 without the kernel transfer, so it cannot boot a 0.2.2
 payload and stays on 0.2.1 safely.
 

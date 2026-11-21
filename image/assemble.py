@@ -70,7 +70,7 @@ BASE_CMDLINE = (
     "console=tty0 console=ttyS0,115200 systemd.getty_auto=no audit=0 "
     "ro rootfstype=erofs"
 )
-VERSION = os.environ.get("CARREL_VERSION", "0.2.2")
+VERSION = os.environ.get("CARREL_VERSION", "0.2.3")
 UPDATE_VERSION = os.environ.get("CARREL_UPDATE_VERSION", "0.3.0")
 
 SYSTEMD_REPART = "/usr/bin/systemd-repart"
@@ -302,16 +302,25 @@ def entry_conf(
     )
 
 
-# Releases up to 0.2.2 must use the shared /carrel/initrd: a 0.1.0/0.2.0
-# device's update code installs only the root, verity, signature and entry, so
-# it never receives /carrel/<kernel-version>/initrd.  0.3.0 and later install
-# the initrd in the kernel archive (kernel.transfer) and name the per-kernel
-# copy, which leaves the previous slot's initrd untouched.
-LEGACY_INITRD_VERSIONS = ("0.1.0", "0.2.0", "0.2.1", "0.2.2")
+# Every 0.x release before 0.3.0 must use the shared /carrel/initrd: a
+# 0.1.0/0.2.0 device's update code installs only the root, verity, signature
+# and entry, so it never receives /carrel/<kernel-version>/initrd, and those
+# devices update straight to the newest release.  0.3.0 and later install the
+# initrd in the kernel archive (kernel.transfer) and name the per-kernel copy,
+# which leaves the previous slot's initrd untouched.
+FIRST_PER_KERNEL_INITRD = (0, 3, 0)
+
+
+def uses_shared_initrd(version: str) -> bool:
+    try:
+        parts = tuple(int(part) for part in version.split(".")[:3])
+    except ValueError:
+        return False
+    return parts < FIRST_PER_KERNEL_INITRD
 
 
 def initrd_paths(version: str, kver: str) -> tuple[str, str]:
-    if version in LEGACY_INITRD_VERSIONS:
+    if uses_shared_initrd(version):
         return "/carrel/initrd", f"/carrel/{kver}/kernel-modules.initrd"
     return f"/carrel/{kver}/initrd", f"/carrel/{kver}/kernel-modules.initrd"
 
