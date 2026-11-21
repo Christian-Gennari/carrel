@@ -66,6 +66,7 @@ pub struct EditorPage {
     doc: RefCell<Option<Document>>,
     current: RefCell<Option<PathBuf>>,
     untitled: Cell<bool>,
+    renaming: Cell<bool>,
     loading: Cell<bool>,
     /// The start hint is gone for this opening of the document; it never
     /// comes back while the document stays open.
@@ -278,6 +279,7 @@ impl EditorPage {
             doc: RefCell::new(None),
             current: RefCell::new(None),
             untitled: Cell::new(false),
+            renaming: Cell::new(false),
             loading: Cell::new(false),
             start_hint_dismissed: Cell::new(false),
             last_edit_at: Cell::new(Instant::now()),
@@ -1071,10 +1073,17 @@ impl EditorPage {
         Ok(())
     }
 
+    pub fn set_renaming(&self, renaming: bool) {
+        self.renaming.set(renaming);
+        if !renaming {
+            self.last_edit_at.set(Instant::now());
+        }
+    }
+
     /// Name a new file from its first line once the writer pauses. Forced on
     /// exit so a one-line note still gets a real name.
     pub fn maybe_name_untitled(self: &Rc<Self>, force: bool) {
-        if !self.untitled.get() {
+        if !self.untitled.get() || self.renaming.get() {
             return;
         }
         if !force && self.last_edit_at.get().elapsed() < Duration::from_millis(1500) {
@@ -1143,27 +1152,31 @@ impl EditorPage {
         if let Some(doc) = self.doc.borrow().as_ref() {
             doc.flush()
                 .map_err(|error| format!("Cannot save before rename: {error}"))?;
+            self.save_error.set(false);
+            self.refresh_status();
         }
         let old_doc = self.doc.borrow_mut().take();
         drop(old_doc);
 
         match self.store.rename(&source, &target) {
             Ok(()) => {
-                match self.store.open_document(&target) {
-                    Ok(doc) => {
-                        *self.doc.borrow_mut() = Some(doc);
-                    }
-                    Err(error) => {
-                        return Err(format!("Cannot reopen {}: {error}", target.display()));
-                    }
-                }
                 *self.current.borrow_mut() = Some(target.clone());
                 self.untitled.set(false);
                 if let Err(error) = self.store.set_last_file(Some(&target)) {
                     eprintln!("carrel: could not remember last file: {error}");
                 }
                 self.update_document_name();
-                Ok(target)
+                match self.store.open_document(&target) {
+                    Ok(doc) => {
+                        *self.doc.borrow_mut() = Some(doc);
+                        Ok(target)
+                    }
+                    Err(error) => {
+                        self.save_error.set(true);
+                        self.refresh_status();
+                        Err(format!("Cannot reopen {}: {error}", target.display()))
+                    }
+                }
             }
             Err(error) => {
                 if let Ok(doc) = self.store.open_document(&source) {

@@ -836,8 +836,8 @@ impl RenameSheet {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
         body.set_margin_top(20);
         body.set_margin_bottom(18);
-        body.set_margin_start(22);
-        body.set_margin_end(22);
+        body.set_margin_start(20);
+        body.set_margin_end(20);
         body.append(&title);
         body.append(&folder_label);
         body.append(&entry);
@@ -847,6 +847,7 @@ impl RenameSheet {
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
         widget.add_css_class("command-palette");
+        widget.set_overflow(gtk::Overflow::Hidden);
         widget.set_halign(gtk::Align::Center);
         widget.set_valign(gtk::Align::Start);
         widget.set_margin_top(PALETTE_TOP);
@@ -922,6 +923,7 @@ impl RenameSheet {
         self.entry.set_text(&name);
 
         self.open.set(true);
+        self.editor.set_renaming(true);
         self.dim.set_visible(true);
         self.widget.set_visible(true);
         self.entry.grab_focus();
@@ -941,6 +943,7 @@ impl RenameSheet {
             return;
         }
         self.open.set(false);
+        self.editor.set_renaming(false);
         self.dim.set_visible(false);
         self.widget.set_visible(false);
         self.error_label.set_text("");
@@ -980,6 +983,7 @@ impl RenameSheet {
                 self.commit();
                 glib::Propagation::Stop
             }
+            gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab => glib::Propagation::Stop,
             _ => glib::Propagation::Proceed,
         }
     }

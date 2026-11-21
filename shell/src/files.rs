@@ -174,6 +174,9 @@ impl FilesPage {
                         self.commit_entry();
                         glib::Propagation::Stop
                     }
+                    gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab => {
+                        glib::Propagation::Stop
+                    }
                     _ => glib::Propagation::Proceed,
                 };
             }

@@ -55,6 +55,7 @@ fn gtk_scenarios() {
     rename_happens_in_the_place_of_the_row();
     new_folder_focuses_the_entry_and_creates_folder();
     rename_current_file_via_palette_and_shortcut();
+    rename_sheet_traps_tab_pauses_auto_naming_and_preserves_undo();
     files_search_finds_a_document_in_any_folder();
     recent_files_open_from_the_files_screen();
     opening_a_folder_starts_at_its_first_entry();
@@ -144,13 +145,17 @@ fn pump(done: impl Fn() -> bool) {
     }
 }
 
-fn settle() {
+fn wait_for(duration: Duration) {
     let context = glib::MainContext::default();
-    let until = Instant::now() + Duration::from_millis(400);
+    let until = Instant::now() + duration;
     while Instant::now() < until {
         context.iteration(false);
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn settle() {
+    wait_for(Duration::from_millis(400));
 }
 
 fn press(palette: &Rc<QuotePalette>, key: gdk::Key, state: gdk::ModifierType) -> bool {
@@ -583,6 +588,19 @@ fn rename_happens_in_the_place_of_the_row() {
         glib::Propagation::Proceed,
         "typed characters must reach the focused rename entry"
     );
+    assert_eq!(
+        shell.keys.handle(gdk::Key::Tab, gdk::ModifierType::empty()),
+        glib::Propagation::Stop,
+        "Tab must not move focus out of the inline rename entry"
+    );
+    assert_eq!(
+        shell
+            .keys
+            .handle(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK),
+        glib::Propagation::Stop,
+        "Shift+Tab must not move focus out of the inline rename entry"
+    );
+    assert!(crate::ui::entry_has_focus(&entry));
     entry.delete_selection();
     let mut pos = 0;
     entry.insert_text("Beta", &mut pos);
@@ -617,6 +635,19 @@ fn new_folder_focuses_the_entry_and_creates_folder() {
         glib::Propagation::Proceed,
         "typed characters must reach the focused new-folder entry"
     );
+    assert_eq!(
+        shell.keys.handle(gdk::Key::Tab, gdk::ModifierType::empty()),
+        glib::Propagation::Stop,
+        "Tab must not move focus out of the inline new-folder entry"
+    );
+    assert_eq!(
+        shell
+            .keys
+            .handle(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK),
+        glib::Propagation::Stop,
+        "Shift+Tab must not move focus out of the inline new-folder entry"
+    );
+    assert!(crate::ui::entry_has_focus(&entry));
     let mut pos = 0;
     entry.insert_text("Drafts", &mut pos);
     shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
@@ -732,6 +763,150 @@ fn rename_current_file_via_palette_and_shortcut() {
     let before_focus = shell.settings.borrow().focus_mode;
     shell.press("F2", gdk::Key::F2, none);
     assert_ne!(shell.settings.borrow().focus_mode, before_focus);
+}
+
+/// Regression tests for RenameSheet: Tab/Shift+Tab cannot leak focus to the
+/// dimmed editor behind it, Ctrl+Z undo survives rename_current, and
+/// maybe_name_untitled pauses while RenameSheet is open.
+fn rename_sheet_traps_tab_pauses_auto_naming_and_preserves_undo() {
+    let none = gdk::ModifierType::empty();
+    let ctrl = gdk::ModifierType::CONTROL_MASK;
+    let ctrl_shift = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
+
+    // 1. Tab / Shift+Tab keep focus inside RenameSheet and Ctrl+Z undo survives rename.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        let buffer = shell.editor.buffer();
+        let before_edit = contents(&buffer);
+        buffer.begin_user_action();
+        shell.type_text("Extra words");
+        buffer.end_user_action();
+        assert!(buffer.can_undo());
+
+        shell.press("Ctrl+Shift+R", gdk::Key::r, ctrl_shift);
+        settle();
+        assert!(shell.rename_sheet.is_open());
+        let entry = shell.rename_sheet.entry().clone();
+        assert!(crate::ui::entry_has_focus(&entry));
+        assert!(!shell.editor.view().has_focus());
+
+        assert_eq!(
+            shell.keys.handle(gdk::Key::Tab, none),
+            glib::Propagation::Stop,
+            "Tab must not escape RenameSheet"
+        );
+        assert_eq!(
+            shell
+                .keys
+                .handle(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK),
+            glib::Propagation::Stop,
+            "Shift+Tab must not escape RenameSheet"
+        );
+        assert_eq!(
+            shell.keys.handle(gdk::Key::KP_Tab, none),
+            glib::Propagation::Stop,
+            "KP_Tab must not escape RenameSheet"
+        );
+        settle();
+        assert!(
+            crate::ui::entry_has_focus(&entry),
+            "focus stays in RenameSheet entry after Tab / Shift+Tab"
+        );
+        assert!(!shell.editor.view().has_focus());
+
+        entry.set_text("Beta");
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        assert!(!shell.rename_sheet.is_open());
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Beta.md"))
+        );
+
+        assert!(buffer.can_undo(), "undo history survives rename_current");
+        assert_eq!(
+            shell.keys.handle(gdk::Key::z, ctrl),
+            glib::Propagation::Proceed,
+            "Ctrl+Z reaches the editor after RenameSheet closes"
+        );
+        buffer.undo();
+        assert_eq!(
+            contents(&buffer),
+            before_edit,
+            "undo restores the pre-edit text after rename"
+        );
+    }
+
+    // 2. maybe_name_untitled pauses while RenameSheet is open, resets the timer on
+    //    cancel, and manual rename on an Untitled file keeps undo history.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.press("Ctrl+N", gdk::Key::n, ctrl);
+        settle();
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md"))
+        );
+
+        let buffer = shell.editor.buffer();
+        buffer.begin_user_action();
+        shell.type_text("First line title");
+        buffer.end_user_action();
+        shell.editor.select_range(5, 0);
+
+        shell.press("Ctrl+Shift+R", gdk::Key::r, ctrl_shift);
+        settle();
+        assert!(shell.rename_sheet.is_open());
+
+        // Wait past the 1.5 s auto-name delay so the 1 s timer runs while open.
+        wait_for(Duration::from_millis(2100));
+        shell.editor.maybe_name_untitled(false);
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md")),
+            "maybe_name_untitled must do nothing while RenameSheet is open"
+        );
+        assert_eq!(shell.editor.buffer().cursor_position(), 5);
+        assert!(buffer.can_undo());
+
+        // Cancelling resets last_edit_at, then auto-naming resumes after the pause.
+        shell.press("Esc", gdk::Key::Escape, none);
+        settle();
+        assert!(!shell.rename_sheet.is_open());
+        shell.editor.maybe_name_untitled(false);
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md")),
+            "cancelling RenameSheet gives a fresh grace window before auto-naming"
+        );
+        pump(|| shell.editor.current_rel().as_deref() == Some(Path::new("First line title.md")));
+
+        // Renaming an Untitled file manually keeps undo history and prevents auto-naming.
+        shell.press("Ctrl+N", gdk::Key::n, ctrl);
+        settle();
+        let buffer = shell.editor.buffer();
+        buffer.begin_user_action();
+        shell.type_text("Ignored heading");
+        buffer.end_user_action();
+        shell.press("Ctrl+Shift+R", gdk::Key::r, ctrl_shift);
+        settle();
+        wait_for(Duration::from_millis(2100));
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md"))
+        );
+        shell.rename_sheet.entry().set_text("Chosen name");
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Chosen name.md"))
+        );
+        assert!(shell.root.join("Chosen name.md").is_file());
+        assert!(buffer.can_undo());
+        buffer.undo();
+        assert_eq!(contents(&buffer), "");
+    }
 }
 
 /// Typing on the Files screen searches every folder at once: no field to
