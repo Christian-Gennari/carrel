@@ -1315,6 +1315,11 @@ impl DaemonClient for FakeDaemon {
             other => return Err(DaemonError::failed(format!("unknown backend {other}"))),
         };
         if let Ok(mut state) = self.state.lock() {
+            if state.wifi_down {
+                return Err(DaemonError::failed(
+                    "No Wi-Fi connection. Connect to Wi-Fi before pairing.",
+                ));
+            }
             state.pending_pair = Some(info.clone());
             state.pairs += 1;
             state.configured = true;

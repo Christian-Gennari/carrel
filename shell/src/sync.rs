@@ -17,7 +17,7 @@ use gtk::{gdk, glib, pango};
 use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Backend, Client, PairingInfo, SyncInfo};
-use crate::handoff::WifiHandoff;
+use crate::handoff::{HandoffAction, WifiHandoff};
 use crate::nav::Navigator;
 use crate::ui;
 
@@ -31,6 +31,8 @@ const PAIRED_BEAT: std::time::Duration = std::time::Duration::from_millis(2_000)
 
 /// The sentence under the one action an error offers.
 const REMEDY_NOTE: &str = "Your writing stays here. Carrel syncs when you are back online.";
+const PAIR_REMEDY_NOTE: &str =
+    "Your writing stays here. Pairing continues once Wi-Fi is connected.";
 
 /// The one line an error leaves the writer with. It is derived from the
 /// daemon's message, which is a sentence, not a code.
@@ -54,19 +56,34 @@ pub fn remedy_for(message: &str) -> Remedy {
         "connect a service",
         "unpaired",
     ];
-    const NETWORK: [&str; 9] = [
+    const NETWORK: [&str; 20] = [
         "wi-fi",
         "wifi",
+        "no internet",
+        "internet connection",
         "no network",
         "network is off",
+        "network is down",
         "network is unreachable",
+        "network unreachable",
+        "host is unreachable",
         "no route",
         "dns",
         "name resolution",
+        "failed to lookup address",
+        "name or service not known",
+        "no such host",
         "offline",
+        "timed out",
+        "unreachable",
+        "login page",
     ];
     if UNPAIRED.iter().any(|phrase| message.contains(phrase)) {
         Remedy::Pair
+    } else if message.contains("to be approved") {
+        // Pairing code approval timeout: the writer did not approve in time,
+        // not a missing Wi-Fi connection.
+        Remedy::Retry
     } else if NETWORK.iter().any(|phrase| message.contains(phrase)) {
         Remedy::Wifi
     } else {
@@ -90,6 +107,12 @@ pub enum SyncEffect {
     Sync,
     /// Open the Wi-Fi screen and come back here when a network is up.
     ChooseNetwork,
+    /// Open the Wi-Fi screen after pairing failed offline, then come back and
+    /// resume pairing the same backend and server URL.
+    ChooseNetworkForPair {
+        backend: Backend,
+        url: String,
+    },
     Pair {
         backend: Backend,
         url: String,
@@ -113,6 +136,10 @@ pub struct SyncState {
     /// Index into [`SyncState::rows`].
     pub selected: usize,
     pub backend: Option<Backend>,
+    pub pairing_url: String,
+    /// The pairing attempt interrupted by an offline/Wi-Fi error, so
+    /// choosing a network can resume it automatically.
+    pub failed_pair: Option<(Backend, String)>,
     pub code: String,
     pub approval_url: String,
     /// True while the daemon polls for approval.
@@ -137,6 +164,9 @@ impl SyncState {
     }
 
     pub fn remedy(&self) -> Option<Remedy> {
+        if let Some(error) = &self.error {
+            return Some(remedy_for(error));
+        }
         if self.info.state != "error" {
             return None;
         }
@@ -145,25 +175,44 @@ impl SyncState {
 
     /// The large one-line state at the top of the screen.
     pub fn hero(&self) -> String {
-        match self.info.state.as_str() {
-            "syncing" => {
-                let message = self.info.message.trim();
-                if message.is_empty() {
-                    "Syncing…".to_owned()
+        if self.error.is_none() && self.info.state == "syncing" {
+            let message = self.info.message.trim();
+            return if message.is_empty() {
+                "Syncing…".to_owned()
+            } else {
+                single_line(message)
+            };
+        }
+        match self.remedy() {
+            Some(Remedy::Wifi) => {
+                if self.error.is_some() || !self.is_paired() {
+                    "Connect to Wi-Fi first".to_owned()
                 } else {
-                    single_line(message)
+                    match self.service_name() {
+                        Some(name) => format!("Could not reach {name}"),
+                        None => "Could not sync".to_owned(),
+                    }
                 }
             }
-            "error" => match self.remedy() {
-                Some(Remedy::Wifi) | Some(Remedy::Retry) => match self.service_name() {
-                    Some(name) => format!("Could not reach {name}"),
-                    None => "Could not sync".to_owned(),
-                },
-                _ => "Not connected yet".to_owned(),
-            },
-            _ if !self.is_paired() => "Not connected yet".to_owned(),
-            _ if self.info.last_sync > 0 => "Up to date".to_owned(),
-            _ => "Ready for your first sync".to_owned(),
+            Some(Remedy::Retry) => {
+                if self.error.is_some() {
+                    match self.backend {
+                        Some(backend) => {
+                            format!("Could not pair with {}", backend.connected_label())
+                        }
+                        None => "Could not sync".to_owned(),
+                    }
+                } else {
+                    match self.service_name() {
+                        Some(name) => format!("Could not reach {name}"),
+                        None => "Could not sync".to_owned(),
+                    }
+                }
+            }
+            Some(Remedy::Pair) => "Not connected yet".to_owned(),
+            None if !self.is_paired() => "Not connected yet".to_owned(),
+            None if self.info.last_sync > 0 => "Up to date".to_owned(),
+            None => "Ready for your first sync".to_owned(),
         }
     }
 
@@ -198,10 +247,19 @@ impl SyncState {
     }
 
     /// The daemon's own sentence, shown only when it adds something: a server
-    /// failure the screen cannot explain better.
+    /// failure the screen cannot explain better, or what Wi-Fi setup is for.
     pub fn detail(&self) -> String {
         match self.remedy() {
-            Some(Remedy::Retry) => single_line(&self.info.message),
+            Some(Remedy::Wifi) if self.error.is_some() => match self.backend {
+                Some(backend) => {
+                    format!("Set up Wi-Fi to pair with {}.", backend.connected_label())
+                }
+                None => "Set up Wi-Fi before continuing.".to_owned(),
+            },
+            Some(Remedy::Retry) => {
+                let message = self.error.as_deref().unwrap_or(&self.info.message);
+                single_line(message)
+            }
             _ => String::new(),
         }
     }
@@ -227,7 +285,12 @@ impl SyncState {
     /// The overview's rows, in screen order. The keyboard only lands on these.
     pub fn rows(&self) -> Vec<Row> {
         if !self.is_paired() {
-            return Backend::ALL.iter().copied().map(Row::Pair).collect();
+            let mut rows = Vec::new();
+            if self.remedy() == Some(Remedy::Wifi) {
+                rows.push(Row::ChooseNetwork);
+            }
+            rows.extend(Backend::ALL.iter().copied().map(Row::Pair));
+            return rows;
         }
         let mut rows = Vec::new();
         if self.remedy() == Some(Remedy::Wifi) {
@@ -293,11 +356,21 @@ impl SyncState {
     /// so it only switches the view.
     pub fn choose(&mut self) -> Option<SyncEffect> {
         match self.action()? {
-            Row::SyncNow => Some(SyncEffect::Sync),
-            Row::ChooseNetwork => Some(SyncEffect::ChooseNetwork),
+            Row::SyncNow => {
+                self.backend = None;
+                self.pairing_url.clear();
+                self.failed_pair = None;
+                self.error = None;
+                Some(SyncEffect::Sync)
+            }
+            Row::ChooseNetwork => match self.failed_pair.clone() {
+                Some((backend, url)) => Some(SyncEffect::ChooseNetworkForPair { backend, url }),
+                None => Some(SyncEffect::ChooseNetwork),
+            },
             Row::Pair(Backend::SelfHosted) => {
                 self.view = SyncView::SelfHostedUrl;
                 self.error = None;
+                self.failed_pair = None;
                 None
             }
             Row::Pair(backend) => {
@@ -307,7 +380,10 @@ impl SyncState {
                     url: String::new(),
                 })
             }
-            Row::Unpair => Some(SyncEffect::Unpair),
+            Row::Unpair => {
+                self.failed_pair = None;
+                Some(SyncEffect::Unpair)
+            }
         }
     }
 
@@ -319,16 +395,22 @@ impl SyncState {
         if !(url.starts_with("https://") || url.starts_with("http://")) {
             return Err("The address must start with https:// or http://.".to_owned());
         }
-        self.begin_pairing(Backend::SelfHosted);
+        self.begin_pairing_with_url(Backend::SelfHosted, url.to_owned());
         Ok(SyncEffect::Pair {
             backend: Backend::SelfHosted,
             url: url.to_owned(),
         })
     }
 
-    fn begin_pairing(&mut self, backend: Backend) {
+    pub fn begin_pairing(&mut self, backend: Backend) {
+        self.begin_pairing_with_url(backend, String::new());
+    }
+
+    pub fn begin_pairing_with_url(&mut self, backend: Backend, url: String) {
         self.view = SyncView::Pairing;
         self.backend = Some(backend);
+        self.pairing_url = url;
+        self.failed_pair = None;
         self.code.clear();
         self.approval_url.clear();
         self.waiting = true;
@@ -350,7 +432,25 @@ impl SyncState {
         if !self.paired {
             self.waiting = true;
             self.error = None;
+            self.failed_pair = None;
         }
+    }
+
+    /// Store a pairing error, return to overview, and highlight "Choose a
+    /// network" first when Wi-Fi needs to be connected.
+    pub fn on_pair_error(&mut self, message: String) {
+        self.view = SyncView::Overview;
+        self.waiting = false;
+        self.paired = false;
+        if remedy_for(&message) == Remedy::Wifi {
+            self.selected = 0;
+            self.failed_pair = self
+                .backend
+                .map(|backend| (backend, self.pairing_url.clone()));
+        } else {
+            self.failed_pair = None;
+        }
+        self.error = Some(message);
     }
 
     /// `approved` stops at "Paired." for a beat (the page returns afterwards);
@@ -358,9 +458,7 @@ impl SyncState {
     pub fn on_pair_status(&mut self, state: &str, _code: &str, message: String) {
         self.waiting = false;
         if state != "approved" {
-            self.view = SyncView::Overview;
-            self.paired = false;
-            self.error = Some(message);
+            self.on_pair_error(message);
             return;
         }
         if let Some(backend) = self.backend {
@@ -374,9 +472,28 @@ impl SyncState {
         self.paired = true;
         self.notice = message;
         self.error = None;
+        self.failed_pair = None;
+        self.pairing_url.clear();
     }
 
     pub fn on_sync(&mut self, info: SyncInfo) {
+        if self.view != SyncView::Overview || self.waiting {
+            self.info = info;
+            return;
+        }
+        if info.state == "error"
+            && remedy_for(&info.message) == Remedy::Pair
+            && self.error.is_some()
+        {
+            self.info = info;
+            return;
+        }
+        if !matches!(info.state.as_str(), "idle" | "") {
+            self.error = None;
+            self.failed_pair = None;
+            self.backend = None;
+            self.pairing_url.clear();
+        }
         self.info = info;
     }
 
@@ -389,6 +506,7 @@ impl SyncState {
                 self.paired = false;
                 self.waiting = false;
                 self.error = None;
+                self.failed_pair = None;
                 true
             }
         }
@@ -742,10 +860,14 @@ impl SyncPage {
             page.load_sync_info();
             page.refresh();
             page.screen.focus_page();
-            // Wi-Fi connected for a sync that could not reach the network:
-            // pick the thread up where it stopped.
-            if page.handoff.resume() {
-                page.run_effect(SyncEffect::Sync);
+            // Wi-Fi connected for a sync or pairing that could not reach the
+            // network: pick the thread up where it stopped.
+            match page.handoff.resume_action() {
+                Some(HandoffAction::Sync) => page.run_effect(SyncEffect::Sync),
+                Some(HandoffAction::Pair { backend, url }) => {
+                    page.open_pairing_url(backend, &url);
+                }
+                None => {}
             }
         });
     }
@@ -764,6 +886,12 @@ impl SyncPage {
                 if page.info_generation.get() != generation {
                     return;
                 }
+                {
+                    let state = page.state.borrow();
+                    if state.view != SyncView::Overview || state.failed_pair.is_some() {
+                        return;
+                    }
+                }
                 match result {
                     Ok(info) => page.state.borrow_mut().on_sync(info),
                     Err(error) => page.state.borrow_mut().error = Some(error.message),
@@ -776,6 +904,11 @@ impl SyncPage {
     /// The one-line state, for the tests.
     pub fn hero(&self) -> String {
         self.hero.text().to_string()
+    }
+
+    /// The detail line under the hero, for the tests.
+    pub fn detail(&self) -> String {
+        self.detail.text().to_string()
     }
 
     /// The unpair card is open; the command palette waits for it.
@@ -799,13 +932,19 @@ impl SyncPage {
     /// Open the Sync screen and begin pairing. Used by First run and by the
     /// screenshot flow; self-hosted servers need a URL first.
     pub fn open_pairing(self: &Rc<Self>, backend: Backend) {
+        self.handoff.abandon();
         self.nav.show("sync");
         {
             let mut state = self.state.borrow_mut();
             state.notice.clear();
             state.error = None;
+            state.failed_pair = None;
+            state.pairing_url.clear();
             match backend {
-                Backend::SelfHosted => state.view = SyncView::SelfHostedUrl,
+                Backend::SelfHosted => {
+                    state.view = SyncView::SelfHostedUrl;
+                    state.backend = Some(Backend::SelfHosted);
+                }
                 _ => state.begin_pairing(backend),
             }
         }
@@ -823,7 +962,9 @@ impl SyncPage {
     /// address first; the screenshot script uses this to show the code step.
     pub fn open_pairing_url(self: &Rc<Self>, backend: Backend, url: &str) {
         self.nav.show("sync");
-        self.state.borrow_mut().begin_pairing(backend);
+        self.state
+            .borrow_mut()
+            .begin_pairing_with_url(backend, url.to_owned());
         self.refresh();
         self.start_pair(backend, url.to_owned());
     }
@@ -832,12 +973,16 @@ impl SyncPage {
     /// paired the screen itself is the next step, so the daemon's "not paired"
     /// answer lands on the three services rather than a dead end.
     pub fn sync_now(self: &Rc<Self>) {
+        self.handoff.abandon();
         self.nav.show("sync");
         {
             let mut state = self.state.borrow_mut();
             state.view = SyncView::Overview;
             state.notice.clear();
             state.error = None;
+            state.failed_pair = None;
+            state.backend = None;
+            state.pairing_url.clear();
             state.selected = 0;
         }
         self.refresh();
@@ -886,6 +1031,9 @@ impl SyncPage {
                 }
                 state.view = SyncView::Overview;
                 state.paired = false;
+                state.failed_pair = None;
+                state.backend = None;
+                state.pairing_url.clear();
                 state.selected = 0;
             }
             page.refresh();
@@ -946,6 +1094,10 @@ impl SyncPage {
                 self.handoff.ask();
                 self.nav.show("wifi");
             }
+            SyncEffect::ChooseNetworkForPair { backend, url } => {
+                self.handoff.ask_pair(backend, url);
+                self.nav.show("wifi");
+            }
             SyncEffect::Pair { backend, url } => self.start_pair(backend, url),
             SyncEffect::Unpair => self.confirm_unpair(),
         }
@@ -966,12 +1118,7 @@ impl SyncPage {
                         page.refresh();
                     }
                     Err(error) => {
-                        let mut state = page.state.borrow_mut();
-                        state.view = SyncView::Overview;
-                        state.waiting = false;
-                        state.paired = false;
-                        state.error = Some(error.message);
-                        drop(state);
+                        page.state.borrow_mut().on_pair_error(error.message);
                         page.refresh();
                     }
                 }
@@ -1169,7 +1316,14 @@ impl SyncPage {
                 // else needs the writer first: no error, or an error the
                 // retry itself fixes.
                 Row::SyncNow => primary_row("Sync now", state.remedy() == Some(Remedy::Wifi)),
-                Row::ChooseNetwork => remedy_row(&state.row_label(Row::ChooseNetwork), REMEDY_NOTE),
+                Row::ChooseNetwork => {
+                    let note = if state.failed_pair.is_some() {
+                        PAIR_REMEDY_NOTE
+                    } else {
+                        REMEDY_NOTE
+                    };
+                    remedy_row(&state.row_label(Row::ChooseNetwork), note)
+                }
                 _ => action_row(&state.row_label(*row), state.row_note(*row)),
             };
             self.list.append(&widget);
@@ -1185,10 +1339,15 @@ impl SyncPage {
         }
 
         if let Some(error) = &state.error {
-            self.notice.add_css_class("error-text");
-            self.notice.remove_css_class("notice-ok");
-            self.notice.set_text(error);
-            self.notice.set_visible(true);
+            if matches!(state.remedy(), Some(Remedy::Wifi) | Some(Remedy::Retry)) {
+                // Hero, detail, and the remedy row already carry the state calmly.
+                self.notice.set_visible(false);
+            } else {
+                self.notice.add_css_class("error-text");
+                self.notice.remove_css_class("notice-ok");
+                self.notice.set_text(error);
+                self.notice.set_visible(true);
+            }
         } else if !state.notice.is_empty() {
             self.notice.remove_css_class("error-text");
             self.notice.add_css_class("notice-ok");
@@ -1638,5 +1797,150 @@ mod tests {
         );
         save_memory(dir.path(), &[]);
         assert_eq!(load_memory(dir.path()), Some(Vec::new()));
+    }
+
+    #[test]
+    fn remedy_for_classifies_offline_dns_and_timeouts_but_not_approval_timeouts() {
+        assert_eq!(
+            remedy_for("No Wi-Fi connection. Connect to Wi-Fi before pairing."),
+            Remedy::Wifi
+        );
+        assert_eq!(
+            remedy_for(
+                "failed to lookup address information: Temporary failure in name resolution"
+            ),
+            Remedy::Wifi
+        );
+        assert_eq!(remedy_for("No such host is known."), Remedy::Wifi);
+        assert_eq!(
+            remedy_for("connection timed out while sending request"),
+            Remedy::Wifi
+        );
+        assert_eq!(
+            remedy_for("This network needs a login page. Use a phone hotspot."),
+            Remedy::Wifi
+        );
+        assert_eq!(
+            remedy_for("timed out waiting for the pairing to be approved"),
+            Remedy::Retry
+        );
+        assert_eq!(
+            remedy_for("timed out waiting for the Google Drive code to be approved"),
+            Remedy::Retry
+        );
+    }
+
+    #[test]
+    fn offline_pairing_failure_while_unpaired_prompts_wifi_first_and_preserves_backend() {
+        let mut state = SyncState {
+            selected: 2,
+            ..SyncState::default()
+        };
+        state.begin_pairing(Backend::GoogleDrive);
+        state.on_pair_error("No Wi-Fi connection. Connect to Wi-Fi before pairing.".into());
+
+        assert_eq!(state.view, SyncView::Overview);
+        assert_eq!(state.remedy(), Some(Remedy::Wifi));
+        assert_eq!(state.hero(), "Connect to Wi-Fi first");
+        assert_eq!(state.detail(), "Set up Wi-Fi to pair with Google Drive.");
+        assert_eq!(state.selected, 0);
+        assert_eq!(
+            state.rows(),
+            vec![
+                Row::ChooseNetwork,
+                Row::Pair(Backend::Nostos),
+                Row::Pair(Backend::SelfHosted),
+                Row::Pair(Backend::GoogleDrive),
+            ]
+        );
+        assert_eq!(state.connections_at(), None);
+        assert_eq!(
+            state.choose(),
+            Some(SyncEffect::ChooseNetworkForPair {
+                backend: Backend::GoogleDrive,
+                url: String::new(),
+            })
+        );
+    }
+
+    #[test]
+    fn offline_self_hosted_pairing_failure_preserves_url_for_wifi_handoff() {
+        let mut state = SyncState {
+            selected: 1,
+            ..SyncState::default()
+        };
+        assert_eq!(state.choose(), None);
+        assert_eq!(state.view, SyncView::SelfHostedUrl);
+        state
+            .submit_server_url("https://studio.local:8443")
+            .unwrap();
+        state.on_pair_error("error sending request: failed to lookup address".into());
+
+        assert_eq!(state.remedy(), Some(Remedy::Wifi));
+        assert_eq!(state.hero(), "Connect to Wi-Fi first");
+        assert_eq!(state.detail(), "Set up Wi-Fi to pair with your server.");
+        assert_eq!(state.selected, 0);
+        assert_eq!(
+            state.choose(),
+            Some(SyncEffect::ChooseNetworkForPair {
+                backend: Backend::SelfHosted,
+                url: "https://studio.local:8443".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn idle_sync_snapshot_does_not_clear_offline_pairing_error() {
+        let mut state = SyncState::default();
+        state.begin_pairing(Backend::Nostos);
+        state.on_pair_error("No Wi-Fi connection. Connect to Wi-Fi before pairing.".into());
+        state.on_sync(SyncInfo::default());
+        state.on_sync(SyncInfo {
+            state: "idle".into(),
+            message: "Not synced yet.".into(),
+            last_sync: 0,
+        });
+        assert_eq!(state.remedy(), Some(Remedy::Wifi));
+        assert_eq!(state.rows()[0], Row::ChooseNetwork);
+        assert_eq!(state.hero(), "Connect to Wi-Fi first");
+    }
+
+    #[test]
+    fn non_network_pairing_error_uses_calm_retry_hero() {
+        let mut state = SyncState::default();
+        state.begin_pairing(Backend::Nostos);
+        state.on_pair_error("timed out waiting for the pairing to be approved".into());
+        assert_eq!(state.remedy(), Some(Remedy::Retry));
+        assert_eq!(state.hero(), "Could not pair with Nostos");
+        assert_eq!(
+            state.detail(),
+            "timed out waiting for the pairing to be approved"
+        );
+        assert_eq!(state.failed_pair, None);
+    }
+
+    #[test]
+    fn stale_not_paired_sync_signal_does_not_clear_pairing_backend_or_error() {
+        let mut state = SyncState::default();
+        state.begin_pairing(Backend::Nostos);
+        state.on_sync(SyncInfo {
+            state: "error".into(),
+            message: "this device is not paired with a sync server or Google Drive".into(),
+            last_sync: 0,
+        });
+        assert_eq!(state.backend, Some(Backend::Nostos));
+
+        state.on_pair_error("No Wi-Fi connection. Connect to Wi-Fi before pairing.".into());
+        assert_eq!(state.detail(), "Set up Wi-Fi to pair with Nostos.");
+        assert_eq!(state.failed_pair, Some((Backend::Nostos, String::new())));
+
+        state.on_sync(SyncInfo {
+            state: "error".into(),
+            message: "this device is not paired with a sync server or Google Drive".into(),
+            last_sync: 0,
+        });
+        assert_eq!(state.remedy(), Some(Remedy::Wifi));
+        assert_eq!(state.detail(), "Set up Wi-Fi to pair with Nostos.");
+        assert_eq!(state.failed_pair, Some((Backend::Nostos, String::new())));
     }
 }

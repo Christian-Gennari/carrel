@@ -661,10 +661,16 @@ impl WifiPage {
             } else {
                 self.screen.set_status(&state.message);
             }
-        } else if self.handoff.is_asked() {
-            // Sync sent the writer here to fix a failed sync: say why.
-            self.screen
-                .set_status("Choose a network. Sync finishes when you are connected.");
+        } else if let Some(action) = self.handoff.asked_action() {
+            // Sync sent the writer here to fix a failed sync or pairing: say why.
+            match action {
+                crate::handoff::HandoffAction::Sync => self
+                    .screen
+                    .set_status("Choose a network. Sync finishes when you are connected."),
+                crate::handoff::HandoffAction::Pair { .. } => self
+                    .screen
+                    .set_status("Choose a network. Pairing continues when you are connected."),
+            }
         } else {
             self.screen.set_status(RADIO_NOTE);
         }
