@@ -65,6 +65,7 @@ fn gtk_scenarios() {
     markdown_markers_lists_quotes_and_citations_are_styled();
     the_caret_line_holds_its_height();
     // --- end UI round 5 (Editor, issue #32) ---
+    incremental_restyle_matches_full_restyle_across_edits_and_cites();
     keystroke_baseline();
     the_wifi_fix_returns_to_sync_and_syncs();
 }
@@ -921,6 +922,86 @@ fn markdown_markers_lists_quotes_and_citations_are_styled() {
     assert!(has(bare, "carrel-cite-hidden"));
     assert!(has(bare + "nostos:cite/".len(), "carrel-cite"));
     assert_eq!(contents(&buffer), text, "the stored Markdown is untouched");
+}
+
+fn incremental_restyle_matches_full_restyle_across_edits_and_cites() {
+    let initial = "# Title\n\nPlain paragraph here.\n> Quote line\nFirst [^1](nostos:cite/c1) ref.\nSecond nostos:cite/c2 ref.\n";
+    let shell = TestShell::new(&[("Inc.md", initial)], "Inc.md");
+    let buffer = shell.editor.buffer();
+
+    let snapshot_tags = || -> Vec<Vec<String>> {
+        let len = buffer.char_count();
+        (0..len)
+            .map(|offset| {
+                let mut names: Vec<String> = buffer
+                    .iter_at_offset(offset)
+                    .tags()
+                    .into_iter()
+                    .filter_map(|tag| tag.name().map(|s| s.to_string()))
+                    .collect();
+                names.sort();
+                names
+            })
+            .collect()
+    };
+
+    let has = |offset: usize, name: &str| {
+        buffer
+            .iter_at_offset(offset as i32)
+            .tags()
+            .iter()
+            .any(|tag| tag.name().as_deref() == Some(name))
+    };
+
+    // Split line 2 and type **loud** across multiple edits before settling.
+    let split_at = contents(&buffer).find("here.").unwrap() as i32;
+    buffer.place_cursor(&buffer.iter_at_offset(split_at));
+    buffer.insert_at_cursor("\n**loud** ");
+    settle();
+
+    let text = contents(&buffer);
+    let loud_at = text.find("loud").unwrap();
+    assert!(has(loud_at, "carrel-bold"));
+    assert!(has(loud_at - 2, "carrel-dim"));
+    // Bottom line word count matches full-text count_words.
+    let expected_words = crate::store::stats::count_words(&text);
+    assert!(
+        shell
+            .editor
+            .bottom_line_text()
+            .contains(&format!("{expected_words} words")),
+        "status line should reflect {expected_words} words, got {:?}",
+        shell.editor.bottom_line_text()
+    );
+
+    // Move cursor inside first citation (shifted down by 1 line!) -> opens it.
+    let cite1_pos = text.find("nostos:cite/c1").unwrap();
+    shell.editor.select_range(cite1_pos as i32, 0);
+    settle();
+    assert!(has(cite1_pos, "carrel-dim"));
+    assert!(!has(cite1_pos, "carrel-cite-hidden"));
+
+    // Move cursor to second citation -> closes first, opens second.
+    let cite2_pos = text.find("nostos:cite/c2").unwrap();
+    shell.editor.select_range(cite2_pos as i32, 0);
+    settle();
+    assert!(has(cite1_pos, "carrel-cite-hidden"));
+    assert!(has(cite2_pos, "carrel-dim"));
+    assert!(!has(cite2_pos, "carrel-cite-hidden"));
+
+    // Delete across the split newline to merge lines back together.
+    let del_start = text.find("\n**loud** ").unwrap() as i32;
+    let mut from = buffer.iter_at_offset(del_start);
+    let mut to = buffer.iter_at_offset(del_start + 1);
+    buffer.delete(&mut from, &mut to);
+    settle();
+
+    // Incremental restyle tags must match a forced full restyle tag-for-tag.
+    let incremental_tags = snapshot_tags();
+    shell.editor.reapply_style();
+    settle();
+    let full_tags = snapshot_tags();
+    assert_eq!(incremental_tags, full_tags);
 }
 
 /// Typewriter scrolling: once the caret is past the middle, its line holds

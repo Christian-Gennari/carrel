@@ -13,9 +13,9 @@ use sourceview::prelude::*;
 use crate::battery::{Battery, BatteryHint, BATTERY_NOTE_SECONDS};
 use crate::focus::{self, Lines};
 use crate::goal;
-use crate::markdown::{self, Kind};
+use crate::markdown::{CachedLine, Kind, LineCache};
 use crate::settings::{GoalDisplay, Settings};
-use crate::store::{display_name, naming, stats, DailyStats, Document, Store};
+use crate::store::{display_name, naming, stats, DailyStats, Document, StatsWriter, Store};
 use crate::theme;
 
 /// Line height of body text: 1.6 (spec/03-ui.md).
@@ -39,6 +39,13 @@ const TYPING_DIM: Duration = Duration::from_millis(1400);
 /// The one quiet line an empty document shows, where the text will begin.
 pub const START_HINT: &str = "Start writing. Ctrl+K for everything else.";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OpenCite {
+    line: usize,
+    rel_start: usize,
+    rel_end: usize,
+}
+
 pub struct EditorPage {
     pub widget: gtk::Box,
     view: sourceview::View,
@@ -60,6 +67,7 @@ pub struct EditorPage {
     typing_generation: Cell<u64>,
     battery_hint: RefCell<BatteryHint>,
     store: Store,
+    stats_writer: StatsWriter,
     settings: Rc<RefCell<Settings>>,
     css: gtk::CssProvider,
     stack: gtk::Stack,
@@ -79,10 +87,12 @@ pub struct EditorPage {
     /// The paragraph currently drawn at full strength in focus mode.
     focus_previous: Cell<Option<(i32, i32)>>,
     restyle_generation: Cell<u64>,
-    /// Character ranges of the `[label](nostos:cite/…)` links in the buffer,
-    /// from the last restyle, and the one the cursor is in (drawn raw).
-    cite_links: RefCell<Vec<(usize, usize)>>,
-    cite_open: Cell<Option<(usize, usize)>>,
+    dirty_start: gtk::TextMark,
+    dirty_end: gtk::TextMark,
+    has_dirty: Cell<bool>,
+    line_cache: RefCell<LineCache>,
+    /// The citation link the cursor is currently inside (drawn raw).
+    cite_open: Cell<Option<OpenCite>>,
     status_generation: Cell<u64>,
     battery: Rc<dyn Battery>,
     save_error: Cell<bool>,
@@ -255,6 +265,12 @@ impl EditorPage {
 
         let today = local_date();
         let stats = store.load_stats(&today);
+        let stats_writer = StatsWriter::new(store.carrel_dir().join("stats.json"));
+        let start_iter = buffer.start_iter();
+        let dirty_start = buffer.create_mark(None, &start_iter, true);
+        let dirty_end = buffer.create_mark(None, &start_iter, false);
+        let mut line_cache = LineCache::new();
+        line_cache.rebuild("");
         let page = Rc::new(Self {
             widget,
             view,
@@ -272,6 +288,7 @@ impl EditorPage {
             typing_generation: Cell::new(0),
             battery_hint: RefCell::new(BatteryHint::default()),
             store,
+            stats_writer,
             settings,
             css,
             stack,
@@ -288,7 +305,10 @@ impl EditorPage {
             tags,
             focus_previous: Cell::new(None),
             restyle_generation: Cell::new(0),
-            cite_links: RefCell::new(Vec::new()),
+            dirty_start,
+            dirty_end,
+            has_dirty: Cell::new(false),
+            line_cache: RefCell::new(line_cache),
             cite_open: Cell::new(None),
             status_generation: Cell::new(0),
             battery,
@@ -307,6 +327,7 @@ impl EditorPage {
             if page.loading.get() {
                 return;
             }
+            page.mark_dirty_range(location, location);
             let offset = location.offset().max(0) as usize;
             if let Some(doc) = page.doc.borrow().as_ref() {
                 if let Err(error) = doc.apply(offset, 0, text) {
@@ -329,6 +350,7 @@ impl EditorPage {
             if page.loading.get() {
                 return;
             }
+            page.mark_dirty_range(start, end);
             let offset = start.offset().max(0) as usize;
             let delete_len = (end.offset() - start.offset()).max(0) as usize;
             if let Some(doc) = page.doc.borrow().as_ref() {
@@ -517,20 +539,205 @@ impl EditorPage {
             .to_string()
     }
 
+    fn mark_dirty_range(&self, start: &gtk::TextIter, end: &gtk::TextIter) {
+        if !self.has_dirty.get() {
+            self.buffer.move_mark(&self.dirty_start, start);
+            self.buffer.move_mark(&self.dirty_end, end);
+            self.has_dirty.set(true);
+        } else {
+            let cur_start = self.buffer.iter_at_mark(&self.dirty_start);
+            let cur_end = self.buffer.iter_at_mark(&self.dirty_end);
+            if start.offset() < cur_start.offset() {
+                self.buffer.move_mark(&self.dirty_start, start);
+            }
+            if end.offset() > cur_end.offset() {
+                self.buffer.move_mark(&self.dirty_end, end);
+            }
+        }
+    }
+
     fn restyle_now(&self) {
-        let text = self.buffer_text();
-        let spans = markdown::spans(&text);
-        *self.cite_links.borrow_mut() = spans
-            .iter()
-            .filter(|span| span.kind == Kind::CiteLink)
-            .map(|span| (span.start, span.end))
-            .collect();
-        let open = self.cite_under_cursor();
-        self.cite_open.set(open);
-        self.tags.paint(&self.buffer, &spans, open);
+        self.restyle_dirty();
+        self.sync_cites();
         // Markdown tags and focus tags are separate; after a paint the focus
         // state only needs the cheap incremental check.
         self.sync_focus();
+    }
+
+    fn restyle_full(&self) {
+        self.has_dirty.set(false);
+        let text = self.buffer_text();
+        {
+            let mut cache = self.line_cache.borrow_mut();
+            cache.rebuild(&text);
+        }
+
+        let open = self.cite_under_cursor();
+        self.cite_open.set(open);
+
+        let start = self.buffer.start_iter();
+        let end = self.buffer.end_iter();
+        self.tags.strip_range(&self.buffer, &start, &end);
+
+        let cache = self.line_cache.borrow();
+        let mut line_offset = 0usize;
+        for (line_idx, cached) in cache.lines.iter().enumerate() {
+            if !cached.spans.is_empty() {
+                let line_open = open.filter(|c| c.line == line_idx);
+                self.tags
+                    .paint_line(&self.buffer, line_offset, cached, line_open);
+            }
+            line_offset += cached.char_len + 1;
+        }
+        drop(cache);
+        self.sync_focus();
+    }
+
+    fn restyle_dirty(&self) {
+        if !self.has_dirty.get() {
+            return;
+        }
+        self.has_dirty.set(false);
+
+        let start_iter = self.buffer.iter_at_mark(&self.dirty_start);
+        let end_iter = self.buffer.iter_at_mark(&self.dirty_end);
+        let start_line = start_iter.line().max(0) as usize;
+        let new_end_line = end_iter.line().max(0) as usize;
+        let new_line_count = self.buffer.line_count().max(1) as usize;
+
+        let old_line_count = self.line_cache.borrow().lines.len();
+        if old_line_count == 0
+            || start_line >= old_line_count
+            || start_line > new_end_line
+            || new_end_line >= new_line_count
+        {
+            self.restyle_full();
+            return;
+        }
+
+        let delta_lines = new_line_count as isize - old_line_count as isize;
+        let old_end_line_signed = new_end_line as isize - delta_lines;
+        if old_end_line_signed < start_line as isize
+            || old_end_line_signed as usize >= old_line_count
+        {
+            self.restyle_full();
+            return;
+        }
+        let old_end_line = old_end_line_signed as usize;
+
+        let from = self
+            .buffer
+            .iter_at_line(start_line as i32)
+            .unwrap_or_else(|| self.buffer.start_iter());
+        let text_to = if new_end_line + 1 < new_line_count {
+            let mut next = self
+                .buffer
+                .iter_at_line((new_end_line + 1) as i32)
+                .unwrap_or_else(|| self.buffer.end_iter());
+            next.backward_char();
+            next
+        } else {
+            self.buffer.end_iter()
+        };
+        let dirty_text = self.buffer.text(&from, &text_to, true);
+
+        let old_cite = self.cite_open.get();
+        let can_skip_strip = {
+            let mut cache = self.line_cache.borrow_mut();
+            let single_line_no_newlines =
+                delta_lines == 0 && start_line == new_end_line && old_end_line == start_line;
+            let old_had_no_spans = single_line_no_newlines
+                && cache.lines[start_line].spans.is_empty()
+                && old_cite.map(|c| c.line) != Some(start_line);
+            let replaced_count = cache.replace_lines(start_line, old_end_line, &dirty_text);
+            debug_assert_eq!(replaced_count, new_end_line - start_line + 1);
+            let new_has_no_spans =
+                single_line_no_newlines && cache.lines[start_line].spans.is_empty();
+            old_had_no_spans && new_has_no_spans
+        };
+
+        if !can_skip_strip {
+            let strip_to = if new_end_line + 1 < new_line_count {
+                self.buffer
+                    .iter_at_line((new_end_line + 1) as i32)
+                    .unwrap_or_else(|| self.buffer.end_iter())
+            } else {
+                self.buffer.end_iter()
+            };
+            self.tags.strip_range(&self.buffer, &from, &strip_to);
+        }
+
+        let new_cite = self.cite_under_cursor();
+        self.cite_open.set(new_cite);
+
+        let shifted_old_cite = old_cite.and_then(|c| {
+            if c.line < start_line {
+                Some(c)
+            } else if c.line > old_end_line {
+                let shifted_line = (c.line as isize + delta_lines) as usize;
+                Some(OpenCite {
+                    line: shifted_line,
+                    rel_start: c.rel_start,
+                    rel_end: c.rel_end,
+                })
+            } else {
+                None
+            }
+        });
+
+        let cache = self.line_cache.borrow();
+        let mut line_offset = from.offset().max(0) as usize;
+        for (line_idx, cached) in (start_line..).zip(&cache.lines[start_line..=new_end_line]) {
+            if !cached.spans.is_empty() {
+                let line_open = new_cite.filter(|c| c.line == line_idx);
+                self.tags
+                    .paint_line(&self.buffer, line_offset, cached, line_open);
+            }
+            line_offset += cached.char_len + 1;
+        }
+
+        if let Some(old_c) = shifted_old_cite {
+            if Some(old_c) != new_cite {
+                self.repaint_single_line(
+                    &cache,
+                    old_c.line,
+                    new_cite.filter(|c| c.line == old_c.line),
+                );
+            }
+        }
+        if let Some(new_c) = new_cite {
+            let already_painted_old = shifted_old_cite
+                .is_some_and(|old_c| old_c.line == new_c.line && Some(old_c) != new_cite);
+            if (new_c.line < start_line || new_c.line > new_end_line)
+                && Some(new_c) != shifted_old_cite
+                && !already_painted_old
+            {
+                self.repaint_single_line(&cache, new_c.line, Some(new_c));
+            }
+        }
+    }
+
+    fn repaint_single_line(&self, cache: &LineCache, line_idx: usize, line_open: Option<OpenCite>) {
+        let Some(cached) = cache.lines.get(line_idx) else {
+            return;
+        };
+        let Some(from) = self.buffer.iter_at_line(line_idx as i32) else {
+            return;
+        };
+        let line_count = self.buffer.line_count().max(1) as usize;
+        let to = if line_idx + 1 < line_count {
+            self.buffer
+                .iter_at_line((line_idx + 1) as i32)
+                .unwrap_or_else(|| self.buffer.end_iter())
+        } else {
+            self.buffer.end_iter()
+        };
+        self.tags.strip_range(&self.buffer, &from, &to);
+        if !cached.spans.is_empty() {
+            let line_offset = from.offset().max(0) as usize;
+            self.tags
+                .paint_line(&self.buffer, line_offset, cached, line_open);
+        }
     }
 
     fn scroll_to_cursor(&self) {
@@ -539,21 +746,45 @@ impl EditorPage {
 
     /// The citation link the cursor is in or touches. Its raw Markdown is
     /// shown; every other link shows only its small marker.
-    fn cite_under_cursor(&self) -> Option<(usize, usize)> {
-        let cursor = usize::try_from(self.buffer.cursor_position()).ok()?;
-        self.cite_links
-            .borrow()
+    fn cite_under_cursor(&self) -> Option<OpenCite> {
+        let cursor_pos = self.buffer.cursor_position();
+        let iter = self.buffer.iter_at_offset(cursor_pos);
+        let line = usize::try_from(iter.line()).ok()?;
+        let rel_cursor = usize::try_from(iter.line_offset()).ok()?;
+        let cache = self.line_cache.borrow();
+        let cached = cache.lines.get(line)?;
+        cached
+            .cite_links
             .iter()
             .copied()
-            .find(|&(start, end)| start <= cursor && cursor <= end)
+            .find(|&(rel_start, rel_end)| rel_start <= rel_cursor && rel_cursor <= rel_end)
+            .map(|(rel_start, rel_end)| OpenCite {
+                line,
+                rel_start,
+                rel_end,
+            })
     }
 
     /// After a cursor move: redraw only when the cursor entered or left a
-    /// citation link.
+    /// citation link, painting at most the one or two affected lines.
     fn sync_cites(&self) {
+        if self.has_dirty.get() {
+            return;
+        }
         let open = self.cite_under_cursor();
-        if open != self.cite_open.get() {
-            self.restyle_now();
+        let previous = self.cite_open.get();
+        if open == previous {
+            return;
+        }
+        self.cite_open.set(open);
+        let cache = self.line_cache.borrow();
+        if let Some(old) = previous {
+            self.repaint_single_line(&cache, old.line, open.filter(|c| c.line == old.line));
+        }
+        if let Some(new) = open {
+            if previous.is_none_or(|old| old.line != new.line) {
+                self.repaint_single_line(&cache, new.line, Some(new));
+            }
         }
     }
 
@@ -881,14 +1112,12 @@ impl EditorPage {
         }
         self.loading.set(false);
         place_block(&self.buffer, range, block);
-        let words = stats::count_words(&self.buffer_text());
-        self.last_words.set(words);
+        self.restyle_now();
+        self.last_words.set(self.line_cache.borrow().total_words);
         self.update_status(false);
         if let Some(doc) = self.doc.borrow().as_ref() {
             doc.flush().map_err(|error| error.to_string())?;
         }
-        self.restyle_now();
-        self.update_status(false);
         self.scroll_to_cursor();
         Ok(())
     }
@@ -957,7 +1186,7 @@ impl EditorPage {
     /// The start hint is on screen only in an open, still empty document whose
     /// first key has not been typed.
     fn update_start_hint(&self) {
-        let empty = self.doc.borrow().is_some() && self.buffer_text().is_empty();
+        let empty = self.doc.borrow().is_some() && self.buffer.char_count() == 0;
         self.start_hint
             .set_visible(empty && !self.start_hint_dismissed.get());
     }
@@ -1017,7 +1246,7 @@ impl EditorPage {
         // and the screenshot script may move the caret or select a phrase.
         self.apply_shot_selection();
         self.update_document_name();
-        self.restyle_now();
+        self.restyle_full();
         self.update_status(false);
         self.scroll_to_cursor();
         self.update_start_hint();
@@ -1172,9 +1401,15 @@ impl EditorPage {
 
     pub fn save_stats(&self) {
         let stats = self.create_stats();
-        if let Err(error) = self.store.save_stats(&stats) {
+        if let Err(error) = self.stats_writer.flush(&stats) {
             eprintln!("carrel: could not save word count: {error}");
         }
+        self.stats_saved_at.set(Instant::now());
+    }
+
+    fn save_stats_async(&self) {
+        let stats = self.create_stats();
+        self.stats_writer.enqueue(stats);
         self.stats_saved_at.set(Instant::now());
     }
 
@@ -1185,13 +1420,15 @@ impl EditorPage {
         }
         self.today_date.replace(today);
         self.today_words.set(0);
-        self.save_stats();
+        self.save_stats_async();
     }
 
     fn update_status(&self, count_delta: bool) {
         self.rollover_if_needed();
-        let text = self.buffer_text();
-        let words = stats::count_words(&text);
+        if self.has_dirty.get() {
+            self.restyle_now();
+        }
+        let words = self.line_cache.borrow().total_words;
         if count_delta {
             let previous = self.last_words.get();
             let delta = words as i64 - previous as i64;
@@ -1201,7 +1438,7 @@ impl EditorPage {
         self.last_words.set(words);
         self.refresh_status();
         if count_delta && self.stats_saved_at.get().elapsed() >= Duration::from_secs(5) {
-            self.save_stats();
+            self.save_stats_async();
         }
     }
 
@@ -1297,7 +1534,7 @@ impl EditorPage {
             .set_visible(self.settings.borrow().show_bottom_line);
         self.update_line_height();
         self.update_column_width();
-        self.restyle_now();
+        self.restyle_full();
         // Document-wide, but only on a theme, font or settings change; typing
         // and cursor movement use the incremental `sync_focus`.
         self.reapply_focus();
@@ -1499,8 +1736,8 @@ impl Tags {
 
     /// Every tag this module owns. Focus tags are not in this list: they
     /// survive a restyle and are updated by the editor's focus logic.
-    fn own(&self) -> Vec<&gtk::TextTag> {
-        let mut tags = vec![
+    fn own(&self) -> [&gtk::TextTag; 13] {
+        [
             &self.bold,
             &self.italic,
             &self.dim,
@@ -1508,26 +1745,32 @@ impl Tags {
             &self.cite,
             &self.cite_text,
             &self.hidden,
-        ];
-        tags.extend(self.headings.iter());
-        tags
+            &self.headings[0],
+            &self.headings[1],
+            &self.headings[2],
+            &self.headings[3],
+            &self.headings[4],
+            &self.headings[5],
+        ]
     }
 
-    /// `open` is the citation link the cursor is in: its raw Markdown is
-    /// drawn dimmed, at normal size, instead of the marker.
-    fn paint(
+    fn strip_range(&self, buffer: &sourceview::Buffer, start: &gtk::TextIter, end: &gtk::TextIter) {
+        for tag in self.own() {
+            buffer.remove_tag(tag, start, end);
+        }
+    }
+
+    /// `open` is the citation link on this line the cursor is in: its raw
+    /// Markdown is drawn dimmed, at normal size, instead of the marker.
+    fn paint_line(
         &self,
         buffer: &sourceview::Buffer,
-        spans: &[markdown::Span],
-        open: Option<(usize, usize)>,
+        line_offset: usize,
+        cached: &CachedLine,
+        open: Option<OpenCite>,
     ) {
-        let start = buffer.start_iter();
-        let end = buffer.end_iter();
-        for tag in self.own() {
-            buffer.remove_tag(tag, &start, &end);
-        }
-        for span in spans {
-            let in_open = open.is_some_and(|(from, to)| span.start >= from && span.end <= to);
+        for span in &cached.spans {
+            let in_open = open.is_some_and(|c| span.start >= c.rel_start && span.end <= c.rel_end);
             let tag = match span.kind {
                 Kind::CiteLink => continue,
                 Kind::CiteHidden | Kind::CiteMarker | Kind::CiteText if in_open => &self.dim,
@@ -1540,8 +1783,8 @@ impl Tags {
                 Kind::Quote => &self.quote,
                 Kind::Heading(level) => &self.headings[usize::from(level.clamp(1, 6) - 1)],
             };
-            let from = buffer.iter_at_offset(span.start as i32);
-            let to = buffer.iter_at_offset(span.end as i32);
+            let from = buffer.iter_at_offset((line_offset + span.start) as i32);
+            let to = buffer.iter_at_offset((line_offset + span.end) as i32);
             buffer.apply_tag(tag, &from, &to);
         }
     }
