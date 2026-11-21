@@ -8,8 +8,11 @@
 //! * `**bold**` and `__bold__`
 //! * `*italic*` and `_italic_` (not inside words, so `snake_case` is safe)
 //! * `# headings` (levels 1–6)
-//! * `> quotes` (indented, marker dimmed)
-//! * `-`, `*`, `+` and `1.` list markers (dimmed)
+//! * `> quotes` (indented)
+//! * `-`, `*`, `+` and `1.` list markers (always dimmed)
+//!
+//! Every other piece of syntax (`**`, `_`, `# `, `> `) is a `Kind::Marker`:
+//! the editor shows it dimmed on the caret's line and hides it elsewhere.
 //! * `nostos:cite/…` links (the scheme is hidden and the id is a small,
 //!   raised, dimmed marker)
 //! * `[^1](nostos:cite/…)` and `[text](nostos:cite/…)` links: the label is a
@@ -34,8 +37,13 @@ pub enum Kind {
     /// The whole `[label](nostos:cite/…)` range. It is never drawn; the editor
     /// uses it to show the raw text while the cursor is inside.
     CiteLink,
-    /// Markdown syntax itself; drawn dimmed.
+    /// Markdown syntax itself (`**`, `_`, `# `, `> `): dimmed on the line
+    /// the caret is on, hidden on every other line, so the page reads as
+    /// prose and the line being edited shows exactly what is stored.
     Marker,
+    /// A list marker (`- `, `1. `): part of how a list reads, so it stays
+    /// visible and dimmed on every line.
+    ListMarker,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -234,11 +242,22 @@ fn scan_line(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) {
             end,
             kind: Kind::Heading(hashes as u8),
         });
-        spans.push(Span {
-            start,
-            end: start + hashes,
-            kind: Kind::Marker,
-        });
+        // The space after the hashes belongs to the marker, so a hidden
+        // marker leaves no gap before the heading's first word. A lone `#`
+        // stays visible: hiding it would leave an empty-looking line.
+        if start + hashes < end && start + hashes + 1 < end {
+            spans.push(Span {
+                start,
+                end: start + hashes + 1,
+                kind: Kind::Marker,
+            });
+        } else {
+            spans.push(Span {
+                start,
+                end: start + hashes,
+                kind: Kind::ListMarker,
+            });
+        }
     }
 
     // Quote. Allow leading spaces, as writers often indent quotes.
@@ -252,10 +271,20 @@ fn scan_line(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) {
             end,
             kind: Kind::Quote,
         });
+        // Likewise `> `: the space after `>` hides with it.
+        let marker_end = if quote_at + 1 < end && chars[quote_at + 1] == ' ' {
+            quote_at + 2
+        } else {
+            quote_at + 1
+        };
         spans.push(Span {
             start: quote_at,
-            end: quote_at + 1,
-            kind: Kind::Marker,
+            end: marker_end,
+            kind: if marker_end < end {
+                Kind::Marker
+            } else {
+                Kind::ListMarker
+            },
         });
     }
 
@@ -267,7 +296,7 @@ fn scan_line(chars: &[char], start: usize, end: usize, spans: &mut Vec<Span>) {
         spans.push(Span {
             start: marker_start,
             end: marker_end,
-            kind: Kind::Marker,
+            kind: Kind::ListMarker,
         });
     }
 
@@ -618,7 +647,9 @@ mod tests {
     fn headings_are_larger_and_markers_dimmed() {
         let text = "## Chapter two";
         assert!(has(text, Kind::Heading(2), "## Chapter two"));
-        assert!(has(text, Kind::Marker, "##"));
+        assert!(has(text, Kind::Marker, "## "));
+        // A lone hash is not hidden: the line would look empty.
+        assert!(has("#", Kind::ListMarker, "#"));
         assert!(!has(
             "####### too many",
             Kind::Heading(6),
@@ -630,7 +661,7 @@ mod tests {
     fn quotes_are_indented() {
         let text = "> a quoted line";
         assert!(has(text, Kind::Quote, "> a quoted line"));
-        assert!(has(text, Kind::Marker, ">"));
+        assert!(has(text, Kind::Marker, "> "));
     }
 
     #[test]
@@ -641,16 +672,16 @@ mod tests {
             ("+ buy ink", "+ "),
             ("1. buy ink", "1. "),
         ] {
-            assert!(has(text, Kind::Marker, marker), "{text:?}");
+            assert!(has(text, Kind::ListMarker, marker), "{text:?}");
         }
         // Three leading spaces are a list; four are a code block.
-        assert!(has("   - nested", Kind::Marker, "- "));
-        assert!(!has("    - code", Kind::Marker, "- "));
+        assert!(has("   - nested", Kind::ListMarker, "- "));
+        assert!(!has("    - code", Kind::ListMarker, "- "));
         // Emphasis at the start of a line is not a bullet.
-        assert!(!has("**bold**", Kind::Marker, "* "));
-        assert!(!has("*not closed", Kind::Marker, "* "));
+        assert!(!has("**bold**", Kind::ListMarker, "* "));
+        assert!(!has("*not closed", Kind::ListMarker, "* "));
         // An ordered marker keeps its punctuation and the space.
-        assert!(has("12) an item", Kind::Marker, "12) "));
+        assert!(has("12) an item", Kind::ListMarker, "12) "));
     }
 
     #[test]
