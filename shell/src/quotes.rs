@@ -48,6 +48,40 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(120);
 const POPOVER_WIDTH: i32 = 560;
 /// The tallest the result list grows before it scrolls.
 const LIST_MAX_HEIGHT: i32 = 320;
+/// The list's own top and bottom padding together (`.quote-list` in theme.rs).
+const LIST_PADDING: i32 = 12;
+
+/// The tallest list that ends on a whole row and stays within `max`.
+fn whole_rows_height(heights: &[i32], max: i32, padding: i32) -> i32 {
+    let mut total = padding;
+    for height in heights {
+        if total + height > max {
+            // Not even one row fits: keep the cap and let it scroll.
+            return if total == padding { max } else { total };
+        }
+        total += height;
+    }
+    max
+}
+
+/// The air between the `@` line and the card.
+const POPOVER_GAP: i32 = 6;
+/// The strip at the foot of the window the card keeps clear: the status line.
+const STATUS_RESERVE: i32 = 56;
+/// The strip at the head of the window the card keeps clear: the file title.
+const TITLE_RESERVE: i32 = 44;
+/// However little room there is, the list shows at least this much.
+const MIN_LIST_HEIGHT: i32 = 120;
+
+/// Which side of the line the card opens on: below when it fits, otherwise
+/// whichever side has more room.
+fn popover_side(card_height: i32, below: i32, above: i32) -> gtk::PositionType {
+    if card_height <= below || below >= above {
+        gtk::PositionType::Bottom
+    } else {
+        gtk::PositionType::Top
+    }
+}
 
 /// What the palette shows below the heading.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -258,6 +292,8 @@ pub struct QuotePalette {
     pending: Cell<Option<bool>>,
     debounce_generation: Cell<u64>,
     request_generation: Cell<u64>,
+    /// The tallest the list may grow on the side the card opens on.
+    list_limit: Cell<i32>,
 }
 
 impl QuotePalette {
@@ -312,6 +348,7 @@ impl QuotePalette {
         popover.set_autohide(false);
         popover.set_has_arrow(false);
         popover.set_position(gtk::PositionType::Bottom);
+        popover.set_offset(0, POPOVER_GAP);
         popover.set_can_focus(false);
         popover.set_focusable(false);
         // Keyboard only: the pointer never reaches the palette, and the caret
@@ -339,6 +376,7 @@ impl QuotePalette {
             pending: Cell::new(None),
             debounce_generation: Cell::new(0),
             request_generation: Cell::new(0),
+            list_limit: Cell::new(LIST_MAX_HEIGHT),
         });
         palette.install();
         palette
@@ -754,6 +792,7 @@ impl QuotePalette {
                 row.set_widget_name(&hit.id);
                 self.list.append(&row);
             }
+            self.fit_whole_rows();
         }
         let selected = state.selected;
         drop(state);
@@ -763,6 +802,22 @@ impl QuotePalette {
         }
     }
 
+    /// Let the list end on a whole row, so the hairline above the footer
+    /// never cuts a quotation through its middle.
+    fn fit_whole_rows(&self) {
+        let mut heights = Vec::new();
+        let mut child = self.list.first_child();
+        while let Some(row) = child {
+            heights.push(row.measure(gtk::Orientation::Vertical, POPOVER_WIDTH).1);
+            child = row.next_sibling();
+        }
+        self.scroller.set_max_content_height(whole_rows_height(
+            &heights,
+            self.list_limit.get(),
+            LIST_PADDING,
+        ));
+    }
+
     /// Point the popover at the `@`, in the view's own coordinates.
     fn place(&self) {
         let Some(active) = self.active.borrow().clone() else {
@@ -770,15 +825,77 @@ impl QuotePalette {
         };
         let iter = self.buffer.iter_at_offset(active.start);
         let rect = self.view.iter_location(&iter);
-        let (x, y) =
+        let (_, y) =
             self.view
                 .buffer_to_window_coords(gtk::TextWindowType::Widget, rect.x(), rect.y());
-        self.popover.set_pointing_to(Some(&gdk::Rectangle::new(
-            x,
-            y,
-            rect.width().max(1),
-            rect.height(),
-        )));
+        // Centre the card on the text column, the way the command palette
+        // sits, rather than on the `@`: a card centred on a character near
+        // the margin would hang off the column or off the screen.
+        let left = self.view.left_margin();
+        let width = (self.view.width() - left - self.view.right_margin()).max(1);
+        self.popover
+            .set_pointing_to(Some(&gdk::Rectangle::new(left, y, width, rect.height())));
+        self.choose_side(y, rect.height());
+    }
+
+    /// Open below the line when the card fits above the status line, and
+    /// above it when the caret is low on the page, so the card never covers
+    /// the word count or runs off the screen.
+    fn choose_side(&self, line_top: i32, line_height: i32) {
+        let Some(root) = self.view.root() else {
+            return;
+        };
+        let root_height = root.height();
+        let point = self
+            .view
+            .compute_point(&root, &gtk::graphene::Point::new(0.0, line_top as f32))
+            .map(|p| p.y() as i32)
+            .unwrap_or(line_top);
+        let Some(card) = self.popover.child() else {
+            return;
+        };
+        let card_height = card.measure(gtk::Orientation::Vertical, POPOVER_WIDTH).1;
+        let shown_list = if self.scroller.is_visible() {
+            self.scroller
+                .measure(gtk::Orientation::Vertical, POPOVER_WIDTH)
+                .1
+        } else {
+            0
+        };
+        let full_list = if self.scroller.is_visible() {
+            self.list
+                .measure(gtk::Orientation::Vertical, POPOVER_WIDTH)
+                .1
+                .min(LIST_MAX_HEIGHT)
+        } else {
+            0
+        };
+        let chrome = card_height - shown_list;
+        let below = root_height - (point + line_height) - STATUS_RESERVE - POPOVER_GAP;
+        let above = point - TITLE_RESERVE - POPOVER_GAP;
+        let side = popover_side(chrome + full_list, below, above);
+        if self.popover.position() != side {
+            self.popover.set_position(side);
+        }
+        let room = if side == gtk::PositionType::Top {
+            above
+        } else {
+            below
+        };
+        let limit = (room - chrome).clamp(MIN_LIST_HEIGHT, LIST_MAX_HEIGHT);
+        if self.list_limit.replace(limit) != limit {
+            self.fit_whole_rows();
+            // A popover keeps its surface size until it is presented again.
+            if self.popover.is_visible() {
+                self.popover.present();
+            }
+        }
+        let offset = if side == gtk::PositionType::Top {
+            -POPOVER_GAP
+        } else {
+            POPOVER_GAP
+        };
+        self.popover.set_offset(0, offset);
     }
 }
 
@@ -813,7 +930,7 @@ fn result_row(hit: &LibraryHit) -> gtk::ListBoxRow {
     meta.set_ellipsize(pango::EllipsizeMode::End);
     meta.add_css_class("quote-meta");
 
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
     column.append(&text);
     column.append(&meta);
     row.set_child(Some(&column));
@@ -835,6 +952,24 @@ mod tests {
             location: "p. 41".into(),
             citation_markdown: format!("[The Quiet Hours, p. 41](nostos:cite/{id})"),
         }
+    }
+
+    #[test]
+    fn list_ends_on_a_whole_row() {
+        // Rows of 86, 86, 86, 64: three fit in 320 with padding, a fourth does not.
+        assert_eq!(whole_rows_height(&[86, 86, 86, 64], 320, 12), 270);
+        // Everything fits: the cap stays, and the list keeps its natural height.
+        assert_eq!(whole_rows_height(&[64, 64], 320, 12), 320);
+        // A single row taller than the cap keeps the cap and scrolls.
+        assert_eq!(whole_rows_height(&[400], 320, 12), 320);
+    }
+
+    #[test]
+    fn card_opens_below_when_it_fits_and_flips_when_the_caret_is_low() {
+        use gtk::PositionType::{Bottom, Top};
+        assert_eq!(popover_side(300, 400, 100), Bottom);
+        assert_eq!(popover_side(300, 120, 500), Top);
+        assert_eq!(popover_side(300, 200, 150), Bottom);
     }
 
     #[test]

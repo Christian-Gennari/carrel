@@ -10,6 +10,8 @@
 #   CARREL_SHOT_SIZES="1366x768 1920x1080"   the sizes to shoot (default)
 #   CARREL_SHOT_SIZE=1440x900                one size instead (optional)
 #   CARREL_SHOT_THEME_A / CARREL_SHOT_THEME_B   theme ids (default light/study)
+#   CARREL_SHOT_ONLY='^editor-'              shoot only names matching this
+#                                            extended regex (a quick re-check)
 #
 # Theme ids are deliberately just parameters: the theme round renames them
 # without touching a shot. Use lowercase slugs, because they become file names;
@@ -153,6 +155,9 @@ shoot() {
     start=$5
     battery=${6:-}
     shift 6 || true
+    if [ -n "${CARREL_SHOT_ONLY:-}" ] && ! [[ "$name" =~ $CARREL_SHOT_ONLY ]]; then
+        return 0
+    fi
     write_settings "$theme" "$first_run" "$bottom_line"
     cp "$out/essay.orig" "$root/The quiet morning.md"
     rm -rf "$root/.carrel/journal"
