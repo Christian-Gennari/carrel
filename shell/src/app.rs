@@ -21,7 +21,7 @@ use crate::handoff::WifiHandoff;
 use crate::history::HistoryPage;
 use crate::keys::Keys;
 use crate::nav::Navigator;
-use crate::palette::{CommandPalette, KeySheet};
+use crate::palette::{CommandPalette, KeySheet, RenameSheet};
 use crate::quotes::QuotePalette;
 use crate::settings::Settings;
 use crate::settings_page::SettingsPage;
@@ -185,6 +185,12 @@ pub fn run(application: &gtk::Application) {
     dim.set_visible(false);
 
     let key_sheet = KeySheet::new(dim.clone());
+    let rename_sheet = RenameSheet::new(
+        Rc::clone(&editor),
+        Rc::clone(&quotes),
+        Rc::clone(&nav),
+        dim.clone(),
+    );
     let palette = CommandPalette::new(
         client.clone(),
         store.clone(),
@@ -196,6 +202,7 @@ pub fn run(application: &gtk::Application) {
         Rc::clone(&sync),
         Rc::clone(&settings_page),
         Rc::clone(&key_sheet),
+        Rc::clone(&rename_sheet),
         dim.clone(),
     );
 
@@ -216,6 +223,7 @@ pub fn run(application: &gtk::Application) {
     overlay.add_overlay(&dim);
     overlay.add_overlay(&palette.widget);
     overlay.add_overlay(&key_sheet.widget);
+    overlay.add_overlay(&rename_sheet.widget);
     window.set_child(Some(&overlay));
 
     // Battery changes go to the bottom line and to the 10 % / 5 % notes;
@@ -270,6 +278,7 @@ pub fn run(application: &gtk::Application) {
         Rc::clone(&first_run),
         palette,
         key_sheet,
+        rename_sheet,
     );
     let key = gtk::EventControllerKey::new();
     key.set_propagation_phase(gtk::PropagationPhase::Capture);

@@ -28,7 +28,7 @@ use crate::handoff::WifiHandoff;
 use crate::history::HistoryPage;
 use crate::keys::Keys;
 use crate::nav::Navigator;
-use crate::palette::{CommandPalette, KeySheet};
+use crate::palette::{CommandPalette, KeySheet, RenameSheet};
 use crate::quotes::QuotePalette;
 use crate::settings::Settings;
 use crate::settings_page::SettingsPage;
@@ -53,6 +53,9 @@ fn gtk_scenarios() {
     the_import_result_is_said_once();
     export_remembers_after_leaving_the_screen();
     rename_happens_in_the_place_of_the_row();
+    new_folder_focuses_the_entry_and_creates_folder();
+    rename_current_file_via_palette_and_shortcut();
+    rename_sheet_traps_tab_pauses_auto_naming_and_preserves_undo();
     files_search_finds_a_document_in_any_folder();
     recent_files_open_from_the_files_screen();
     opening_a_folder_starts_at_its_first_entry();
@@ -142,13 +145,17 @@ fn pump(done: impl Fn() -> bool) {
     }
 }
 
-fn settle() {
+fn wait_for(duration: Duration) {
     let context = glib::MainContext::default();
-    let until = Instant::now() + Duration::from_millis(400);
+    let until = Instant::now() + duration;
     while Instant::now() < until {
         context.iteration(false);
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn settle() {
+    wait_for(Duration::from_millis(400));
 }
 
 fn press(palette: &Rc<QuotePalette>, key: gdk::Key, state: gdk::ModifierType) -> bool {
@@ -558,23 +565,348 @@ fn text_on_screen(widget: &gtk::Widget, needle: &str) -> usize {
 }
 
 /// F2 turns the selected row itself into the entry, with the name shown
-/// without its extension, and Enter saves it back with the extension.
+/// without its extension, holds real GTK focus so typing edits it, and
+/// Enter saves it back with the extension.
 fn rename_happens_in_the_place_of_the_row() {
     let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
     shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
     settle();
     shell.press("F2", gdk::Key::F2, gdk::ModifierType::empty());
     settle();
-    let entries = gtk::Window::list_toplevels()
+    let entry = gtk::Window::list_toplevels()
         .iter()
         .find_map(|window| visible_entry(window.upcast_ref()))
         .expect("the selected row is an entry");
-    assert_eq!(entries.text(), "Alpha", "the .md extension is hidden");
-    entries.set_text("Beta");
+    assert_eq!(entry.text(), "Alpha", "the .md extension is hidden");
+    assert!(
+        crate::ui::entry_has_focus(&entry),
+        "F2 rename entry must hold GTK focus so typing edits the name"
+    );
+    assert_eq!(entry.selection_bounds(), Some((0, 5)));
+    assert_eq!(
+        shell.keys.handle(gdk::Key::b, gdk::ModifierType::empty()),
+        glib::Propagation::Proceed,
+        "typed characters must reach the focused rename entry"
+    );
+    assert_eq!(
+        shell.keys.handle(gdk::Key::Tab, gdk::ModifierType::empty()),
+        glib::Propagation::Stop,
+        "Tab must not move focus out of the inline rename entry"
+    );
+    assert_eq!(
+        shell
+            .keys
+            .handle(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK),
+        glib::Propagation::Stop,
+        "Shift+Tab must not move focus out of the inline rename entry"
+    );
+    assert!(crate::ui::entry_has_focus(&entry));
+    entry.delete_selection();
+    let mut pos = 0;
+    entry.insert_text("Beta", &mut pos);
     shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
     settle();
     assert!(shell.root.join("Beta.md").is_file(), "renamed in place");
     assert!(!shell.root.join("Alpha.md").exists());
+}
+
+/// Ctrl+Shift+N on Files inserts a focused folder entry, accepts edits, and
+/// creates the folder on Enter.
+fn new_folder_focuses_the_entry_and_creates_folder() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    shell.press(
+        "Ctrl+Shift+N",
+        gdk::Key::n,
+        gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK,
+    );
+    settle();
+    let entry = gtk::Window::list_toplevels()
+        .iter()
+        .find_map(|window| visible_entry(window.upcast_ref()))
+        .expect("the new folder row is an entry");
+    assert!(
+        crate::ui::entry_has_focus(&entry),
+        "New Folder entry must hold GTK focus so typing works"
+    );
+    assert_eq!(
+        shell.keys.handle(gdk::Key::d, gdk::ModifierType::empty()),
+        glib::Propagation::Proceed,
+        "typed characters must reach the focused new-folder entry"
+    );
+    assert_eq!(
+        shell.keys.handle(gdk::Key::Tab, gdk::ModifierType::empty()),
+        glib::Propagation::Stop,
+        "Tab must not move focus out of the inline new-folder entry"
+    );
+    assert_eq!(
+        shell
+            .keys
+            .handle(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK),
+        glib::Propagation::Stop,
+        "Shift+Tab must not move focus out of the inline new-folder entry"
+    );
+    assert!(crate::ui::entry_has_focus(&entry));
+    let mut pos = 0;
+    entry.insert_text("Drafts", &mut pos);
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    assert!(
+        shell.root.join("Drafts").is_dir(),
+        "folder created on Enter"
+    );
+}
+
+/// Renaming the open file via Ctrl+K ("rename") and Ctrl+Shift+R keeps the
+/// document open with the cursor intact, updates the editor header, validates
+/// errors, and leaves F2 toggling focus mode.
+fn rename_current_file_via_palette_and_shortcut() {
+    let none = gdk::ModifierType::empty();
+    let ctrl = gdk::ModifierType::CONTROL_MASK;
+    let ctrl_shift = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
+    let shell = TestShell::new(
+        &[
+            (
+                "Novel/Chapter one.md",
+                "# Chapter one\n\nFirst paragraph.\n",
+            ),
+            ("Novel/Chapter two.md", "# Chapter two\n"),
+        ],
+        "Novel/Chapter one.md",
+    );
+    // Place the caret inside the body text, not at the end.
+    shell.editor.select_range(16, 0);
+    settle();
+    assert_eq!(shell.editor.buffer().cursor_position(), 16);
+
+    // 1. Trigger via Ctrl+K -> "rename" -> Enter.
+    shell.press("Ctrl+K", gdk::Key::k, ctrl);
+    settle();
+    shell.type_text("rename");
+    assert_eq!(
+        shell.palette.selected_label().as_deref(),
+        Some("Rename current file…")
+    );
+    shell.press("Enter", gdk::Key::Return, none);
+    settle();
+    assert!(shell.rename_sheet.is_open());
+    assert_eq!(shell.visible(), "editor");
+    let entry = shell.rename_sheet.entry().clone();
+    assert!(
+        crate::ui::entry_has_focus(&entry),
+        "rename sheet entry holds GTK focus"
+    );
+    assert_eq!(entry.text(), "Chapter one");
+    assert_eq!(entry.selection_bounds(), Some((0, 11)));
+
+    // Invalid name shows an error and keeps the sheet open and focused.
+    entry.set_text("bad/name");
+    shell.press("Enter", gdk::Key::Return, none);
+    settle();
+    assert!(shell.rename_sheet.is_open());
+    assert!(shell.rename_sheet.error_text().is_some());
+    assert!(crate::ui::entry_has_focus(&entry));
+
+    // Duplicate name shows an error and keeps the sheet open.
+    entry.set_text("Chapter two");
+    shell.press("Enter", gdk::Key::Return, none);
+    settle();
+    assert!(shell.rename_sheet.is_open());
+    assert_eq!(
+        shell.rename_sheet.error_text().as_deref(),
+        Some("“Chapter two” already exists.")
+    );
+
+    // Esc cancels cleanly and keeps the cursor intact.
+    shell.press("Esc", gdk::Key::Escape, none);
+    settle();
+    assert!(!shell.rename_sheet.is_open());
+    assert_eq!(
+        shell.editor.current_rel().as_deref(),
+        Some(Path::new("Novel/Chapter one.md"))
+    );
+    assert_eq!(shell.editor.buffer().cursor_position(), 16);
+
+    // 2. Trigger via Ctrl+Shift+R and save a valid new name.
+    shell.press("Ctrl+Shift+R", gdk::Key::r, ctrl_shift);
+    settle();
+    assert!(shell.rename_sheet.is_open());
+    assert!(crate::ui::entry_has_focus(&entry));
+    assert_eq!(
+        shell.keys.handle(gdk::Key::c, none),
+        glib::Propagation::Proceed,
+        "typing reaches the focused rename entry"
+    );
+    entry.delete_selection();
+    let mut pos = 0;
+    entry.insert_text("Chapter three", &mut pos);
+    shell.press("Enter", gdk::Key::Return, none);
+    settle();
+
+    assert!(!shell.rename_sheet.is_open());
+    assert_eq!(shell.visible(), "editor");
+    assert!(shell.root.join("Novel/Chapter three.md").is_file());
+    assert!(!shell.root.join("Novel/Chapter one.md").exists());
+    assert_eq!(
+        shell.editor.current_rel().as_deref(),
+        Some(Path::new("Novel/Chapter three.md"))
+    );
+    assert_eq!(shell.editor.document_name_text(), "Novel / Chapter three");
+    assert_eq!(
+        shell.editor.buffer().cursor_position(),
+        16,
+        "cursor position survives rename"
+    );
+
+    // F2 in the editor still toggles focus mode.
+    let before_focus = shell.settings.borrow().focus_mode;
+    shell.press("F2", gdk::Key::F2, none);
+    assert_ne!(shell.settings.borrow().focus_mode, before_focus);
+}
+
+/// Regression tests for RenameSheet: Tab/Shift+Tab cannot leak focus to the
+/// dimmed editor behind it, Ctrl+Z undo survives rename_current, and
+/// maybe_name_untitled pauses while RenameSheet is open.
+fn rename_sheet_traps_tab_pauses_auto_naming_and_preserves_undo() {
+    let none = gdk::ModifierType::empty();
+    let ctrl = gdk::ModifierType::CONTROL_MASK;
+    let ctrl_shift = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
+
+    // 1. Tab / Shift+Tab keep focus inside RenameSheet and Ctrl+Z undo survives rename.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        let buffer = shell.editor.buffer();
+        let before_edit = contents(&buffer);
+        buffer.begin_user_action();
+        shell.type_text("Extra words");
+        buffer.end_user_action();
+        assert!(buffer.can_undo());
+
+        shell.press("Ctrl+Shift+R", gdk::Key::r, ctrl_shift);
+        settle();
+        assert!(shell.rename_sheet.is_open());
+        let entry = shell.rename_sheet.entry().clone();
+        assert!(crate::ui::entry_has_focus(&entry));
+        assert!(!shell.editor.view().has_focus());
+
+        assert_eq!(
+            shell.keys.handle(gdk::Key::Tab, none),
+            glib::Propagation::Stop,
+            "Tab must not escape RenameSheet"
+        );
+        assert_eq!(
+            shell
+                .keys
+                .handle(gdk::Key::ISO_Left_Tab, gdk::ModifierType::SHIFT_MASK),
+            glib::Propagation::Stop,
+            "Shift+Tab must not escape RenameSheet"
+        );
+        assert_eq!(
+            shell.keys.handle(gdk::Key::KP_Tab, none),
+            glib::Propagation::Stop,
+            "KP_Tab must not escape RenameSheet"
+        );
+        settle();
+        assert!(
+            crate::ui::entry_has_focus(&entry),
+            "focus stays in RenameSheet entry after Tab / Shift+Tab"
+        );
+        assert!(!shell.editor.view().has_focus());
+
+        entry.set_text("Beta");
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        assert!(!shell.rename_sheet.is_open());
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Beta.md"))
+        );
+
+        assert!(buffer.can_undo(), "undo history survives rename_current");
+        assert_eq!(
+            shell.keys.handle(gdk::Key::z, ctrl),
+            glib::Propagation::Proceed,
+            "Ctrl+Z reaches the editor after RenameSheet closes"
+        );
+        buffer.undo();
+        assert_eq!(
+            contents(&buffer),
+            before_edit,
+            "undo restores the pre-edit text after rename"
+        );
+    }
+
+    // 2. maybe_name_untitled pauses while RenameSheet is open, resets the timer on
+    //    cancel, and manual rename on an Untitled file keeps undo history.
+    {
+        let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+        shell.press("Ctrl+N", gdk::Key::n, ctrl);
+        settle();
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md"))
+        );
+
+        let buffer = shell.editor.buffer();
+        buffer.begin_user_action();
+        shell.type_text("First line title");
+        buffer.end_user_action();
+        shell.editor.select_range(5, 0);
+
+        shell.press("Ctrl+Shift+R", gdk::Key::r, ctrl_shift);
+        settle();
+        assert!(shell.rename_sheet.is_open());
+
+        // Wait past the 1.5 s auto-name delay so the 1 s timer runs while open.
+        wait_for(Duration::from_millis(2100));
+        shell.editor.maybe_name_untitled(false);
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md")),
+            "maybe_name_untitled must do nothing while RenameSheet is open"
+        );
+        assert_eq!(shell.editor.buffer().cursor_position(), 5);
+        assert!(buffer.can_undo());
+
+        // Cancelling resets last_edit_at, then auto-naming resumes after the pause.
+        shell.press("Esc", gdk::Key::Escape, none);
+        settle();
+        assert!(!shell.rename_sheet.is_open());
+        shell.editor.maybe_name_untitled(false);
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md")),
+            "cancelling RenameSheet gives a fresh grace window before auto-naming"
+        );
+        pump(|| shell.editor.current_rel().as_deref() == Some(Path::new("First line title.md")));
+
+        // Renaming an Untitled file manually keeps undo history and prevents auto-naming.
+        shell.press("Ctrl+N", gdk::Key::n, ctrl);
+        settle();
+        let buffer = shell.editor.buffer();
+        buffer.begin_user_action();
+        shell.type_text("Ignored heading");
+        buffer.end_user_action();
+        shell.press("Ctrl+Shift+R", gdk::Key::r, ctrl_shift);
+        settle();
+        wait_for(Duration::from_millis(2100));
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md"))
+        );
+        shell.rename_sheet.entry().set_text("Chosen name");
+        shell.press("Enter", gdk::Key::Return, none);
+        settle();
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Chosen name.md"))
+        );
+        assert!(shell.root.join("Chosen name.md").is_file());
+        assert!(buffer.can_undo());
+        buffer.undo();
+        assert_eq!(contents(&buffer), "");
+    }
 }
 
 /// Typing on the Files screen searches every folder at once: no field to
@@ -1079,6 +1411,7 @@ struct TestShell {
     quotes: Rc<QuotePalette>,
     palette: Rc<CommandPalette>,
     key_sheet: Rc<KeySheet>,
+    rename_sheet: Rc<RenameSheet>,
     sync: Rc<SyncPage>,
     wifi: Rc<WifiPage>,
     export: Rc<ExportPage>,
@@ -1189,6 +1522,12 @@ impl TestShell {
         dim.set_can_target(true);
         dim.set_visible(false);
         let key_sheet = KeySheet::new(dim.clone());
+        let rename_sheet = RenameSheet::new(
+            Rc::clone(&editor),
+            Rc::clone(&quotes),
+            Rc::clone(&nav),
+            dim.clone(),
+        );
         let palette = CommandPalette::new(
             client.clone(),
             store.clone(),
@@ -1200,6 +1539,7 @@ impl TestShell {
             Rc::clone(&sync),
             Rc::clone(&settings_page),
             Rc::clone(&key_sheet),
+            Rc::clone(&rename_sheet),
             dim.clone(),
         );
 
@@ -1217,6 +1557,7 @@ impl TestShell {
         overlay.add_overlay(&dim);
         overlay.add_overlay(&palette.widget);
         overlay.add_overlay(&key_sheet.widget);
+        overlay.add_overlay(&rename_sheet.widget);
         window.set_child(Some(&overlay));
 
         // The same signal wiring `app::run` installs: Sync draws the daemon's
@@ -1251,6 +1592,7 @@ impl TestShell {
             Rc::clone(&first_run),
             Rc::clone(&palette),
             Rc::clone(&key_sheet),
+            Rc::clone(&rename_sheet),
         );
 
         Self {
@@ -1261,6 +1603,7 @@ impl TestShell {
             quotes,
             palette,
             key_sheet,
+            rename_sheet,
             sync,
             wifi,
             export: Rc::clone(&export),

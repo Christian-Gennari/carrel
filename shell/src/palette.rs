@@ -46,6 +46,7 @@ const PALETTE_HINTS: [(&str, &str); 3] = [("Enter", "Run"), ("↑ ↓", "Move"),
 pub enum Action {
     NewFile,
     OpenFiles,
+    RenameFile,
     InsertQuote,
     SyncNow,
     Export,
@@ -110,6 +111,7 @@ pub fn actions(settings: &Settings, update: Option<&str>) -> Vec<PaletteRow> {
     add("Keyboard shortcuts", "Ctrl+/", Action::KeySheet);
 
     // The rest of the keys table, then the direct values.
+    add("Rename current file…", "Ctrl+Shift+R", Action::RenameFile);
     add("Larger text", "Ctrl+=", Action::LargerFont);
     add("Smaller text", "Ctrl+-", Action::SmallerFont);
     add("Back to the editor", "Esc", Action::BackToEditor);
@@ -307,6 +309,7 @@ pub struct CommandPalette {
     sync: Rc<SyncPage>,
     settings_page: Rc<SettingsPage>,
     key_sheet: Rc<KeySheet>,
+    rename: Rc<RenameSheet>,
     store: Store,
     client: Client,
     /// The paper layer that draws the page behind the sheet at about 40 %.
@@ -327,6 +330,7 @@ impl CommandPalette {
         sync: Rc<SyncPage>,
         settings_page: Rc<SettingsPage>,
         key_sheet: Rc<KeySheet>,
+        rename: Rc<RenameSheet>,
         dim: gtk::Box,
     ) -> Rc<Self> {
         let query_label = gtk::Label::new(None);
@@ -391,6 +395,7 @@ impl CommandPalette {
             sync,
             settings_page,
             key_sheet,
+            rename,
             store,
             client,
             dim,
@@ -540,6 +545,7 @@ impl CommandPalette {
                 }
             }
             Action::OpenFiles => self.nav.show("files"),
+            Action::RenameFile => self.rename.open(),
             Action::InsertQuote => {
                 self.nav.show_editor();
                 let quotes = Rc::clone(&self.quotes);
@@ -761,6 +767,7 @@ const WRITING: &[(&str, &str)] = &[
 const FILES: &[(&str, &str)] = &[
     ("Ctrl+O", "Files"),
     ("Ctrl+N", "New file"),
+    ("Ctrl+Shift+R", "Rename current file"),
     ("Enter", "Open"),
     ("F2", "Rename"),
     ("Del", "Delete"),
@@ -782,6 +789,205 @@ const GROUPS: [(&str, &[(&str, &str)]); 4] = [
     ("Sync and export", SYNC_AND_EXPORT),
     ("Screens", SCREENS),
 ];
+
+const RENAME_HINTS: [(&str, &str); 2] = [("Enter", "Save"), ("Esc", "Cancel")];
+
+/// A calm card over the editor to rename the currently open document without
+/// leaving the page or disturbing the cursor.
+pub struct RenameSheet {
+    pub widget: gtk::Box,
+    folder_label: gtk::Label,
+    entry: gtk::Entry,
+    error_label: gtk::Label,
+    open: Cell<bool>,
+    editor: Rc<EditorPage>,
+    quotes: Rc<QuotePalette>,
+    nav: Rc<Navigator>,
+    dim: gtk::Box,
+}
+
+impl RenameSheet {
+    pub fn new(
+        editor: Rc<EditorPage>,
+        quotes: Rc<QuotePalette>,
+        nav: Rc<Navigator>,
+        dim: gtk::Box,
+    ) -> Rc<Self> {
+        let title = gtk::Label::new(Some("Rename file"));
+        title.set_xalign(0.0);
+        title.add_css_class("key-sheet-title");
+
+        let folder_label = gtk::Label::new(None);
+        folder_label.set_xalign(0.0);
+        folder_label.add_css_class("row-note");
+        folder_label.set_visible(false);
+
+        let entry = gtk::Entry::new();
+        entry.set_hexpand(true);
+        entry.add_css_class("calm-entry");
+
+        let error_label = gtk::Label::new(None);
+        error_label.set_xalign(0.0);
+        error_label.set_wrap(true);
+        error_label.add_css_class("row-note");
+        error_label.add_css_class("error-text");
+        error_label.set_visible(false);
+
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        body.set_margin_top(20);
+        body.set_margin_bottom(18);
+        body.set_margin_start(20);
+        body.set_margin_end(20);
+        body.append(&title);
+        body.append(&folder_label);
+        body.append(&entry);
+        body.append(&error_label);
+
+        let hint = ui::card_hint_bar(&RENAME_HINTS);
+
+        let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        widget.add_css_class("command-palette");
+        widget.set_overflow(gtk::Overflow::Hidden);
+        widget.set_halign(gtk::Align::Center);
+        widget.set_valign(gtk::Align::Start);
+        widget.set_margin_top(PALETTE_TOP);
+        widget.set_width_request(ui::DIALOG_WIDTH);
+        widget.append(&body);
+        widget.append(&hint);
+        widget.set_visible(false);
+
+        let sheet = Rc::new(Self {
+            widget,
+            folder_label,
+            entry,
+            error_label,
+            open: Cell::new(false),
+            editor,
+            quotes,
+            nav,
+            dim,
+        });
+        let weak = Rc::downgrade(&sheet);
+        sheet.entry.connect_activate(move |_| {
+            if let Some(sheet) = weak.upgrade() {
+                sheet.commit();
+            }
+        });
+        let weak = Rc::downgrade(&sheet);
+        sheet.entry.connect_changed(move |_| {
+            if let Some(sheet) = weak.upgrade() {
+                sheet.error_label.set_visible(false);
+            }
+        });
+        sheet
+    }
+
+    pub fn is_open(&self) -> bool {
+        self.open.get()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn entry(&self) -> &gtk::Entry {
+        &self.entry
+    }
+
+    #[cfg(test)]
+    pub(crate) fn error_text(&self) -> Option<String> {
+        self.error_label
+            .is_visible()
+            .then(|| self.error_label.text().to_string())
+    }
+
+    pub fn open(self: &Rc<Self>) {
+        if self.open.get() {
+            return;
+        }
+        let Some(current) = self.editor.current_rel() else {
+            self.editor.flash_note("No file is open.", 3);
+            return;
+        };
+        self.quotes.close_from_outside();
+        self.nav.show_editor();
+
+        let name = crate::files::editable_name(&current);
+        if let Some(parent) = current.parent().filter(|path| !path.as_os_str().is_empty()) {
+            self.folder_label
+                .set_text(&format!("In {}/", parent.display()));
+            self.folder_label.set_visible(true);
+        } else {
+            self.folder_label.set_text("");
+            self.folder_label.set_visible(false);
+        }
+        self.error_label.set_text("");
+        self.error_label.set_visible(false);
+        self.entry.set_text(&name);
+
+        self.open.set(true);
+        self.editor.set_renaming(true);
+        self.dim.set_visible(true);
+        self.widget.set_visible(true);
+        self.entry.grab_focus();
+        self.entry.select_region(0, -1);
+        let entry = self.entry.clone();
+        let widget = self.widget.clone();
+        glib::idle_add_local_once(move || {
+            if widget.is_visible() && entry.is_mapped() && !ui::entry_has_focus(&entry) {
+                entry.grab_focus();
+                entry.select_region(0, -1);
+            }
+        });
+    }
+
+    pub fn close(&self) {
+        if !self.open.get() {
+            return;
+        }
+        self.open.set(false);
+        self.editor.set_renaming(false);
+        self.dim.set_visible(false);
+        self.widget.set_visible(false);
+        self.error_label.set_text("");
+        self.error_label.set_visible(false);
+    }
+
+    fn cancel(&self) {
+        self.close();
+        self.editor.focus_editor();
+    }
+
+    fn commit(&self) {
+        let raw = self.entry.text().to_string();
+        match self.editor.rename_current(&raw) {
+            Ok(_) => {
+                self.close();
+                self.editor.focus_editor();
+            }
+            Err(message) => {
+                self.error_label.set_text(&message);
+                self.error_label.set_visible(true);
+                self.entry.grab_focus();
+            }
+        }
+    }
+
+    pub fn handle_key(&self, keyval: gdk::Key, _state: gdk::ModifierType) -> glib::Propagation {
+        if !self.open.get() {
+            return glib::Propagation::Proceed;
+        }
+        match keyval {
+            gdk::Key::Escape => {
+                self.cancel();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Return | gdk::Key::KP_Enter => {
+                self.commit();
+                glib::Propagation::Stop
+            }
+            gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab => glib::Propagation::Stop,
+            _ => glib::Propagation::Proceed,
+        }
+    }
+}
 
 /// The centred card listing every key.
 pub struct KeySheet {
@@ -1034,5 +1240,19 @@ mod tests {
         assert_eq!(ready_version("none"), None);
         let rows = rows_for("update", &settings, Some("0.2.0"), &[]);
         assert_eq!(rows[0].label, "Install update 0.2.0");
+    }
+
+    #[test]
+    fn searching_rename_matches_rename_file_action() {
+        let settings = settings();
+        let rows = rows_for(
+            "rename",
+            &settings,
+            None,
+            &[PathBuf::from("Rename notes.md")],
+        );
+        assert_eq!(rows[0].action, Action::RenameFile);
+        assert_eq!(rows[0].label, "Rename current file…");
+        assert_eq!(rows[0].keys, "Ctrl+Shift+R");
     }
 }

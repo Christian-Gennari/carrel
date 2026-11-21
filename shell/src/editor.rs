@@ -66,6 +66,7 @@ pub struct EditorPage {
     doc: RefCell<Option<Document>>,
     current: RefCell<Option<PathBuf>>,
     untitled: Cell<bool>,
+    renaming: Cell<bool>,
     loading: Cell<bool>,
     /// The start hint is gone for this opening of the document; it never
     /// comes back while the document stays open.
@@ -278,6 +279,7 @@ impl EditorPage {
             doc: RefCell::new(None),
             current: RefCell::new(None),
             untitled: Cell::new(false),
+            renaming: Cell::new(false),
             loading: Cell::new(false),
             start_hint_dismissed: Cell::new(false),
             last_edit_at: Cell::new(Instant::now()),
@@ -1071,10 +1073,17 @@ impl EditorPage {
         Ok(())
     }
 
+    pub fn set_renaming(&self, renaming: bool) {
+        self.renaming.set(renaming);
+        if !renaming {
+            self.last_edit_at.set(Instant::now());
+        }
+    }
+
     /// Name a new file from its first line once the writer pauses. Forced on
     /// exit so a one-line note still gets a real name.
     pub fn maybe_name_untitled(self: &Rc<Self>, force: bool) {
-        if !self.untitled.get() {
+        if !self.untitled.get() || self.renaming.get() {
             return;
         }
         if !force && self.last_edit_at.get().elapsed() < Duration::from_millis(1500) {
@@ -1118,6 +1127,63 @@ impl EditorPage {
         }
         if let Err(error) = self.open_rel(&target) {
             eprintln!("carrel: cannot open {}: {error}", target.display());
+        }
+    }
+
+    /// Rename the currently open document in place, keeping the buffer,
+    /// cursor position, and undo history intact.
+    pub fn rename_current(&self, raw_name: &str) -> Result<PathBuf, String> {
+        let Some(source) = self.current_rel() else {
+            return Err("No file is open.".to_owned());
+        };
+        let name = crate::files::validate_entry_name(raw_name).map_err(str::to_owned)?;
+        let new_name = crate::files::ensure_document_extension(name, &source, true);
+        let target = source
+            .parent()
+            .map_or_else(|| PathBuf::from(&new_name), |parent| parent.join(&new_name));
+        if target == source {
+            self.untitled.set(false);
+            return Ok(target);
+        }
+        if self.store.root().join(&target).exists() {
+            return Err(format!("“{}” already exists.", display_name(&new_name)));
+        }
+
+        if let Some(doc) = self.doc.borrow().as_ref() {
+            doc.flush()
+                .map_err(|error| format!("Cannot save before rename: {error}"))?;
+            self.save_error.set(false);
+            self.refresh_status();
+        }
+        let old_doc = self.doc.borrow_mut().take();
+        drop(old_doc);
+
+        match self.store.rename(&source, &target) {
+            Ok(()) => {
+                *self.current.borrow_mut() = Some(target.clone());
+                self.untitled.set(false);
+                if let Err(error) = self.store.set_last_file(Some(&target)) {
+                    eprintln!("carrel: could not remember last file: {error}");
+                }
+                self.update_document_name();
+                match self.store.open_document(&target) {
+                    Ok(doc) => {
+                        *self.doc.borrow_mut() = Some(doc);
+                        Ok(target)
+                    }
+                    Err(error) => {
+                        self.save_error.set(true);
+                        self.refresh_status();
+                        Err(format!("Cannot reopen {}: {error}", target.display()))
+                    }
+                }
+            }
+            Err(error) => {
+                if let Ok(doc) = self.store.open_document(&source) {
+                    *self.doc.borrow_mut() = Some(doc);
+                }
+                Err(format!("Cannot rename: {error}"))
+            }
         }
     }
 

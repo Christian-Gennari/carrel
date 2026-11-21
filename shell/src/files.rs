@@ -85,6 +85,12 @@ impl FilesPage {
         screen.set_hints(&HINTS);
 
         let list = ui::list();
+        // The inline rename and new-folder fields live inside a row of this
+        // list, and GTK4 blocks keyboard focus on descendants when any ancestor
+        // has `can-focus = false`. Regular rows keep `can-focus = false` so
+        // there is no unwanted focus ring; only the row holding an entry
+        // allows focus.
+        list.set_can_focus(true);
         let list_scroller = ui::scroller(&list);
         screen.content.append(&ui::fade_top(&list_scroller));
 
@@ -166,6 +172,9 @@ impl FilesPage {
                     }
                     gdk::Key::Return | gdk::Key::KP_Enter => {
                         self.commit_entry();
+                        glib::Propagation::Stop
+                    }
+                    gdk::Key::Tab | gdk::Key::ISO_Left_Tab | gdk::Key::KP_Tab => {
                         glib::Propagation::Stop
                     }
                     _ => glib::Propagation::Proceed,
@@ -482,6 +491,7 @@ impl FilesPage {
 
         if mode == EntryMode::NewFolder {
             let row = self.row_shell();
+            row.set_can_focus(true);
             let field = self.make_entry("", Some("Folder name"));
             row.set_child(Some(&field));
             self.push_row(row, Some(Target::NewFolder));
@@ -511,8 +521,34 @@ impl FilesPage {
         }
 
         if let Some(field) = self.entry.borrow().clone() {
-            field.grab_focus();
-            field.select_region(0, -1);
+            if field.grab_focus() {
+                field.select_region(0, -1);
+            } else {
+                let page_weak = Rc::downgrade(self);
+                field.connect_map(move |entry| {
+                    let Some(page) = page_weak.upgrade() else {
+                        return;
+                    };
+                    if page.entry.borrow().as_ref() != Some(entry) {
+                        return;
+                    }
+                    entry.grab_focus();
+                    entry.select_region(0, -1);
+                    let entry_idle = entry.clone();
+                    let page_idle = Rc::downgrade(&page);
+                    glib::idle_add_local_once(move || {
+                        if let Some(page) = page_idle.upgrade() {
+                            if page.entry.borrow().as_ref() == Some(&entry_idle)
+                                && entry_idle.is_mapped()
+                                && !ui::entry_has_focus(&entry_idle)
+                            {
+                                entry_idle.grab_focus();
+                                entry_idle.select_region(0, -1);
+                            }
+                        }
+                    });
+                });
+            }
         } else {
             self.screen.focus_page();
         }
@@ -653,6 +689,7 @@ impl FilesPage {
 
     fn row_shell(&self) -> gtk::ListBoxRow {
         let row = gtk::ListBoxRow::new();
+        row.set_can_focus(false);
         row.add_css_class("ui-row");
         row.add_css_class("file-row");
         row
@@ -688,6 +725,7 @@ impl FilesPage {
             .unwrap_or_else(|| display_name(&name));
         let row = self.row_shell();
         if self.is_renaming(rel) {
+            row.set_can_focus(true);
             let field = self.make_entry(&editable_name(rel), None);
             row.set_child(Some(&field));
             return (row, Some(field));
@@ -736,6 +774,7 @@ impl FilesPage {
     ) -> (gtk::ListBoxRow, Option<gtk::Entry>) {
         let row = self.row_shell();
         if self.is_renaming(rel) {
+            row.set_can_focus(true);
             let field = self.make_entry(name, None);
             row.set_child(Some(&field));
             return (row, Some(field));
@@ -936,11 +975,13 @@ impl FilesPage {
         let Some(field) = self.entry.borrow().clone() else {
             return;
         };
-        let name = field.text().trim().to_string();
-        if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
-            self.flash_error("Choose a name without / or a leading dot.");
-            return;
-        }
+        let name = match validate_entry_name(&field.text()) {
+            Ok(name) => name,
+            Err(message) => {
+                self.flash_error(message);
+                return;
+            }
+        };
 
         match self.mode.get() {
             EntryMode::None | EntryMode::Move => {}
@@ -1422,9 +1463,18 @@ fn display_path(dir: &Path) -> String {
     }
 }
 
+/// Reject empty names, path separators, and hidden names.
+pub(crate) fn validate_entry_name(name: &str) -> Result<String, &'static str> {
+    let name = name.trim().to_owned();
+    if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
+        return Err("Choose a name without / or a leading dot.");
+    }
+    Ok(name)
+}
+
 /// A document is edited by its name, not its extension: "Notes.md" shows
 /// "Notes" in the row, and the extension comes back on save.
-fn editable_name(rel: &Path) -> String {
+pub(crate) fn editable_name(rel: &Path) -> String {
     rel.file_name()
         .map(|name| display_name(&name.to_string_lossy()))
         .unwrap_or_default()
@@ -1446,7 +1496,11 @@ fn moved_path(current: &Path, from: &Path, to: &Path) -> PathBuf {
 }
 
 /// A renamed document keeps being a document the Files screen can show.
-fn ensure_document_extension(name: String, source: &Path, source_is_file: bool) -> String {
+pub(crate) fn ensure_document_extension(
+    name: String,
+    source: &Path,
+    source_is_file: bool,
+) -> String {
     if !source_is_file || is_document_name(&name) {
         return name;
     }
