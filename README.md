@@ -53,15 +53,17 @@ Download the image from [carrel.nostos.page](https://carrel.nostos.page) or from
 1. Download `carrel-<version>.img.xz`. Check it with the `.sha256` file; the
    `.asc` file is the release signature
    ([how to verify](image/README.md#verify-a-download)).
-2. Flash it to a USB stick (8 GB or more) with
+2. Flash it to a USB stick or external drive (8 GB or more) with
    [Fedora Media Writer](https://fedoraproject.org/workstation/download),
    [balenaEtcher](https://etcher.balena.io/) 2.19 or newer (2.14 fails on this
    image), [Rufus](https://rufus.ie/) in
    **DD Image mode**, or
    `xz -dc carrel-<version>.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync`.
-3. Boot the laptop from the stick.
-4. Choose **Try Carrel** (nothing on the laptop changes) or **Install to this
-   computer** (type `ERASE`; the whole internal disk is replaced).
+3. Boot the laptop from the external drive.
+4. Choose **Start Carrel** (Carrel runs from the external drive and saves your
+   writing there; nothing on the internal disk changes) or **Install Carrel**
+   (Carrel copies itself to an internal disk and erases that disk; type
+   `ERASE`).
 
 **Hardware.** Any 64-bit x86 laptop with 4 GB of RAM, 16 GB of storage and Intel
 or AMD graphics. Tested and supported first: ThinkPad X230, T430, X250, T450,
