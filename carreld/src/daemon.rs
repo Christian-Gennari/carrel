@@ -57,7 +57,7 @@ const SHUTDOWN_NETWORK_WAIT: Duration = Duration::from_secs(7);
 
 /// The status line while the last sync before power off runs. The shell shows
 /// it over the editor.
-pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before power off…";
+pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before shutting down…";
 
 /// How long a pairing may wait for the user to approve the code.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(600);

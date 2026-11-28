@@ -1149,7 +1149,7 @@ def _recovery_copy(disk: Path, usb: Path, out: Path, timeout: float,
         qemu.screenshot(out / f"screenshot-{name}.png", light=False)
         if "Started carrel-session.service" in qemu.text():
             raise BootError("the session started while booted into recovery")
-        # Menu: Boot previous, Copy writing, Reset settings, Power off.
+        # Menu: Boot previous, Copy writing, Reset settings, Shut down.
         qemu.key("down")
         qemu.key("ret")
         time.sleep(2)  # the disk menu is drawn by whiptail
@@ -1174,8 +1174,8 @@ def _recovery_copy(disk: Path, usb: Path, out: Path, timeout: float,
             time.sleep(2)
             for _ in range(3):
                 qemu.key("down")
-            qemu.key("ret")  # Power off, which flushes /data
-            qemu.wait(r"CARREL-RECOVERY: power off", 60)
+            qemu.key("ret")  # Shut down, which flushes /data
+            qemu.wait(r"CARREL-RECOVERY: shut down", 60)
             qemu.proc.wait(timeout=90)
         qemu.stop()
 

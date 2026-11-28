@@ -171,7 +171,7 @@ note.spellcheck = Marks words to check later; no squiggles in the first draft.
 note.clock = The time at the end of the bottom line.
 note.wifi = Choose a network. The radio is on only while you are here.
 note.sync = Nostos, your own server or Google Drive.
-note.sync_shutdown = One last sync before Carrel powers off, when a server is set up.
+note.sync_shutdown = One last sync before Carrel shuts down, when a server is set up.
 note.keyboard = The keys you type on, including an external keyboard.
 note.keyboard_reload = Carrel reloads briefly to switch the keyboard layout. Press Enter or Esc to apply.
 note.language = The language of the screens and of Spellcheck.
@@ -180,7 +180,7 @@ note.update_applying = Carrel is installing the update and will restart.
 note.update_ready = Carrel restarts and opens the new version.
 note.update = Carrel looks for updates when it syncs.
 note.about = Free software. No account is needed to write.
-note.shutdown_sync = Syncing before power off…
+note.shutdown_sync = Syncing before shutting down…
 settings.sample = The quiet morning begins with a single sentence.
 
 # First run

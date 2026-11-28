@@ -283,7 +283,7 @@ pub enum DaemonEvent {
 
 /// The `SyncStatus` message of the last sync before power off
 /// (`carreld::SHUTDOWN_SYNC_MESSAGE`).
-pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before power off…";
+pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before shutting down…";
 
 /// Everything the shell needs from `page.nostos.Carrel.Daemon1`.
 ///
