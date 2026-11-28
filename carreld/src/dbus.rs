@@ -423,5 +423,6 @@ mod tests {
         let unit = include_str!("../systemd/carreld.service");
         assert!(unit.contains("BusName=page.nostos.Carrel.Daemon1"));
         assert!(unit.contains("ExecStart=/usr/bin/carreld run"));
+        assert!(unit.contains("After=dbus.service systemd-logind.service NetworkManager.service"));
     }
 }

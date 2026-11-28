@@ -24,7 +24,8 @@ pub mod update;
 
 pub use config::SyncConfig;
 pub use daemon::{
-    DaemonCore, DaemonDeps, DaemonEvent, ExportProgress, PairingInfo, SyncInfo, SyncSummary,
+    DaemonCore, DaemonDeps, DaemonEvent, ExportProgress, PairingInfo, ShutdownSyncOutcome,
+    SyncInfo, SyncSummary, SHUTDOWN_SYNC_MESSAGE, SHUTDOWN_SYNC_TIMEOUT,
 };
 pub use export::{PandocDocxConverter, UsbDrive};
 pub use gdrive::{GdriveConfig, GdriveReport, GdriveRunner, OAuthApp};

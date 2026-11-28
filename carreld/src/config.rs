@@ -155,6 +155,40 @@ pub fn library_database(state_dir: &Path) -> PathBuf {
     state_dir.join("library.sqlite")
 }
 
+/// Path of the shell's user settings inside the writing directory.
+pub fn shell_settings_path(writing_dir: &Path) -> PathBuf {
+    writing_dir.join(".carrel").join("settings.json")
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct ShellSettings {
+    sync_at_shutdown: bool,
+}
+
+/// Read `settings.sync_at_shutdown` from `<writing_dir>/.carrel/settings.json`.
+///
+/// Missing, unreadable or malformed settings default to `false` so poweroff
+/// never fails or blocks unexpectedly.
+pub fn sync_at_shutdown_enabled(writing_dir: &Path) -> bool {
+    let path = shell_settings_path(writing_dir);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "could not read shell settings");
+            return false;
+        }
+    };
+    match serde_json::from_slice::<ShellSettings>(&bytes) {
+        Ok(settings) => settings.sync_at_shutdown,
+        Err(error) => {
+            tracing::warn!(%error, path = %path.display(), "could not parse shell settings");
+            false
+        }
+    }
+}
+
 /// Read a TOML file as a document. A missing file is an empty document; a
 /// broken one is an error, so a save never silently discards settings.
 pub(crate) fn read_document(path: &Path) -> Result<toml::Table> {
@@ -293,5 +327,26 @@ mod tests {
         )
         .unwrap();
         assert!(!SyncConfig::is_configured(only_drive.path()).unwrap());
+    }
+
+    #[test]
+    fn sync_at_shutdown_defaults_false_and_reads_shell_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!sync_at_shutdown_enabled(dir.path()));
+
+        let path = shell_settings_path(dir.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+
+        fs::write(&path, r#"{"theme":"automatic"}"#).unwrap();
+        assert!(!sync_at_shutdown_enabled(dir.path()));
+
+        fs::write(&path, r#"{"theme":"automatic","sync_at_shutdown":false}"#).unwrap();
+        assert!(!sync_at_shutdown_enabled(dir.path()));
+
+        fs::write(&path, r#"{"theme":"automatic","sync_at_shutdown":true}"#).unwrap();
+        assert!(sync_at_shutdown_enabled(dir.path()));
+
+        fs::write(&path, "{not json").unwrap();
+        assert!(!sync_at_shutdown_enabled(dir.path()));
     }
 }

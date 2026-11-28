@@ -27,6 +27,8 @@ const DEVICE_TYPE_WIFI: u32 = 2;
 const AP_FLAG_PRIVACY: u32 = 0x1;
 const ACTIVE_STATE_ACTIVATED: u32 = 2;
 const ACTIVE_STATE_DEACTIVATED: u32 = 4;
+const NM_STATE_ASLEEP: u32 = 10;
+const NM_STATE_CONNECTED_LOCAL: u32 = 50;
 
 /// One access point as the Wi-Fi screen shows it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, zbus::zvariant::Type)]
@@ -49,6 +51,24 @@ pub enum Connectivity {
     Portal,
     Limited,
     Full,
+}
+
+fn classify_nm_connectivity(state: u32, connectivity: u32) -> Connectivity {
+    // With `[connectivity] enabled=false` (Carrel's default, so NM never
+    // probes the network on its own) and NM 1.42+ activating `lo` as a
+    // managed device, `Connectivity` can stay Unknown or Limited while
+    // `State` is still ASLEEP (10)..=CONNECTED_LOCAL (50). Only SITE (60)
+    // and GLOBAL (70) mean a real non-loopback network is up.
+    if (NM_STATE_ASLEEP..=NM_STATE_CONNECTED_LOCAL).contains(&state) {
+        return Connectivity::None;
+    }
+    match connectivity {
+        1 => Connectivity::None,
+        2 => Connectivity::Portal,
+        3 => Connectivity::Limited,
+        4 => Connectivity::Full,
+        _ => Connectivity::Unknown,
+    }
 }
 
 /// Everything the daemon needs from the network manager.
@@ -99,14 +119,9 @@ impl Network for NetworkManager {
     async fn connectivity(&self) -> Result<Connectivity> {
         let connection = self.connection().await?;
         let nm = manager_proxy(&connection).await?;
+        let state: u32 = nm.get_property("State").await.unwrap_or(0);
         let connectivity: u32 = nm.get_property("Connectivity").await.unwrap_or(0);
-        Ok(match connectivity {
-            1 => Connectivity::None,
-            2 => Connectivity::Portal,
-            3 => Connectivity::Limited,
-            4 => Connectivity::Full,
-            _ => Connectivity::Unknown,
-        })
+        Ok(classify_nm_connectivity(state, connectivity))
     }
 }
 
@@ -417,5 +432,20 @@ mod tests {
         settings.insert("802-11-wireless".to_string(), wireless);
         assert_eq!(profile_ssid(&settings).as_deref(), Some("Study"));
         assert_eq!(profile_ssid(&HashMap::new()), None);
+    }
+
+    #[test]
+    fn nm_state_at_or_below_local_counts_as_offline() {
+        for state in [10, 20, 30, 40, 50] {
+            assert_eq!(classify_nm_connectivity(state, 0), Connectivity::None);
+            assert_eq!(classify_nm_connectivity(state, 3), Connectivity::None);
+            assert_eq!(classify_nm_connectivity(state, 4), Connectivity::None);
+        }
+        assert_eq!(classify_nm_connectivity(60, 0), Connectivity::Unknown);
+        assert_eq!(classify_nm_connectivity(70, 0), Connectivity::Unknown);
+        assert_eq!(classify_nm_connectivity(70, 2), Connectivity::Portal);
+        assert_eq!(classify_nm_connectivity(70, 3), Connectivity::Limited);
+        assert_eq!(classify_nm_connectivity(70, 4), Connectivity::Full);
+        assert_eq!(classify_nm_connectivity(70, 1), Connectivity::None);
     }
 }

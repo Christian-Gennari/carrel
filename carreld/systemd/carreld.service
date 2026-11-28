@@ -4,8 +4,8 @@ Documentation=file:///usr/share/doc/carrel
 # The writing tree lives on the data partition and must exist first.
 RequiresMountsFor=/data/writing
 ConditionPathExists=/data/writing
-After=dbus.service
-Wants=dbus.service
+After=dbus.service systemd-logind.service NetworkManager.service
+Wants=dbus.service systemd-logind.service
 
 [Service]
 Type=dbus

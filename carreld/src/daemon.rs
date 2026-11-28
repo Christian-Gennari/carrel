@@ -18,7 +18,7 @@ use carrel_protocol::now_unix;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
-use crate::config::{state_database, SyncConfig};
+use crate::config::{state_database, sync_at_shutdown_enabled, SyncConfig};
 use crate::export::{
     import_sources, list_drives, parse_format, selection_from_request, MountedDrive, UsbDrive,
 };
@@ -50,6 +50,15 @@ const PAIRING_POLL: Duration = Duration::from_secs(2);
 const PAIRING_CONNECTIVITY_WAIT: Duration = Duration::from_secs(3);
 const PAIRING_CONNECTIVITY_POLL: Duration = Duration::from_millis(250);
 const PAIRING_OFFLINE_MESSAGE: &str = "No Wi-Fi connection. Connect to Wi-Fi before pairing.";
+
+/// Maximum time spent on a final sync at poweroff so shutdown never hangs.
+/// Fits inside `InhibitDelayMaxSec=15` in `50-carrel.conf`.
+pub const SHUTDOWN_SYNC_TIMEOUT: Duration = Duration::from_secs(12);
+/// How long shutdown sync waits for a saved Wi-Fi network after unblocking the radio.
+const SHUTDOWN_CONNECTIVITY_WAIT: Duration = Duration::from_secs(3);
+const SHUTDOWN_CONNECTIVITY_POLL: Duration = Duration::from_millis(250);
+/// Status message emitted via `SyncStatus` while syncing before power off.
+pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before power off…";
 
 /// Default Nostos endpoint from `spec/02-sync-protocol.md`.
 pub const NOSTOS_URL: &str = "https://app.nostos.page/carrel/v1";
@@ -109,6 +118,27 @@ pub struct SyncSummary {
     pub server: Option<SyncReport>,
     /// The Google Drive mirror, when one is paired.
     pub gdrive: Option<GdriveReport>,
+}
+
+/// What happened when logind announced a pending shutdown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShutdownSyncOutcome {
+    /// `settings.sync_at_shutdown` is off (or missing/malformed).
+    Disabled,
+    /// The setting is on, but no sync backend is paired.
+    NotPaired,
+    /// Shutdown sync already ran for this shutdown cycle.
+    AlreadyHandled,
+    /// Skipped quickly because there is no network (or a captive portal).
+    Offline,
+    /// A sync was already running and finished within the shutdown window.
+    WaitedForActiveSync,
+    /// One final sync ran and succeeded.
+    Synced(SyncSummary),
+    /// The sync failed with an error (logged; poweroff proceeds).
+    Failed(String),
+    /// The sync hit the shutdown time limit (cancelled; poweroff proceeds).
+    TimedOut,
 }
 
 /// Something the daemon wants to tell the shell.
@@ -185,6 +215,7 @@ struct CoreStatus {
     low_battery_handled: bool,
     sync: SyncInfo,
     sync_running: bool,
+    shutdown_sync_handled: bool,
     pairing_running: bool,
     /// A USB export or import is in progress; mounting is one at a time.
     drive_operation_running: bool,
@@ -209,6 +240,8 @@ pub struct DaemonCore {
     oauth_app: Mutex<Option<OAuthApp>>,
     #[cfg(test)]
     pairing_connectivity_timing: Mutex<(Duration, Duration)>,
+    #[cfg(test)]
+    shutdown_sync_timing: Mutex<(Duration, Duration, Duration)>,
 }
 
 impl DaemonCore {
@@ -237,6 +270,12 @@ impl DaemonCore {
             pairing_connectivity_timing: Mutex::new((
                 PAIRING_CONNECTIVITY_WAIT,
                 PAIRING_CONNECTIVITY_POLL,
+            )),
+            #[cfg(test)]
+            shutdown_sync_timing: Mutex::new((
+                SHUTDOWN_SYNC_TIMEOUT,
+                SHUTDOWN_CONNECTIVITY_WAIT,
+                SHUTDOWN_CONNECTIVITY_POLL,
             )),
         })
     }
@@ -429,22 +468,44 @@ impl DaemonCore {
         // failure. A panic unwinding through this function drops it as well.
         let _guard: RadioGuard = self.radio.hold("sync")?;
 
+        let (server_configured, gdrive_configured) = self.configured_backends()?;
+        if self.gdrive.is_some() && !server_configured && !gdrive_configured {
+            bail!("this device is not paired with a sync server or Google Drive");
+        }
+
+        let summary = self
+            .sync_configured_backends(
+                server_configured || self.gdrive.is_none(),
+                gdrive_configured,
+            )
+            .await?;
+        // The radio guard is still alive here: updates are checked and
+        // downloaded only inside a sync session's window (rule 2).
+        self.check_updates().await;
+        Ok(summary)
+    }
+
+    fn configured_backends(&self) -> Result<(bool, bool)> {
         let server_configured = SyncConfig::is_configured(&self.state_dir)?;
         let gdrive_configured = match &self.gdrive {
             Some(_) => GdriveConfig::is_configured(&self.state_dir)?,
             None => false,
         };
-        if self.gdrive.is_some() && !server_configured && !gdrive_configured {
-            bail!("this device is not paired with a sync server or Google Drive");
-        }
+        Ok((server_configured, gdrive_configured))
+    }
 
+    async fn sync_configured_backends(
+        &self,
+        run_server: bool,
+        run_gdrive: bool,
+    ) -> Result<SyncSummary> {
         let mut summary = SyncSummary::default();
         // Order is part of the spec: server first, then Google Drive. An error
         // in either ends the sync before the next backend starts.
-        if server_configured || self.gdrive.is_none() {
+        if run_server {
             summary.server = Some(self.runner.sync(&self.writing_dir, &self.state_dir).await?);
         }
-        if gdrive_configured {
+        if run_gdrive {
             let runner = self
                 .gdrive
                 .as_ref()
@@ -477,9 +538,6 @@ impl DaemonCore {
             ),
             (None, None) => tracing::info!("sync finished with no backends"),
         }
-        // The radio guard is still alive here: updates are checked and
-        // downloaded only inside a sync session's window (rule 2).
-        self.check_updates().await;
         Ok(summary)
     }
 
@@ -1040,10 +1098,229 @@ impl DaemonCore {
             Err(error) => tracing::error!(%error, "history commit before suspend failed"),
         }
     }
+
+    fn shutdown_sync_timing(&self) -> (Duration, Duration, Duration) {
+        #[cfg(test)]
+        {
+            *self
+                .shutdown_sync_timing
+                .lock()
+                .expect("shutdown_sync_timing lock poisoned")
+        }
+        #[cfg(not(test))]
+        {
+            (
+                SHUTDOWN_SYNC_TIMEOUT,
+                SHUTDOWN_CONNECTIVITY_WAIT,
+                SHUTDOWN_CONNECTIVITY_POLL,
+            )
+        }
+    }
+
+    /// Re-arm the shutdown sync guard if logind cancels a pending shutdown.
+    pub fn reset_shutdown_sync(&self) {
+        self.status
+            .lock()
+            .expect("status lock poisoned")
+            .shutdown_sync_handled = false;
+    }
+
+    /// Called when logind says the system is about to shut down.
+    ///
+    /// When `settings.sync_at_shutdown` is true and at least one sync backend
+    /// is paired, runs one bounded sync before releasing the delay inhibitor.
+    /// Poweroff never hangs: offline devices skip quickly and slow syncs are
+    /// cut off at [`SHUTDOWN_SYNC_TIMEOUT`].
+    pub async fn handle_shutdown_pending(&self) -> ShutdownSyncOutcome {
+        if !sync_at_shutdown_enabled(&self.writing_dir) {
+            tracing::debug!("sync at shutdown is off; skipping shutdown sync");
+            return ShutdownSyncOutcome::Disabled;
+        }
+
+        let (server_configured, gdrive_configured) = match self.configured_backends() {
+            Ok(pair) => pair,
+            Err(error) => {
+                tracing::warn!(%error, "could not read sync configuration at shutdown");
+                return ShutdownSyncOutcome::Failed(format!("{error:#}"));
+            }
+        };
+        if !server_configured && !gdrive_configured {
+            tracing::debug!("no sync backend is paired; skipping shutdown sync");
+            return ShutdownSyncOutcome::NotPaired;
+        }
+
+        let (total_timeout, connect_wait, connect_poll) = self.shutdown_sync_timing();
+
+        enum StartState {
+            AlreadyHandled,
+            WaitForActive,
+            Started(SyncInfo),
+        }
+
+        let start = {
+            let mut status = self.status.lock().expect("status lock poisoned");
+            if status.shutdown_sync_handled {
+                StartState::AlreadyHandled
+            } else {
+                status.shutdown_sync_handled = true;
+                if status.sync_running {
+                    StartState::WaitForActive
+                } else {
+                    status.sync_running = true;
+                    status.sync = SyncInfo {
+                        state: "syncing".into(),
+                        message: SHUTDOWN_SYNC_MESSAGE.into(),
+                        last_sync: status.sync.last_sync,
+                    };
+                    StartState::Started(status.sync.clone())
+                }
+            }
+        };
+
+        match start {
+            StartState::AlreadyHandled => return ShutdownSyncOutcome::AlreadyHandled,
+            StartState::WaitForActive => {
+                tracing::info!("waiting for in-progress sync before power off");
+                let deadline = tokio::time::Instant::now() + total_timeout;
+                loop {
+                    if !self
+                        .status
+                        .lock()
+                        .expect("status lock poisoned")
+                        .sync_running
+                    {
+                        tracing::info!("in-progress sync finished before power off");
+                        return ShutdownSyncOutcome::WaitedForActiveSync;
+                    }
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        tracing::warn!("timed out waiting for in-progress sync before power off");
+                        return ShutdownSyncOutcome::TimedOut;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50).min(deadline - now)).await;
+                }
+            }
+            StartState::Started(info) => {
+                self.emit(DaemonEvent::SyncStatus(info));
+            }
+        }
+
+        tracing::info!("starting sync before power off");
+        let run = self.run_shutdown_sync(
+            server_configured,
+            gdrive_configured,
+            connect_wait,
+            connect_poll,
+        );
+        match tokio::time::timeout(total_timeout, run).await {
+            Ok(Ok(ShutdownRun::Offline(reason))) => {
+                tracing::info!(reason, "skipping shutdown sync: offline");
+                let info = {
+                    let mut status = self.status.lock().expect("status lock poisoned");
+                    status.sync_running = false;
+                    status.sync = SyncInfo {
+                        state: "idle".into(),
+                        message: reason.to_string(),
+                        last_sync: status.sync.last_sync,
+                    };
+                    status.sync.clone()
+                };
+                self.emit(DaemonEvent::SyncStatus(info));
+                ShutdownSyncOutcome::Offline
+            }
+            Ok(Ok(ShutdownRun::Synced(summary))) => {
+                self.finish_sync(Ok(summary.clone()));
+                tracing::info!("shutdown sync finished");
+                ShutdownSyncOutcome::Synced(summary)
+            }
+            Ok(Err(error)) => {
+                let message = format!("{error:#}");
+                self.finish_sync(Err(error));
+                ShutdownSyncOutcome::Failed(message)
+            }
+            Err(_) => {
+                tracing::warn!(
+                    timeout_secs = total_timeout.as_secs(),
+                    "shutdown sync timed out; proceeding with power off"
+                );
+                self.finish_sync(Err(anyhow::anyhow!(
+                    "shutdown sync timed out after {} s",
+                    total_timeout.as_secs()
+                )));
+                ShutdownSyncOutcome::TimedOut
+            }
+        }
+    }
+
+    async fn run_shutdown_sync(
+        &self,
+        server_configured: bool,
+        gdrive_configured: bool,
+        connect_wait: Duration,
+        connect_poll: Duration,
+    ) -> Result<ShutdownRun> {
+        let radio_was_on = self.radio.is_on();
+        // Dropping this future on timeout drops `_guard` and re-blocks Wi-Fi.
+        let _guard: RadioGuard = self.radio.hold("shutdown sync")?;
+
+        if let Some(reason) = self
+            .wait_shutdown_connectivity(radio_was_on, connect_wait, connect_poll)
+            .await
+        {
+            return Ok(ShutdownRun::Offline(reason));
+        }
+
+        self.commit_async("before sync").await?;
+        let summary = self
+            .sync_configured_backends(server_configured, gdrive_configured)
+            .await?;
+        Ok(ShutdownRun::Synced(summary))
+    }
+
+    async fn wait_shutdown_connectivity(
+        &self,
+        radio_was_on: bool,
+        wait_limit: Duration,
+        poll_interval: Duration,
+    ) -> Option<&'static str> {
+        let deadline = if radio_was_on {
+            tokio::time::Instant::now()
+        } else {
+            tokio::time::Instant::now() + wait_limit
+        };
+        loop {
+            match self.network.connectivity().await {
+                Ok(Connectivity::None) => {
+                    let now = tokio::time::Instant::now();
+                    if now >= deadline {
+                        return Some("No network connection.");
+                    }
+                    let wait = poll_interval.min(deadline - now);
+                    tokio::time::sleep(wait).await;
+                }
+                Ok(Connectivity::Portal) => return Some(PORTAL_MESSAGE),
+                Ok(Connectivity::Full | Connectivity::Limited | Connectivity::Unknown) => {
+                    return None;
+                }
+                Err(error) => {
+                    tracing::debug!(
+                        %error,
+                        "could not read network connectivity before shutdown sync"
+                    );
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+enum ShutdownRun {
+    Offline(&'static str),
+    Synced(SyncSummary),
 }
 
 /// The daemon's long-running sleeps: commit when idle, watch the battery,
-/// sweep the Wi-Fi window and re-arm the logind delay inhibitor.
+/// sweep the Wi-Fi window and re-arm the logind delay inhibitors.
 pub struct DaemonTasks {
     core: Arc<DaemonCore>,
 }
@@ -1089,6 +1366,9 @@ impl DaemonTasks {
 
         let core = Arc::clone(&self.core);
         tokio::spawn(async move { sleep_watcher(core).await });
+
+        let core = Arc::clone(&self.core);
+        tokio::spawn(async move { shutdown_watcher(core).await });
     }
 }
 
@@ -1114,6 +1394,39 @@ async fn sleep_watcher(core: Arc<DaemonCore>) {
             tracing::debug!(%error, "waiting for resume failed");
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
+    }
+}
+
+async fn shutdown_watcher(core: Arc<DaemonCore>) {
+    let session = Arc::clone(core.session());
+    let mut retry_delay = Duration::from_secs(2);
+    loop {
+        let mut guard = match session.inhibit_shutdown().await {
+            Ok(guard) => {
+                retry_delay = Duration::from_secs(2);
+                tracing::debug!("holding logind shutdown delay inhibitor");
+                guard
+            }
+            Err(error) => {
+                tracing::debug!(%error, "logind is not available for shutdown handling");
+                tokio::time::sleep(retry_delay).await;
+                retry_delay = (retry_delay * 2).min(Duration::from_secs(60));
+                continue;
+            }
+        };
+        if let Err(error) = guard.wait_pending().await {
+            tracing::warn!(%error, "waiting for shutdown failed");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            continue;
+        }
+        core.handle_shutdown_pending().await;
+        guard.release();
+        if let Err(error) = guard.wait_cancelled().await {
+            tracing::debug!(%error, "shutdown signal stream ended");
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+        }
+        core.reset_shutdown_sync();
     }
 }
 
@@ -1240,7 +1553,8 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Mutex as StdMutex;
 
-    use crate::power::SleepGuard;
+    use crate::config::shell_settings_path;
+    use crate::power::{ShutdownGuard, SleepGuard};
     use crate::radio::{Rfkill, WIFI_WINDOW};
     use carrel_export::{DriveCall, DriveInfo, FakeDrives};
 
@@ -1371,9 +1685,47 @@ mod tests {
         }
     }
 
+    struct FakeShutdownGuard {
+        pending: Option<tokio::sync::oneshot::Receiver<()>>,
+        cancelled: Option<tokio::sync::oneshot::Receiver<()>>,
+        released: Arc<tokio::sync::Notify>,
+        released_flag: Arc<AtomicBool>,
+    }
+
+    #[async_trait]
+    impl ShutdownGuard for FakeShutdownGuard {
+        async fn wait_pending(&mut self) -> Result<()> {
+            match self.pending.take() {
+                Some(rx) => {
+                    rx.await
+                        .map_err(|_| anyhow::anyhow!("shutdown sender dropped"))?;
+                    Ok(())
+                }
+                None => std::future::pending().await,
+            }
+        }
+
+        fn release(&mut self) {
+            self.released_flag.store(true, Ordering::SeqCst);
+            self.released.notify_waiters();
+        }
+
+        async fn wait_cancelled(&mut self) -> Result<()> {
+            match self.cancelled.take() {
+                Some(rx) => {
+                    rx.await
+                        .map_err(|_| anyhow::anyhow!("cancel sender dropped"))?;
+                    Ok(())
+                }
+                None => std::future::pending().await,
+            }
+        }
+    }
+
     #[derive(Default)]
     struct FakeSession {
         suspends: AtomicUsize,
+        next_shutdown: StdMutex<Option<FakeShutdownGuard>>,
     }
 
     #[async_trait]
@@ -1389,6 +1741,18 @@ mod tests {
 
         async fn wait_resume(&self) -> Result<()> {
             Ok(())
+        }
+
+        async fn inhibit_shutdown(&self) -> Result<Box<dyn ShutdownGuard>> {
+            if let Some(guard) = self.next_shutdown.lock().unwrap().take() {
+                return Ok(Box::new(guard));
+            }
+            Ok(Box::new(FakeShutdownGuard {
+                pending: None,
+                cancelled: None,
+                released: Arc::new(tokio::sync::Notify::new()),
+                released_flag: Arc::new(AtomicBool::new(false)),
+            }))
         }
     }
 
@@ -1419,6 +1783,7 @@ mod tests {
     #[derive(Default)]
     struct FakeRunner {
         fail: bool,
+        delay: Option<Duration>,
         /// Whether local history had a commit at the moment the sync ran.
         saw_history: AtomicBool,
         calls: AtomicUsize,
@@ -1428,6 +1793,13 @@ mod tests {
         fn new(fail: bool) -> Arc<Self> {
             Arc::new(Self {
                 fail,
+                ..Self::default()
+            })
+        }
+
+        fn slow(delay: Duration) -> Arc<Self> {
+            Arc::new(Self {
+                delay: Some(delay),
                 ..Self::default()
             })
         }
@@ -1442,6 +1814,9 @@ mod tests {
                 .map(|repo| repo.head().is_ok())
                 .unwrap_or(false);
             self.saw_history.store(has_commit, Ordering::SeqCst);
+            if let Some(delay) = self.delay {
+                tokio::time::sleep(delay).await;
+            }
             // The daemon's radio is not visible here; the test checks its state
             // after the call instead.
             let _ = state_dir;
@@ -2139,5 +2514,246 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(harness.network.remaining_none.load(Ordering::SeqCst), 0);
+    }
+
+    fn set_sync_at_shutdown(harness: &Harness, enabled: bool) {
+        let path = shell_settings_path(&harness.core.writing_dir);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                r#"{{"sync_at_shutdown":{}}}"#,
+                if enabled { "true" } else { "false" }
+            ),
+        )
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn shutdown_sync_skipped_when_setting_is_off() {
+        let runner = FakeRunner::new(false);
+        let harness = Harness::new(runner.clone(), plugged_in(80));
+        pair_server(&harness);
+        harness.write("draft.md", "text");
+
+        // Missing settings.json defaults to off.
+        assert_eq!(
+            harness.core.handle_shutdown_pending().await,
+            ShutdownSyncOutcome::Disabled
+        );
+        // Explicit false also skips.
+        set_sync_at_shutdown(&harness, false);
+        assert_eq!(
+            harness.core.handle_shutdown_pending().await,
+            ShutdownSyncOutcome::Disabled
+        );
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(harness.rfkill.calls.lock().unwrap().is_empty());
+        assert!(harness.events.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_sync_skipped_when_not_paired() {
+        let runner = FakeRunner::new(false);
+        let gdrive = FakeGdrive::new(false);
+        let harness = Harness::with_gdrive(runner.clone(), gdrive.clone(), plugged_in(80));
+        set_sync_at_shutdown(&harness, true);
+        harness.write("draft.md", "text");
+
+        assert_eq!(
+            harness.core.handle_shutdown_pending().await,
+            ShutdownSyncOutcome::NotPaired
+        );
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(gdrive.calls.load(Ordering::SeqCst), 0);
+        assert!(harness.rfkill.calls.lock().unwrap().is_empty());
+        assert!(harness.events.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_sync_runs_when_enabled_and_server_paired() {
+        let runner = FakeRunner::new(false);
+        let harness = Harness::new(runner.clone(), plugged_in(80));
+        set_sync_at_shutdown(&harness, true);
+        pair_server(&harness);
+        harness.write("draft.md", "text");
+
+        let outcome = harness.core.handle_shutdown_pending().await;
+        assert!(
+            matches!(outcome, ShutdownSyncOutcome::Synced(ref s) if s.server.is_some()),
+            "{outcome:?}"
+        );
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        assert!(
+            runner.saw_history.load(Ordering::SeqCst),
+            "history must be committed before the shutdown sync starts"
+        );
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+        assert_eq!(
+            harness.rfkill.calls.lock().unwrap().as_slice(),
+            ["unblock", "block"]
+        );
+
+        let sync_events: Vec<(String, String)> = harness
+            .events
+            .events()
+            .into_iter()
+            .filter_map(|event| match event {
+                DaemonEvent::SyncStatus(info) => Some((info.state, info.message)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(sync_events.len(), 2, "{sync_events:?}");
+        assert_eq!(
+            sync_events[0],
+            ("syncing".into(), SHUTDOWN_SYNC_MESSAGE.into())
+        );
+        assert_eq!(sync_events[1].0, "idle");
+    }
+
+    #[tokio::test]
+    async fn shutdown_sync_runs_when_enabled_and_gdrive_paired() {
+        let runner = FakeRunner::new(false);
+        let gdrive = FakeGdrive::new(false);
+        let harness = Harness::with_gdrive(runner.clone(), gdrive.clone(), plugged_in(80));
+        set_sync_at_shutdown(&harness, true);
+        pair_google_drive(&harness);
+        harness.write("draft.md", "text");
+
+        let outcome = harness.core.handle_shutdown_pending().await;
+        assert!(
+            matches!(outcome, ShutdownSyncOutcome::Synced(ref s) if s.server.is_none() && s.gdrive.is_some()),
+            "{outcome:?}"
+        );
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(gdrive.calls.load(Ordering::SeqCst), 1);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn shutdown_sync_skips_quickly_when_offline() {
+        let runner = FakeRunner::new(false);
+        let harness = Harness::new(runner.clone(), plugged_in(80));
+        *harness.core.shutdown_sync_timing.lock().unwrap() = (
+            Duration::from_millis(500),
+            Duration::from_millis(20),
+            Duration::from_millis(5),
+        );
+        *harness.network.connectivity.lock().unwrap() = Connectivity::None;
+        set_sync_at_shutdown(&harness, true);
+        pair_server(&harness);
+
+        assert_eq!(
+            harness.core.handle_shutdown_pending().await,
+            ShutdownSyncOutcome::Offline
+        );
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+        assert_eq!(
+            harness.rfkill.calls.lock().unwrap().as_slice(),
+            ["unblock", "block"]
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_sync_skips_quickly_on_captive_portal() {
+        let runner = FakeRunner::new(false);
+        let harness = Harness::new(runner.clone(), plugged_in(80));
+        *harness.network.connectivity.lock().unwrap() = Connectivity::Portal;
+        set_sync_at_shutdown(&harness, true);
+        pair_server(&harness);
+
+        assert_eq!(
+            harness.core.handle_shutdown_pending().await,
+            ShutdownSyncOutcome::Offline
+        );
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn shutdown_sync_is_bounded_by_timeout_and_reblocks_radio() {
+        let runner = FakeRunner::slow(Duration::from_secs(5));
+        let harness = Harness::new(runner.clone(), plugged_in(80));
+        *harness.core.shutdown_sync_timing.lock().unwrap() = (
+            Duration::from_millis(40),
+            Duration::from_millis(10),
+            Duration::from_millis(5),
+        );
+        set_sync_at_shutdown(&harness, true);
+        pair_server(&harness);
+        harness.write("draft.md", "text");
+
+        assert_eq!(
+            harness.core.handle_shutdown_pending().await,
+            ShutdownSyncOutcome::TimedOut
+        );
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+        assert!(!harness.core.status.lock().unwrap().sync_running);
+    }
+
+    #[tokio::test]
+    async fn shutdown_sync_runs_only_once_until_reset() {
+        let runner = FakeRunner::new(false);
+        let harness = Harness::new(runner.clone(), plugged_in(80));
+        set_sync_at_shutdown(&harness, true);
+        pair_server(&harness);
+
+        assert!(matches!(
+            harness.core.handle_shutdown_pending().await,
+            ShutdownSyncOutcome::Synced(_)
+        ));
+        assert_eq!(
+            harness.core.handle_shutdown_pending().await,
+            ShutdownSyncOutcome::AlreadyHandled
+        );
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+
+        harness.core.reset_shutdown_sync();
+        assert!(matches!(
+            harness.core.handle_shutdown_pending().await,
+            ShutdownSyncOutcome::Synced(_)
+        ));
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn shutdown_watcher_holds_inhibitor_until_sync_finishes() {
+        let runner = FakeRunner::slow(Duration::from_millis(30));
+        let harness = Harness::new(runner.clone(), plugged_in(80));
+        set_sync_at_shutdown(&harness, true);
+        pair_server(&harness);
+        harness.write("draft.md", "text");
+
+        let (tx_pending, rx_pending) = tokio::sync::oneshot::channel();
+        let (_tx_cancelled, rx_cancelled) = tokio::sync::oneshot::channel();
+        let released = Arc::new(tokio::sync::Notify::new());
+        let released_flag = Arc::new(AtomicBool::new(false));
+        *harness.session.next_shutdown.lock().unwrap() = Some(FakeShutdownGuard {
+            pending: Some(rx_pending),
+            cancelled: Some(rx_cancelled),
+            released: Arc::clone(&released),
+            released_flag: Arc::clone(&released_flag),
+        });
+
+        let watcher = tokio::spawn(shutdown_watcher(Arc::clone(&harness.core)));
+        tokio::task::yield_now().await;
+        assert!(!released_flag.load(Ordering::SeqCst));
+
+        tx_pending.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), released.notified())
+            .await
+            .expect("shutdown watcher must release the inhibitor after sync");
+
+        assert!(released_flag.load(Ordering::SeqCst));
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        assert!(!harness.core.radio().is_on());
+        watcher.abort();
     }
 }

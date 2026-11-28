@@ -149,7 +149,19 @@ pub trait SleepGuard: Send {
     async fn wait_pending(&mut self) -> Result<()>;
 }
 
-/// logind, abstracted so the sleep path is testable.
+/// A held logind shutdown delay inhibitor. Releasing or dropping it closes the
+/// lock descriptor so logind proceeds with poweroff.
+#[async_trait]
+pub trait ShutdownGuard: Send {
+    /// Resolve when logind announces a pending shutdown (`PrepareForShutdown(true)`).
+    async fn wait_pending(&mut self) -> Result<()>;
+    /// Release the delay inhibitor so shutdown can proceed.
+    fn release(&mut self);
+    /// Resolve if logind cancels the pending shutdown (`PrepareForShutdown(false)`).
+    async fn wait_cancelled(&mut self) -> Result<()>;
+}
+
+/// logind, abstracted so the sleep and shutdown paths are testable.
 #[async_trait]
 pub trait Session: Send + Sync {
     /// Ask logind to suspend now (low battery).
@@ -158,6 +170,8 @@ pub trait Session: Send + Sync {
     async fn inhibit_sleep(&self) -> Result<Box<dyn SleepGuard>>;
     /// Resolve after the system resumed from a suspend.
     async fn wait_resume(&self) -> Result<()>;
+    /// Take a delay inhibitor for the next shutdown/poweroff.
+    async fn inhibit_shutdown(&self) -> Result<Box<dyn ShutdownGuard>>;
 }
 
 /// logind over the system bus.
@@ -170,6 +184,14 @@ pub struct LogindSession {
 impl LogindSession {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Connect to logind over a caller-supplied bus (used by tests).
+    pub fn with_connection(connection: Connection) -> Self {
+        Self {
+            connection: Mutex::new(Some(connection)),
+            resume: Mutex::new(None),
+        }
     }
 
     async fn connection(&self) -> Result<Connection> {
@@ -261,6 +283,34 @@ impl Session for LogindSession {
             Err(_) => Ok(()),
         }
     }
+
+    async fn inhibit_shutdown(&self) -> Result<Box<dyn ShutdownGuard>> {
+        let manager = self.manager().await?;
+        // Subscribe before taking the lock so a PrepareForShutdown(true) signal
+        // emitted right as the lock is acquired cannot be missed.
+        let signals = manager
+            .receive_signal("PrepareForShutdown")
+            .await
+            .context("subscribe to logind PrepareForShutdown")?;
+        let reply = manager
+            .call_method(
+                "Inhibit",
+                &(
+                    "shutdown",
+                    "carreld",
+                    "Sync writing before power off",
+                    "delay",
+                ),
+            )
+            .await
+            .context("take a logind shutdown delay inhibitor")?;
+        let fd: zbus::zvariant::OwnedFd = reply.body().deserialize()?;
+        let fd: OwnedFd = fd.into();
+        Ok(Box::new(LogindShutdownInhibitor {
+            fd: Some(fd),
+            signals,
+        }))
+    }
 }
 
 struct LogindInhibitor {
@@ -275,5 +325,39 @@ impl SleepGuard for LogindInhibitor {
         // is not needed; closing the descriptor releases the delay inhibitor.
         ready.clear_ready();
         Ok(())
+    }
+}
+
+struct LogindShutdownInhibitor {
+    fd: Option<OwnedFd>,
+    signals: SignalStream<'static>,
+}
+
+#[async_trait]
+impl ShutdownGuard for LogindShutdownInhibitor {
+    async fn wait_pending(&mut self) -> Result<()> {
+        while let Some(message) = self.signals.next().await {
+            if let Ok(starting) = message.body().deserialize::<bool>() {
+                if starting {
+                    return Ok(());
+                }
+            }
+        }
+        bail!("logind PrepareForShutdown signal stream ended")
+    }
+
+    fn release(&mut self) {
+        self.fd = None;
+    }
+
+    async fn wait_cancelled(&mut self) -> Result<()> {
+        while let Some(message) = self.signals.next().await {
+            if let Ok(starting) = message.body().deserialize::<bool>() {
+                if !starting {
+                    return Ok(());
+                }
+            }
+        }
+        bail!("logind PrepareForShutdown signal stream ended")
     }
 }
