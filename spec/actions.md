@@ -18,7 +18,7 @@ Active on every screen except First run (`shell/src/keys.rs:112`). Blocked while
 | Action / Key | Defined at | Expected effect | Persists | Status |
 |---|---|---|---|---|
 | `Ctrl+K` | `shell/src/keys.rs:133` | Open the Command palette over the current screen. | `na` | `ok` |
-| `Ctrl+/` | `shell/src/keys.rs:139` | Open the Keyboard shortcuts card over the current screen (`?` stays a normal character in the editor). | `na` | `issue #68` (no keycode fallback on Swedish/non-US layouts) |
+| `Ctrl+/` | `shell/src/keys.rs:139` | Open the Keyboard shortcuts card over the current screen (keypad `/` too; `Ctrl+Shift+7` on Swedish/German; `?` stays a normal character in the editor). | `na` | `ok` |
 | `Ctrl+O` | `shell/src/keys.rs:144`, `shell/src/files.rs:199` | Open the Files screen from any non-first-run screen; on Files, return to the editor. | `na` | `ok` |
 | `Ctrl+H` | `shell/src/keys.rs:148` | Open History for the current document. | `na` | `ok` |
 | `Ctrl+Shift+S` | `shell/src/keys.rs:152` | Open Sync and start a sync immediately (`SyncPage::sync_now`). | `y` (remote sync) | `ok` |

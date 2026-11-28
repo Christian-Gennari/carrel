@@ -212,6 +212,7 @@ pub(crate) const KEYCODE_COMMA: u32 = 59; // KEY_COMMA (51) + 8
 pub(crate) const KEYCODE_SLASH: u32 = 61; // KEY_SLASH (53) + 8
 pub(crate) const KEYCODE_KP_SUBTRACT: u32 = 82; // KEY_KPMINUS (74) + 8
 pub(crate) const KEYCODE_KP_ADD: u32 = 86; // KEY_KPPLUS (78) + 8
+pub(crate) const KEYCODE_KP_DIVIDE: u32 = 106; // KEY_KPSLASH (98) + 8
 
 /// Every `Ctrl` + punctuation shortcut. One matcher serves them all, so that a
 /// symbol the layout really produces always beats another shortcut's hardware
@@ -229,7 +230,7 @@ pub(crate) enum PunctuationShortcut {
 fn punctuation_for_keyval(keyval: gdk::Key) -> Option<PunctuationShortcut> {
     use PunctuationShortcut::*;
     match keyval {
-        gdk::Key::slash => Some(KeySheet),
+        gdk::Key::slash | gdk::Key::KP_Divide => Some(KeySheet),
         gdk::Key::comma => Some(Settings),
         gdk::Key::apostrophe => Some(Quotes),
         gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add | gdk::Key::KP_Equal => Some(ZoomIn),
@@ -246,6 +247,7 @@ fn punctuation_for_keycode(keycode: u32, keyval: gdk::Key) -> Option<Punctuation
     match keycode {
         KEYCODE_EQUAL | KEYCODE_KP_ADD => Some(ZoomIn),
         KEYCODE_MINUS | KEYCODE_KP_SUBTRACT => Some(ZoomOut),
+        KEYCODE_KP_DIVIDE => Some(KeySheet),
         KEYCODE_SLASH if !letter => Some(KeySheet),
         KEYCODE_COMMA if !letter => Some(Settings),
         KEYCODE_APOSTROPHE if !letter => Some(Quotes),
@@ -256,58 +258,60 @@ fn punctuation_for_keycode(keycode: u32, keyval: gdk::Key) -> Option<Punctuation
 /// Match a `Ctrl` + punctuation shortcut, in this order:
 ///
 /// 1. the layout-translated `keyval`, with or without Shift;
-/// 2. with Shift held, `base_keyval`: the level-0 symbol of the same key (US
-///    `Ctrl+Shift+/` arrives as `?`, as does Swedish `Ctrl+Shift++`);
+/// 2. with Shift held, `alt_keyval`: the other Shift level of the same key.
+///    That is level 0 for a shifted symbol (US `Ctrl+Shift+/` arrives as
+///    `?`, as does Swedish `Ctrl+Shift++`), and level 1 when the symbol
+///    stayed unshifted (Swedish `Ctrl+Shift+7` arriving as `7`, its `/`);
 /// 3. the hardware keycode, for layouts that type something else there (a
 ///    dead key, `ä`, `ß`).
 pub(crate) fn match_punctuation(
     keyval: gdk::Key,
     keycode: u32,
     state: gdk::ModifierType,
-    base_keyval: Option<gdk::Key>,
+    alt_keyval: Option<gdk::Key>,
 ) -> Option<PunctuationShortcut> {
     if !state.contains(gdk::ModifierType::CONTROL_MASK)
         || state.contains(gdk::ModifierType::ALT_MASK)
     {
         return None;
     }
-    let base = base_keyval.filter(|_| state.contains(gdk::ModifierType::SHIFT_MASK));
+    let alt = alt_keyval.filter(|_| state.contains(gdk::ModifierType::SHIFT_MASK));
     punctuation_for_keyval(keyval)
-        .or_else(|| base.and_then(punctuation_for_keyval))
+        .or_else(|| alt.and_then(punctuation_for_keyval))
         .or_else(|| punctuation_for_keycode(keycode, keyval))
 }
 
-/// [`match_punctuation`] with the base symbol read from the display's keymap.
+/// [`match_punctuation`] with the other Shift level read from the display's keymap.
 pub(crate) fn punctuation_shortcut(
     keyval: gdk::Key,
     keycode: u32,
     state: gdk::ModifierType,
 ) -> Option<PunctuationShortcut> {
-    let base = if state.contains(gdk::ModifierType::SHIFT_MASK) {
-        base_keyval_for_keycode(keycode, keyval)
+    let alt = if state.contains(gdk::ModifierType::SHIFT_MASK) {
+        shift_alternate_keyval(keycode, keyval)
     } else {
         None
     };
-    match_punctuation(keyval, keycode, state, base)
+    match_punctuation(keyval, keycode, state, alt)
 }
 
-/// Look up the unshifted (level 0) keyval of `keycode` in the layout group
-/// that produced `keyval`. Matching the group ensures multi-layout sessions
-/// (or synthetic tests on a US display) never substitute a different layout's
-/// base symbol.
-fn base_keyval_for_keycode(keycode: u32, keyval: gdk::Key) -> Option<gdk::Key> {
+/// Look up the other Shift level of `keycode` in the layout group that
+/// produced `keyval`: level 1 if `keyval` is the unshifted symbol, else level
+/// 0. Matching the group ensures multi-layout sessions (or synthetic tests on
+/// a US display) never substitute a different layout's symbol.
+fn shift_alternate_keyval(keycode: u32, keyval: gdk::Key) -> Option<gdk::Key> {
     if keycode == 0 {
         return None;
     }
     let display = gdk::Display::default()?;
     let entries = display.map_keycode(keycode)?;
-    let group = entries
-        .iter()
-        .find(|(_, candidate)| *candidate == keyval)
-        .map(|(keymap_key, _)| keymap_key.group())?;
+    let (matched, _) = entries.iter().find(|(_, candidate)| *candidate == keyval)?;
+    let level = if matched.level() == 0 { 1 } else { 0 };
     entries
         .iter()
-        .find(|(keymap_key, _)| keymap_key.group() == group && keymap_key.level() == 0)
+        .find(|(keymap_key, _)| {
+            keymap_key.group() == matched.group() && keymap_key.level() == level
+        })
         .map(|(_, key)| *key)
 }
 
@@ -461,6 +465,45 @@ mod tests {
             ),
             // Without Shift the base symbol is ignored.
             (Key::_7, 16, false, Some(Key::slash), None),
+        ]);
+    }
+
+    #[test]
+    fn keypad_slash_opens_the_key_sheet() {
+        use gdk::Key;
+        check(&[
+            (
+                Key::KP_Divide,
+                KEYCODE_KP_DIVIDE,
+                false,
+                None,
+                Some(KeySheet),
+            ),
+            (
+                Key::KP_Divide,
+                KEYCODE_KP_DIVIDE,
+                true,
+                None,
+                Some(KeySheet),
+            ),
+            (
+                Key::VoidSymbol,
+                KEYCODE_KP_DIVIDE,
+                false,
+                None,
+                Some(KeySheet),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn shift_uses_level_one_when_the_symbol_stays_unshifted() {
+        use gdk::Key;
+        check(&[
+            // Swedish/German `Ctrl+Shift+7` arriving as `7`.
+            (Key::_7, 16, true, Some(Key::slash), Some(KeySheet)),
+            // A level 1 that is no shortcut changes nothing.
+            (Key::_8, 17, true, Some(Key::parenleft), None),
         ]);
     }
 
