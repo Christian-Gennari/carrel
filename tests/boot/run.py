@@ -1601,6 +1601,7 @@ class FakeSyncServer:
         self.seq = 0
         self.rounds = 0
         self.finished = -1
+        self.finished_at = 0.0
         self.lock = threading.Lock()
         self.requests: list[str] = []
         for index in range(self.FILES):
@@ -1638,8 +1639,10 @@ class FakeSyncServer:
                              "content": self.files[file_id]["content"]}
             if route == "/library":
                 if since == str(self.rounds):
-                    # The library is the last step of a sync round.
-                    self.finished = self.rounds
+                    # The library is the last thing a sync round asks for.
+                    if self.finished != self.rounds:
+                        self.finished = self.rounds
+                        self.finished_at = time.monotonic()
                     return 200, {"cursor": since}
                 items = [{"id": f"item-{n}", "kind": "highlight", "book_id": "b",
                           "text": f"round {self.rounds} quote {n} " * 20}
@@ -1737,6 +1740,13 @@ def scenario_typing_slow_disk(image: Path, out: Path, timeout: float) -> None:
         data = part_named(parts, "carrel-data")
         seed_shutdown_sync(usb, f"https://10.0.2.2:{port}", out)
         with mounted(usb, data, "ext4", writable=True, root=out / "test") as root:
+            # Only the host is reachable: the update check that ends a sync
+            # round must not depend on the internet or download a release.
+            (root / "etc" / "NetworkManager" / "system-connections"
+             / "boot-test.nmconnection").write_text(
+                "[connection]\nid=boot-test\ntype=ethernet\n"
+                "[ipv4]\nmethod=manual\naddress1=10.0.2.15/24\n"
+                "[ipv6]\nmethod=disabled\n")
             carrel = root / "writing" / ".carrel"
             (carrel / "settings.json").write_text(
                 json.dumps({"first_run_complete": True}))
@@ -1770,15 +1780,20 @@ def scenario_typing_slow_disk(image: Path, out: Path, timeout: float) -> None:
             qemu.screenshot(out / "screenshot-typing-slow-disk.png")
 
             # Typing while sync rounds run.
-            for _ in range(2):
+            for round_number in (1, 2):
                 server.next_round()
                 qemu.key("ctrl-shift-s")
                 time.sleep(2)
+                qemu.screenshot(out / f"screenshot-typing-slow-disk-round{round_number}.png")
                 qemu.key("esc")
                 time.sleep(1)
                 # Type for as long as the round runs, and a little after.
                 started = sentences
-                while server.finished < server.rounds or sentences - started < 4:
+                # carreld still writes what it fetched for a while after the
+                # last request: keep typing, and start no second round early.
+                while (server.finished < server.rounds
+                       or time.monotonic() - server.finished_at < 30
+                       or sentences - started < 4):
                     if sentences - started >= 40:
                         unfinished += 1
                         qemu.screenshot(out / "screenshot-typing-slow-disk-stuck.png")
