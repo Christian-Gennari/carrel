@@ -61,8 +61,9 @@ pub enum Connectivity {
 /// Combine NetworkManager's `State` and `Connectivity` properties.
 ///
 /// The image turns connectivity checks off, so `Connectivity` alone does not
-/// say that a device is offline: `State` does. A loopback-only or link-only
-/// network (`CONNECTED_LOCAL`) is offline too. While connecting, and when
+/// say that a device is offline: `State` does. A network with addresses but no
+/// default route (`CONNECTED_LOCAL`) counts as limited, not offline, so a sync
+/// server on that local network stays reachable. While connecting, and when
 /// `State` is unknown, only `Connectivity` counts.
 fn classify_connectivity(state: u32, connectivity: u32) -> Connectivity {
     let reported = match connectivity {
@@ -73,14 +74,10 @@ fn classify_connectivity(state: u32, connectivity: u32) -> Connectivity {
         _ => Connectivity::Unknown,
     };
     match (state, reported) {
-        (
-            NM_STATE_ASLEEP
-            | NM_STATE_DISCONNECTED
-            | NM_STATE_DISCONNECTING
-            | NM_STATE_CONNECTED_LOCAL,
-            _,
-        ) => Connectivity::None,
-        (NM_STATE_CONNECTED_SITE, Connectivity::Unknown) => Connectivity::Limited,
+        (NM_STATE_ASLEEP | NM_STATE_DISCONNECTED | NM_STATE_DISCONNECTING, _) => Connectivity::None,
+        (NM_STATE_CONNECTED_LOCAL | NM_STATE_CONNECTED_SITE, Connectivity::Unknown) => {
+            Connectivity::Limited
+        }
         (NM_STATE_CONNECTED_GLOBAL, Connectivity::Unknown) => Connectivity::Full,
         _ => reported,
     }
@@ -452,7 +449,7 @@ mod tests {
 
     #[test]
     fn without_a_real_network_the_device_is_offline() {
-        for state in [10, 20, 30, 50] {
+        for state in [10, 20, 30] {
             for connectivity in 0..=4 {
                 assert_eq!(
                     classify_connectivity(state, connectivity),
@@ -461,6 +458,12 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_local_only_network_is_limited_not_offline() {
+        assert_eq!(classify_connectivity(50, 0), Connectivity::Limited);
+        assert_eq!(classify_connectivity(50, 1), Connectivity::None);
     }
 
     #[test]
