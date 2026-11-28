@@ -335,6 +335,7 @@ pub fn run(application: &gtk::Application) {
     }
     window.add_controller(key);
 
+    crate::stall::install(&root);
     if let Err(error) = editor.open_last_or_new() {
         eprintln!("carrel: cannot open a document: {error}");
     }

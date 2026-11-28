@@ -31,6 +31,7 @@ pub mod settings;
 pub mod settings_page;
 pub mod spell;
 pub mod speller;
+pub mod stall;
 pub mod store;
 pub mod sync;
 pub mod theme;

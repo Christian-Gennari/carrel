@@ -529,6 +529,7 @@ impl EditorPage {
     }
 
     fn note_edit(self: &Rc<Self>) {
+        crate::stall::edited();
         self.last_edit_at.set(Instant::now());
         self.dim_chrome();
         self.schedule_restyle();
