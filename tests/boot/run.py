@@ -844,6 +844,17 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
     expect("inter" in names, "Inter is not installed", failures)
     expect("jetbrains" in names, "JetBrains Mono is not installed", failures)
 
+    # Spellcheck: libspelling and one dictionary per offered language
+    # (shell/src/spell.rs).  Several of the files are relative symlinks.
+    expect(any(root_file("/usr/lib/x86_64-linux-gnu").glob("libspelling-1.so.*")),
+           "libspelling is not installed", failures)
+    for code in ("en_US", "de_DE", "fr_FR", "es_ES", "it_IT", "pt_PT", "nl_NL",
+                 "pl_PL", "tr_TR"):
+        for suffix in ("aff", "dic"):
+            path = root_file(f"/usr/share/hunspell/{code}.{suffix}")
+            expect(path.is_file() and path.stat().st_size > 1000,
+                   f"spelling dictionary {code}.{suffix} is missing", failures)
+
     fstab = root_file("/etc/fstab").read_text()
     expect("PARTUUID=33333333-3333-4333-8333-333333333333 /data" in fstab,
            "fstab does not mount data", failures)
