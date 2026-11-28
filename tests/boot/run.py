@@ -10,6 +10,10 @@ Scenarios (all run by `make test-boot`):
   recovery   boot the recovery entry and screenshot its menu
   powercut   type with QMP sendkey, system_reset, boot again and check that
              the text reached /data/writing
+  shutdown-sync  turn "Sync at shutdown" on, pair a server that never answers,
+             type, press the power button and check that the text was saved
+             before the sync, that the sync was tried and abandoned at its time
+             limit (journal), and that power off finished
   update     stage the offline update fixture, apply it with sysupdate, make
              the new slot fail to reach boot-complete three times and assert
              that the previous slot boots
@@ -840,6 +844,17 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
     expect("inter" in names, "Inter is not installed", failures)
     expect("jetbrains" in names, "JetBrains Mono is not installed", failures)
 
+    # Spellcheck: libspelling and one dictionary per offered language
+    # (shell/src/spell.rs).  Several of the files are relative symlinks.
+    expect(any(root_file("/usr/lib/x86_64-linux-gnu").glob("libspelling-1.so.*")),
+           "libspelling is not installed", failures)
+    for code in ("en_US", "de_DE", "fr_FR", "es_ES", "it_IT", "pt_PT", "nl_NL",
+                 "pl_PL", "tr_TR"):
+        for suffix in ("aff", "dic"):
+            path = root_file(f"/usr/share/hunspell/{code}.{suffix}")
+            expect(path.is_file() and path.stat().st_size > 1000,
+                   f"spelling dictionary {code}.{suffix} is missing", failures)
+
     fstab = root_file("/etc/fstab").read_text()
     expect("PARTUUID=33333333-3333-4333-8333-333333333333 /data" in fstab,
            "fstab does not mount data", failures)
@@ -1242,6 +1257,92 @@ def scenario_keyboard(image: Path, out: Path, timeout: float) -> None:
             f"Swedish characters åäö ÅÄÖ did not reach /data/writing; found: {found!r}"
         )
     print("keyboard: PASS (Swedish layout produced åäö ÅÄÖ)", flush=True)
+
+
+def seed_shutdown_sync(disk: Path, url: str, out: Path) -> None:
+    """Sync at shutdown on, a paired server, and a wired connection to it."""
+    parts = read_gpt(disk)
+    data = part_named(parts, "carrel-data")
+    with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
+        settings = root / "writing" / ".carrel" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True)
+        settings.write_text(json.dumps(
+            {"sync_at_shutdown": True, "first_run_complete": True}))
+        run("chown", "-R", "1000:1000", root / "writing")
+        sync = root / ".carrel" / "sync.toml"
+        sync.parent.mkdir(parents=True, exist_ok=True)
+        sync.write_text(f'server_url = "{url}"\ntoken = "boot-test"\n')
+        sync.chmod(0o600)
+        # data/etc is the upper layer of /etc.  The image makes no wired
+        # connection by itself (no-auto-default).
+        wired = (root / "etc" / "NetworkManager" / "system-connections"
+                 / "boot-test.nmconnection")
+        wired.parent.mkdir(parents=True, exist_ok=True)
+        wired.write_text("[connection]\nid=boot-test\ntype=ethernet\n")
+        wired.chmod(0o600)
+
+
+def scenario_shutdown_sync(image: Path, out: Path, timeout: float) -> None:
+    disk = out / "test" / "shutdown-sync" / "disk.img"
+    disk.parent.mkdir(parents=True, exist_ok=True)
+    run("cp", "--sparse=always", image, disk)
+
+    # A listening socket nobody accepts from: TCP connects, TLS never answers.
+    with socket.socket() as silent:
+        silent.bind(("0.0.0.0", 0))
+        silent.listen(8)
+        port = silent.getsockname()[1]
+        seed_shutdown_sync(disk, f"https://10.0.2.2:{port}", out)
+        with Qemu("shutdown-sync", out, "uefi",
+                  [{"path": disk, "format": "raw"}], network=True) as qemu:
+            boot_to_editor(qemu, timeout)
+            time.sleep(10)  # NetworkManager brings the wired link up
+            assert qemu.qmp is not None and qemu.proc is not None
+            # Power button soon after the last key: the 5 s autosave has not
+            # run, so only the flush on PrepareForShutdown can save it in time.
+            qemu.type_text("last words")
+            time.sleep(1)  # let the shell receive every key
+            started = time.monotonic()
+            qemu.qmp.command("system_powerdown")
+            time.sleep(4)
+            qemu.screenshot(out / "screenshot-shutdown-sync.png")
+            try:
+                qemu.proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                raise BootError(
+                    "power off hung with sync at shutdown on\n"
+                    f"--- serial tail ---\n{qemu.serial_tail()}")
+            elapsed = time.monotonic() - started
+
+    parts = read_gpt(disk)
+    data = part_named(parts, "carrel-data")
+    with mounted(disk, data, "ext4", root=out / "test") as root:
+        journal = subprocess.run(
+            ["journalctl", "--directory", str(root / "var" / "log" / "journal"),
+             "--unit", "carreld.service", "--output", "cat", "--no-pager"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        # The commit carreld makes right before the sync.
+        history = root / "writing" / ".carrel" / "history.git"
+        before_sync = subprocess.run(
+            ["git", "-c", "safe.directory=*", "--git-dir", str(history), "log",
+             "--all", "--patch", "--format=%s", "--grep", "before sync"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+    if "last words" not in before_sync:
+        raise BootError(
+            "the text typed before power off is not in the pre-sync commit:\n"
+            + before_sync)
+    (out / "test" / "shutdown-sync" / "carreld.log").write_text(journal)
+    journal = clean_serial(journal)
+    for line in ("sync at shutdown: starting", "sync at shutdown: timed out"):
+        if line not in journal:
+            raise BootError(
+                f"carreld did not log {line!r}\n--- journal ---\n{journal}")
+    # The 12 s limit passed, and the rest of the shutdown is quick.
+    if elapsed < 12:
+        raise BootError(f"power off took {elapsed:.1f} s; it did not wait for the sync")
+    print(f"shutdown-sync: PASS (power off took {elapsed:.1f} s)", flush=True)
 
 
 def stage_update(disk: Path, update_dir: Path, out: Path) -> None:
@@ -1741,9 +1842,9 @@ def main() -> int:
                         help="release .img.xz for the 'release' scenario")
     parser.add_argument("--scenario", default="all",
                         choices=("all", "checks", "uefi", "bios", "keyboard",
-                                 "install", "recovery", "powercut", "update",
-                                 "online", "secureboot", "update-secureboot",
-                                 "release", "actions"))
+                                 "install", "recovery", "powercut", "shutdown-sync",
+                                 "update", "online", "secureboot",
+                                 "update-secureboot", "release", "actions"))
     parser.add_argument("--swedish", action="store_true",
                         help="enable Swedish layout typing checks in the 'actions' scenario")
     parser.add_argument("--timeout", type=float, default=300.0,
@@ -1786,6 +1887,8 @@ def main() -> int:
         if args.scenario in ("all", "actions"):
             scenario_actions(args.image, args.out, args.timeout,
                              swedish=args.swedish)
+        if args.scenario in ("all", "shutdown-sync"):
+            scenario_shutdown_sync(args.image, args.out, args.timeout)
         if args.scenario in ("all", "install", "recovery", "powercut", "update",
                              "online"):
             reused = args.out / "test" / "install" / "disk.img"

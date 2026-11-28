@@ -167,12 +167,13 @@ note.sync = Nostos, kendi sunucunuz veya Google Drive.
 note.sync_shutdown = Sunucu kuruluysa kapanmadan önce son bir eşitleme.
 note.keyboard = Yazdığınız tuşlar; harici klavye dahil.
 note.keyboard_reload = Klavye düzenini değiştirmek için Carrel kısaca yeniden yüklenir. Enter veya Esc ile uygulayın.
-note.language = Ekranların dili.
+note.language = Ekranların ve yazım denetiminin dili.
 note.time_zone = Otomatik gündüz-gece ve saat için kullanılır.
 note.update_applying = Carrel güncellemeyi kuruyor ve yeniden başlayacak.
 note.update_ready = Carrel yeniden başlar ve yeni sürümü açar.
 note.update = Carrel eşitlerken güncellemelere bakar.
 note.about = Özgür yazılım. Yazmak için hesap gerekmez.
+note.shutdown_sync = Kapatmadan önce eşitleniyor…
 settings.sample = Sessiz sabah tek bir cümleyle başlar.
 
 first.welcome = Carrel'e hoş geldiniz

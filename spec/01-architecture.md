@@ -47,8 +47,10 @@
   lingering or a PAM-less `User=` service with `PAMName=login`).
 - VT switching disabled (run `cage` WITHOUT `-s`, which would allow it; also `kernel.sysrq=0`).
 - If `carrel-shell` exits, systemd restarts it at once.
-- `HandleLidSwitch=suspend`. `carrel-shell` holds a logind delay inhibitor and
-  flushes the journal and file on `PrepareForSleep(true)`.
+- `HandleLidSwitch=suspend`. `carreld` holds logind delay inhibitors for sleep
+  and shutdown. `carrel-shell` flushes the journal and file on
+  `PrepareForSleep(true)` and `PrepareForShutdown(true)`; `carreld` waits 1 s
+  for that before it reads the writing folder. `InhibitDelayMaxSec=20`.
 
 ## carrel-shell (Rust + GTK4 + GtkSourceView 5)
 
@@ -80,6 +82,11 @@
   `SyncStatus` signal, `Pair(backend, …)`, `Unpair()`, `WifiScan()`,
   `WifiConnect(…)`, `SearchLibrary(query, filters)`, `UpdateStatus()`,
   `ApplyUpdate()`.
+- Sync at shutdown: on `PrepareForShutdown(true)` (power off or reboot), when
+  the setting is on and a backend is paired, one last sync (no update check)
+  before the inhibitor is released. 12 s for everything, of which at most 7 s
+  waiting for a saved Wi-Fi network; skipped at once when offline with no saved
+  network.
 - Radio control: `rfkill block wifi` by default; unblock only during sync,
   pairing or Wi-Fi setup; block again after, even on error.
 - Tailscale: `tailscaled` is installed but disabled. During a sync with a

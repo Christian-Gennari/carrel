@@ -1,8 +1,9 @@
 //! Battery (UPower) and sleep (logind).
 //!
 //! The daemon watches the battery, reports changes to the shell and suspends at
-//! 3 % when the charger is not connected — after committing history. A logind
-//! delay inhibitor gives the commit time to finish before the system sleeps.
+//! 3 % when the charger is not connected — after committing history. logind
+//! delay inhibitors give the daemon time to commit before the system sleeps,
+//! and to sync once more before it powers off.
 
 use std::os::fd::OwnedFd;
 use std::time::Duration;
@@ -11,7 +12,6 @@ use anyhow::{bail, Context, Result};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use tokio::io::unix::AsyncFd;
 use tokio::sync::Mutex;
 use zbus::proxy::SignalStream;
 use zbus::Connection;
@@ -141,21 +141,23 @@ fn is_charging(state: u32) -> bool {
     )
 }
 
-/// A held logind delay inhibitor. Dropping it lets the system continue to
-/// sleep; that is the acknowledgement logind waits for.
+/// A held logind delay inhibitor. Dropping it lets the system go on to sleep
+/// or power off; that is the acknowledgement logind waits for.
 #[async_trait]
-pub trait SleepGuard: Send {
-    /// Resolve when the system is about to suspend.
+pub trait DelayGuard: Send {
+    /// Resolve when logind announces what this guard delays.
     async fn wait_pending(&mut self) -> Result<()>;
 }
 
-/// logind, abstracted so the sleep path is testable.
+/// logind, abstracted so the sleep and shutdown paths are testable.
 #[async_trait]
 pub trait Session: Send + Sync {
     /// Ask logind to suspend now (low battery).
     async fn suspend(&self) -> Result<()>;
     /// Take a delay inhibitor for the next suspend.
-    async fn inhibit_sleep(&self) -> Result<Box<dyn SleepGuard>>;
+    async fn inhibit_sleep(&self) -> Result<Box<dyn DelayGuard>>;
+    /// Take a delay inhibitor for the next power off or reboot.
+    async fn inhibit_shutdown(&self) -> Result<Box<dyn DelayGuard>>;
     /// Resolve after the system resumed from a suspend.
     async fn wait_resume(&self) -> Result<()>;
 }
@@ -168,6 +170,29 @@ pub struct LogindSession {
 }
 
 impl LogindSession {
+    async fn inhibit(
+        &self,
+        what: &str,
+        why: &str,
+        signal: &'static str,
+    ) -> Result<Box<dyn DelayGuard>> {
+        let manager = self.manager().await?;
+        // Subscribe first, so a signal cannot slip between the two calls.
+        let pending = manager
+            .receive_signal(signal)
+            .await
+            .with_context(|| format!("watch logind {signal}"))?;
+        let reply = manager
+            .call_method("Inhibit", &(what, "carreld", why, "delay"))
+            .await
+            .with_context(|| format!("take a logind {what} delay inhibitor"))?;
+        let fd: zbus::zvariant::OwnedFd = reply.body().deserialize()?;
+        Ok(Box::new(LogindInhibitor {
+            _fd: fd.into(),
+            pending,
+        }))
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -209,23 +234,18 @@ impl Session for LogindSession {
         Ok(())
     }
 
-    async fn inhibit_sleep(&self) -> Result<Box<dyn SleepGuard>> {
-        let manager = self.manager().await?;
-        let reply = manager
-            .call_method(
-                "Inhibit",
-                &("sleep", "carreld", "Save writing before suspend", "delay"),
-            )
+    async fn inhibit_sleep(&self) -> Result<Box<dyn DelayGuard>> {
+        self.inhibit("sleep", "Save writing before suspend", "PrepareForSleep")
             .await
-            .context("take a logind sleep delay inhibitor")?;
-        let fd: zbus::zvariant::OwnedFd = reply.body().deserialize()?;
-        let fd: OwnedFd = fd.into();
-        // SAFETY: `fd` is an owned descriptor that stays open for the whole
-        // lifetime of the `AsyncFd` and is never swapped.
-        let fd = unsafe { AsyncFd::register(fd) }
-            .map_err(|error| error.into_parts().1)
-            .context("watch the logind inhibitor")?;
-        Ok(Box::new(LogindInhibitor { fd }))
+    }
+
+    async fn inhibit_shutdown(&self) -> Result<Box<dyn DelayGuard>> {
+        self.inhibit(
+            "shutdown",
+            "Sync writing before power off",
+            "PrepareForShutdown",
+        )
+        .await
     }
 
     async fn wait_resume(&self) -> Result<()> {
@@ -264,16 +284,21 @@ impl Session for LogindSession {
 }
 
 struct LogindInhibitor {
-    fd: AsyncFd<OwnedFd>,
+    /// logind waits until this descriptor is closed.
+    _fd: OwnedFd,
+    pending: SignalStream<'static>,
 }
 
 #[async_trait]
-impl SleepGuard for LogindInhibitor {
+impl DelayGuard for LogindInhibitor {
     async fn wait_pending(&mut self) -> Result<()> {
-        let mut ready = self.fd.readable().await?;
-        // The descriptor becomes readable when a suspend is pending. Reading
-        // is not needed; closing the descriptor releases the delay inhibitor.
-        ready.clear_ready();
-        Ok(())
+        // The inhibitor descriptor never says anything: logind announces a
+        // suspend or shutdown only with its `PrepareFor…(true)` signal.
+        while let Some(message) = self.pending.next().await {
+            if message.body().deserialize::<bool>().unwrap_or(false) {
+                return Ok(());
+            }
+        }
+        bail!("the logind signal stream ended")
     }
 }

@@ -169,12 +169,13 @@ note.sync = Nostos, własny serwer lub Google Drive.
 note.sync_shutdown = Ostatnia synchronizacja przed wyłączeniem, gdy jest serwer.
 note.keyboard = Klawisze, na których piszesz, także na zewnętrznej klawiaturze.
 note.keyboard_reload = Carrel na chwilę się przeładuje, aby zmienić układ. Naciśnij Enter lub Esc.
-note.language = Język ekranów.
+note.language = Język ekranów i sprawdzania pisowni.
 note.time_zone = Dla dnia i nocy w trybie automatycznym oraz zegara.
 note.update_applying = Carrel instaluje aktualizację i uruchomi się ponownie.
 note.update_ready = Carrel uruchomi się z nową wersją.
 note.update = Carrel szuka aktualizacji podczas synchronizacji.
 note.about = Wolne oprogramowanie. Do pisania nie trzeba konta.
+note.shutdown_sync = Synchronizowanie przed wyłączeniem…
 settings.sample = Cichy poranek zaczyna się od jednego zdania.
 
 first.welcome = Witaj w Carrel

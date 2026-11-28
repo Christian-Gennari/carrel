@@ -8,6 +8,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git build-essential pkg-config python3 python3-pip \
       python3-pefile \
       libgtk-4-dev libgtksourceview-5-dev libdbus-1-dev libsqlite3-dev libssl-dev \
+      libspelling-1-dev hunspell-en-us hunspell-de-de hunspell-fr-classical \
+      hunspell-es hunspell-it hunspell-pt-pt hunspell-nl hunspell-pl hunspell-tr \
       mkosi systemd-container systemd-boot-efi systemd-ukify dosfstools mtools \
       grub-pc-bin grub-efi-amd64-bin \
       erofs-utils squashfs-tools e2fsprogs cpio zstd xz-utils file gdisk \

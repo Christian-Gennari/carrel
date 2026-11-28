@@ -167,12 +167,13 @@ note.sync = Nostos, il tuo server o Google Drive.
 note.sync_shutdown = Un’ultima sincronizzazione prima di spegnere, se c’è un server.
 note.keyboard = I tasti con cui scrivi, anche su una tastiera esterna.
 note.keyboard_reload = Carrel si ricarica un attimo per cambiare tastiera. Premi Enter o Esc per applicare.
-note.language = La lingua delle schermate.
+note.language = La lingua delle schermate e dell’ortografia.
 note.time_zone = Per giorno e notte in Automatico e per l’orologio.
 note.update_applying = Carrel installa l’aggiornamento e si riavvierà.
 note.update_ready = Carrel si riavvia con la nuova versione.
 note.update = Carrel cerca aggiornamenti quando sincronizza.
 note.about = Software libero. Per scrivere non serve un account.
+note.shutdown_sync = Sincronizzazione prima dello spegnimento…
 settings.sample = Il mattino quieto comincia con una sola frase.
 
 first.welcome = Benvenuto in Carrel

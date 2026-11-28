@@ -12,7 +12,9 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 use crate::battery::{Battery, SharedBattery};
-use crate::daemon::{Backend, Client, DaemonClient, DaemonEvent, FakeDaemon, ZbusDaemon};
+use crate::daemon::{
+    Backend, Client, DaemonClient, DaemonEvent, FakeDaemon, ZbusDaemon, SHUTDOWN_SYNC_MESSAGE,
+};
 use crate::editor::EditorPage;
 use crate::export::ExportPage;
 use crate::files::FilesPage;
@@ -31,6 +33,9 @@ use crate::store::{self, Store};
 use crate::sync::SyncPage;
 use crate::theme;
 use crate::wifi::WifiPage;
+
+/// Longer than the daemon's shutdown time limit; the machine is off first.
+const SHUTDOWN_NOTE_SECONDS: u64 = 30;
 
 pub fn run(application: &gtk::Application) {
     let root = store::root_from_env();
@@ -270,7 +275,14 @@ pub fn run(application: &gtk::Application) {
                 battery.set(status);
                 editor.on_battery();
             }
-            DaemonEvent::Sync(info) => sync.on_sync(info),
+            DaemonEvent::Sync(info) => {
+                if info.state == "syncing" && info.message == SHUTDOWN_SYNC_MESSAGE {
+                    editor.flush();
+                    editor.flash_note(crate::i18n::tr("note.shutdown_sync"), SHUTDOWN_NOTE_SECONDS);
+                }
+                sync.on_sync(info);
+            }
+            DaemonEvent::Flush => editor.flush(),
             DaemonEvent::Pair {
                 state,
                 code,

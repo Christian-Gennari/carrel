@@ -167,12 +167,13 @@ note.sync = Nostos, je eigen server of Google Drive.
 note.sync_shutdown = Nog één keer synchroniseren voor het uitzetten, als er een server is.
 note.keyboard = De toetsen waarop je typt, ook op een extern toetsenbord.
 note.keyboard_reload = Carrel herlaadt even om de toetsenbordindeling te wisselen. Druk op Enter of Esc.
-note.language = De taal van de schermen.
+note.language = De taal van de schermen en van de spellingcontrole.
 note.time_zone = Voor dag en nacht bij Automatisch en voor de klok.
 note.update_applying = Carrel installeert de update en herstart.
 note.update_ready = Carrel herstart met de nieuwe versie.
 note.update = Carrel zoekt naar updates bij het synchroniseren.
 note.about = Vrije software. Schrijven kan zonder account.
+note.shutdown_sync = Synchroniseren voor het uitschakelen…
 settings.sample = De stille ochtend begint met één enkele zin.
 
 first.welcome = Welkom bij Carrel

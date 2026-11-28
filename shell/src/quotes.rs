@@ -557,6 +557,7 @@ impl QuotePalette {
         self.editing.set(true);
         self.buffer.delete(&mut from, &mut to);
         self.editing.set(false);
+        self.dismissed.set(None);
     }
 
     /// Esc: close and leave the typed text as it is.
@@ -592,6 +593,7 @@ impl QuotePalette {
         self.editing.set(true);
         self.buffer.place_cursor(&at);
         self.editing.set(false);
+        self.dismissed.set(None);
         self.armed.set(true);
         self.typed_by_shortcut
             .set(Some((start, typed.chars().count())));
@@ -616,12 +618,14 @@ impl QuotePalette {
     pub fn handle_key(
         self: &Rc<Self>,
         keyval: gdk::Key,
+        keycode: u32,
         state: gdk::ModifierType,
     ) -> glib::Propagation {
-        let control = state.contains(gdk::ModifierType::CONTROL_MASK);
         let alt = state.contains(gdk::ModifierType::ALT_MASK);
 
-        if control && !alt && keyval == gdk::Key::apostrophe {
+        if crate::keys::punctuation_shortcut(keyval, keycode, state)
+            == Some(crate::keys::PunctuationShortcut::Quotes)
+        {
             self.open_at_caret();
             return glib::Propagation::Stop;
         }
