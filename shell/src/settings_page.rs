@@ -702,7 +702,7 @@ impl SettingsPage {
         };
         if changed {
             i18n::set_language(&self.settings.borrow().language);
-            if let Err(error) = self.settings.borrow().save(&self.root) {
+            if let Err(error) = self.settings.borrow().save_later(&self.root) {
                 eprintln!("carrel: could not save settings: {error}");
             }
             (self.on_change)();

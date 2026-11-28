@@ -472,6 +472,7 @@ impl EditorPage {
         let weak = Rc::downgrade(self);
         glib::timeout_add_seconds_local(1, move || {
             if let Some(page) = weak.upgrade() {
+                page.check_disk();
                 page.maybe_name_untitled(false);
                 glib::ControlFlow::Continue
             } else {
@@ -1338,6 +1339,7 @@ impl EditorPage {
             doc.flush().map_err(|error| error.to_string())?;
         }
         self.save_stats();
+        crate::store::settle().map_err(|error| error.to_string())?;
         self.save_error.set(false);
         Ok(())
     }
@@ -1607,6 +1609,8 @@ impl EditorPage {
             }
             self.maybe_name_untitled(true);
         }
+        // A name still being given up must be free before picking one.
+        self.finish_rename();
         let rel = self
             .store
             .unique_rel_path(dir, "Untitled", "md")
@@ -1635,6 +1639,37 @@ impl EditorPage {
         self.renaming.set(renaming);
         if !renaming {
             self.last_edit_at.set(Instant::now());
+        }
+    }
+
+    /// Wait until a new name is on disk, before a screen lists or moves files.
+    pub fn finish_rename(&self) {
+        if let Some(doc) = self.doc.borrow().as_ref() {
+            if let Err(error) = doc.finish_rename() {
+                eprintln!("carrel: cannot name file: {error}");
+            }
+        }
+        self.check_disk();
+    }
+
+    /// Writes happen on other threads; show here that one of them failed.
+    fn check_disk(&self) {
+        let (failed, kept) = match self.doc.borrow().as_ref() {
+            Some(doc) => (
+                doc.failed(),
+                doc.take_rename_error().then(|| doc.rel_path()),
+            ),
+            None => return,
+        };
+        if let Some(rel) = kept {
+            if let Err(error) = self.store.set_last_file(Some(&rel)) {
+                eprintln!("carrel: could not remember last file: {error}");
+            }
+            *self.current.borrow_mut() = Some(rel);
+            self.update_document_name();
+        }
+        if failed && !self.save_error.replace(true) {
+            self.refresh_status();
         }
     }
 
@@ -1677,20 +1712,34 @@ impl EditorPage {
             }
         };
 
-        self.close_document();
-        if let Err(error) = self.store.rename(&current, &target) {
-            eprintln!("carrel: cannot rename {}: {error}", current.display());
-            let _ = self.open_rel(&current);
-            return;
+        // The writer is typing: the save and the rename happen on the
+        // document's own thread, and the buffer, cursor and undo stay.
+        if let Some(doc) = self.doc.borrow().as_ref() {
+            doc.rename_later(
+                target.clone(),
+                self.store.root().join(&target),
+                self.store.journal_path(&target),
+            );
+            if force {
+                if let Err(error) = doc.flush() {
+                    eprintln!("carrel: cannot name {}: {error}", current.display());
+                    self.save_error.set(true);
+                    return;
+                }
+            }
         }
-        if let Err(error) = self.open_rel(&target) {
-            eprintln!("carrel: cannot open {}: {error}", target.display());
+        *self.current.borrow_mut() = Some(target.clone());
+        self.untitled.set(false);
+        if let Err(error) = self.store.set_last_file(Some(&target)) {
+            eprintln!("carrel: could not remember last file: {error}");
         }
+        self.update_document_name();
     }
 
     /// Rename the currently open document in place, keeping the buffer,
     /// cursor position, and undo history intact.
     pub fn rename_current(&self, raw_name: &str) -> Result<PathBuf, String> {
+        self.finish_rename();
         let Some(source) = self.current_rel() else {
             return Err(tr("editor.no_file").to_owned());
         };
@@ -1792,10 +1841,13 @@ impl EditorPage {
             }
         }
         self.save_stats();
+        if let Err(error) = crate::store::settle() {
+            eprintln!("carrel: could not save: {error}");
+        }
     }
 
     fn save_settings(&self) {
-        if let Err(error) = self.settings.borrow().save(self.store.root()) {
+        if let Err(error) = self.settings.borrow().save_later(self.store.root()) {
             eprintln!("carrel: could not save settings: {error}");
         }
     }

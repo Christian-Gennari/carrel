@@ -1,13 +1,12 @@
 //! User settings stored at `<writing root>/.carrel/settings.json`.
 
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::i18n::tr;
-use crate::store::atomic_write;
+use crate::store::{read_latest, write_later, write_now};
 
 /// One of the six colours a person can wear (issue #21): the five Nostos
 /// themes, so the two products feel like one ecosystem, and a High contrast
@@ -295,7 +294,7 @@ impl Default for Settings {
 impl Settings {
     pub fn load(root: &Path) -> Self {
         let path = settings_path(root);
-        let mut settings = fs::read(path)
+        let mut settings = read_latest(&path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Settings>(&bytes).ok())
             .unwrap_or_default();
@@ -304,8 +303,17 @@ impl Settings {
     }
 
     pub fn save(&self, root: &Path) -> io::Result<()> {
-        let json = serde_json::to_vec_pretty(self).map_err(io::Error::other)?;
-        atomic_write(&settings_path(root), &json)
+        write_now(&settings_path(root), &self.json()?)
+    }
+
+    /// Save without waiting for the disk, for keys pressed on a screen.
+    pub fn save_later(&self, root: &Path) -> io::Result<()> {
+        write_later(&settings_path(root), self.json()?);
+        Ok(())
+    }
+
+    fn json(&self) -> io::Result<Vec<u8>> {
+        serde_json::to_vec_pretty(self).map_err(io::Error::other)
     }
 
     pub fn normalize(&mut self) {
@@ -373,6 +381,7 @@ pub fn settings_path(root: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
     use tempfile::tempdir;
 
     #[test]

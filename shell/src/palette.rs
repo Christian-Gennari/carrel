@@ -473,6 +473,7 @@ impl CommandPalette {
         self.open.set(true);
         self.query.replace(String::new());
         self.selected.set(0);
+        self.editor.finish_rename();
         *self.files.borrow_mut() = self.store.document_paths();
         self.load_update();
         self.rebuild();
@@ -708,7 +709,7 @@ impl CommandPalette {
     }
 
     fn save_settings(&self) {
-        if let Err(error) = self.settings.borrow().save(&self.root) {
+        if let Err(error) = self.settings.borrow().save_later(&self.root) {
             eprintln!("carrel: could not save settings: {error}");
         }
     }

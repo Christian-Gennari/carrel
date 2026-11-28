@@ -91,6 +91,50 @@ fn gtk_scenarios() {
     changing_the_language_changes_the_screens_at_once();
     the_palette_saves_then_shuts_down_restarts_and_suspends();
     the_power_actions_follow_the_language();
+    typing_does_not_wait_for_a_slow_stick();
+}
+
+/// A USB stick can take hundreds of milliseconds for one write (issue #94).
+/// The journal writes, the idle save, the naming of a new file and a settings
+/// key all happen while the writer types, and none holds up the main loop.
+fn typing_does_not_wait_for_a_slow_stick() {
+    let shell = TestShell::new(&[("Notes.md", "")], "Notes.md");
+    shell.editor.create_new_file().expect("new file");
+    settle();
+
+    let slow = crate::store::fsutil::slow_down(&shell.root, Duration::from_millis(400));
+    let worst = Rc::new(std::cell::Cell::new(Duration::ZERO));
+    let seen = Rc::clone(&worst);
+    let stop = crate::stall::watch(move |late| seen.set(seen.get().max(late)));
+    let mut typed = String::new();
+    let mut write = |text: &str, pause: u64| {
+        for ch in text.chars() {
+            shell.editor.buffer().insert_at_cursor(&ch.to_string());
+            typed.push(ch);
+            wait_for(Duration::from_millis(30));
+        }
+        wait_for(Duration::from_millis(pause));
+    };
+    // Long enough for the new file to be named from its first line.
+    write("A slow stick\n", 3_000);
+    // Long enough for the idle save, then straight on while it is written.
+    write("the quiet morning", 5_300);
+    write(" came slowly", 500);
+    shell.press("F1", gdk::Key::F1, gdk::ModifierType::empty());
+    write(" over the hill", 1_000);
+    stop.set(true);
+    drop(slow);
+
+    assert!(
+        worst.get() < Duration::from_millis(200),
+        "the main loop waited {:?} for the disk",
+        worst.get()
+    );
+    shell.editor.flush();
+    assert_eq!(
+        std::fs::read_to_string(shell.root.join("A slow stick.md")).expect("named file"),
+        typed
+    );
 }
 
 /// Ctrl+K, a few letters, Enter: the text is on disk before logind is asked,
@@ -1291,6 +1335,8 @@ fn new_file_from_files_lands_in_the_selected_folder() {
     );
     shell.type_text("Chapter two");
     pump(|| shell.editor.current_rel().as_deref() == Some(Path::new("Novel/Chapter two.md")));
+    // The name goes to disk on the document's own thread.
+    shell.editor.finish_rename();
     assert!(shell.root.join("Novel/Chapter two.md").is_file());
 }
 
@@ -2332,6 +2378,7 @@ fn keystroke_baseline() {
         );
         shell.type_text("Chapter two");
         pump(|| shell.editor.current_rel().as_deref() == Some(Path::new("Chapter two.md")));
+        shell.editor.finish_rename();
         assert!(
             shell.root.join("Chapter two.md").is_file(),
             "the new file was named from its first line"

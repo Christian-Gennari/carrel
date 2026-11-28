@@ -387,7 +387,7 @@ impl FirstRunPage {
             (step, effect, settings.time_zone != previous_zone)
         };
         i18n::set_language(&self.settings.borrow().language);
-        if let Err(error) = self.settings.borrow().save(&self.root) {
+        if let Err(error) = self.settings.borrow().save_later(&self.root) {
             eprintln!("carrel: could not save first-run settings: {error}");
         }
         if zone_changed {
@@ -411,7 +411,7 @@ impl FirstRunPage {
 
     fn finish(self: &Rc<Self>) {
         self.settings.borrow_mut().first_run_complete = true;
-        if let Err(error) = self.settings.borrow().save(&self.root) {
+        if let Err(error) = self.settings.borrow().save_later(&self.root) {
             eprintln!("carrel: could not save first-run settings: {error}");
         }
         if self.keyboard_restart_needed() {
@@ -423,7 +423,7 @@ impl FirstRunPage {
 
     fn finish_to_sync(self: &Rc<Self>, backend: Backend) {
         self.settings.borrow_mut().first_run_complete = true;
-        if let Err(error) = self.settings.borrow().save(&self.root) {
+        if let Err(error) = self.settings.borrow().save_later(&self.root) {
             eprintln!("carrel: could not save first-run settings: {error}");
         }
         self.sync.open_pairing(backend);
