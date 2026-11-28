@@ -15,6 +15,9 @@ Scenarios (all run by `make test-boot`):
              type, press the power button and check that the text was saved
              before the sync, that the sync was tried and abandoned at its time
              limit (journal), and that power off finished
+  palette-power  run Suspend, Restart and Shut down from the Command palette:
+             the VM sleeps and wakes, comes back up, then powers off; the text
+             typed just before each one is saved, and Sync at shutdown runs
   update     stage the offline update fixture, apply it with sysupdate, make
              the new slot fail to reach boot-complete three times and assert
              that the previous slot boots
@@ -1465,6 +1468,112 @@ def scenario_shutdown_sync(image: Path, out: Path, timeout: float) -> None:
     print(f"shutdown-sync: PASS (power off took {elapsed:.1f} s)", flush=True)
 
 
+def palette_run(qemu: Qemu, query: str) -> None:
+    """Ctrl+K, a few letters, Enter."""
+    qemu.key("ctrl-k")
+    time.sleep(1)
+    qemu.type_text(query)
+    time.sleep(0.5)
+    qemu.key("ret")
+
+
+def wait_status(qemu: Qemu, wanted: str, timeout: float = 90.0) -> None:
+    assert qemu.qmp is not None
+    deadline = time.monotonic() + timeout
+    while True:
+        status = qemu.qmp.command("query-status")["status"]
+        if status == wanted:
+            return
+        if time.monotonic() > deadline:
+            raise BootError(
+                f"[{qemu.name}] VM is {status!r}, not {wanted!r}\n"
+                f"--- serial tail ---\n{qemu.serial_tail()}")
+        time.sleep(0.5)
+
+
+def scenario_palette_power(image: Path, out: Path, timeout: float) -> None:
+    disk = out / "test" / "palette-power" / "disk.img"
+    disk.parent.mkdir(parents=True, exist_ok=True)
+    run("cp", "--sparse=always", image, disk)
+
+    # A server that never answers, so Sync at shutdown has something to try.
+    with socket.socket() as silent:
+        silent.bind(("0.0.0.0", 0))
+        silent.listen(8)
+        seed_shutdown_sync(disk, f"https://10.0.2.2:{silent.getsockname()[1]}", out)
+        with Qemu("palette-power", out, "uefi",
+                  [{"path": disk, "format": "raw"}], network=True) as qemu:
+            assert qemu.proc is not None
+            boot_to_editor(qemu, timeout)
+            time.sleep(10)  # NetworkManager brings the wired link up
+
+            # Each action runs well inside the 5 s autosave delay, so only the
+            # save the palette makes can have the words on disk in time.
+            qemu.type_text("before suspend. ")
+            palette_run(qemu, "suspend")
+            wait_status(qemu, "suspended")
+            time.sleep(3)
+            assert qemu.qmp is not None
+            qemu.qmp.command("system_wakeup")
+            wait_status(qemu, "running")
+            time.sleep(8)
+            qemu.screenshot(out / "screenshot-palette-resumed.png")
+
+            qemu.type_text("before restart. ")
+            qemu.pos = len(qemu.text())
+            palette_run(qemu, "restart")
+            qemu.wait(r"carrel\.slot=a", timeout)
+            boot_to_editor(qemu, timeout)
+            time.sleep(10)
+            qemu.screenshot(out / "screenshot-palette-restarted.png")
+
+            qemu.type_text("before shut down.")
+            palette_run(qemu, "shut down")
+            try:
+                qemu.proc.wait(timeout=60)
+            except subprocess.TimeoutExpired:
+                raise BootError(
+                    "Shut down from the palette did not power the VM off\n"
+                    f"--- serial tail ---\n{qemu.serial_tail()}")
+            if qemu.proc.returncode != 0:
+                raise BootError(f"QEMU exited with {qemu.proc.returncode}")
+
+    parts = read_gpt(disk)
+    data = part_named(parts, "carrel-data")
+    with mounted(disk, data, "ext4", root=out / "test") as root:
+        journal = subprocess.run(
+            ["journalctl", "--directory", str(root / "var" / "log" / "journal"),
+             "--unit", "carreld.service", "--output", "cat", "--no-pager"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        history = root / "writing" / ".carrel" / "history.git"
+        commits = {
+            reason: subprocess.run(
+                ["git", "-c", "safe.directory=*", "--git-dir", str(history), "log",
+                 "--all", "--patch", "--format=%s", "--grep", reason],
+                check=True, capture_output=True, text=True,
+            ).stdout
+            for reason in ("before suspend", "before restart", "before shut down")
+        }
+        saved = [path.read_text(errors="replace")
+                 for path in (root / "writing").rglob("*.md")]
+    (out / "test" / "palette-power" / "carreld.log").write_text(journal)
+    journal = clean_serial(journal)
+    wanted = "before suspend. before restart. before shut down."
+    if not any(wanted in text for text in saved):
+        raise BootError(f"expected {wanted!r} in /data/writing; found: {saved!r}")
+    # The commit message is also the typed text, so look at the added lines.
+    for reason, patch in commits.items():
+        if not re.search(rf"(?m)^\+.*{reason}\.", patch):
+            raise BootError(f"no {reason!r} commit with those words:\n{patch}")
+    # Once for the restart, once for the shut down; never for the suspend.
+    syncs = journal.count("sync at shutdown: starting")
+    if syncs != 2:
+        raise BootError(
+            f"sync at shutdown started {syncs} times, not 2\n--- journal ---\n{journal}")
+    print("palette-power: PASS (suspend, restart, shut down)", flush=True)
+
+
 def stage_update(disk: Path, update_dir: Path, out: Path) -> None:
     parts = read_gpt(disk)
     data = part_named(parts, "carrel-data")
@@ -1963,7 +2072,7 @@ def main() -> int:
     parser.add_argument("--scenario", default="all",
                         choices=("all", "checks", "uefi", "bios", "keyboard",
                                  "install", "recovery", "powercut", "shutdown-sync",
-                                 "update", "online", "secureboot",
+                                 "palette-power", "update", "online", "secureboot",
                                  "update-secureboot", "release", "actions"))
     parser.add_argument("--swedish", action="store_true",
                         help="enable Swedish layout typing checks in the 'actions' scenario")
@@ -2009,6 +2118,8 @@ def main() -> int:
                              swedish=args.swedish)
         if args.scenario in ("all", "shutdown-sync"):
             scenario_shutdown_sync(args.image, args.out, args.timeout)
+        if args.scenario in ("all", "palette-power"):
+            scenario_palette_power(args.image, args.out, args.timeout)
         if args.scenario in ("all", "install", "recovery", "powercut", "update",
                              "online"):
             reused = args.out / "test" / "install" / "disk.img"
