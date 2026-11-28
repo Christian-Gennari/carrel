@@ -228,6 +228,7 @@ pub struct FirstRunPage {
     root: PathBuf,
     nav: Rc<Navigator>,
     sync: Rc<SyncPage>,
+    on_change: Rc<dyn Fn()>,
 }
 
 impl FirstRunPage {
@@ -236,16 +237,22 @@ impl FirstRunPage {
         root: PathBuf,
         nav: Rc<Navigator>,
         sync: Rc<SyncPage>,
+        on_change: Rc<dyn Fn()>,
     ) -> Rc<Self> {
         // A brand-new device has no settings file yet, so the image's own
         // language, keyboard and zone are the first answers. Anything already
         // saved belongs to the writer and is left alone.
+        let mut defaults_applied = false;
         if !settings.borrow().first_run_complete && !settings_path(&root).exists() {
             let defaults = first_run_defaults::detect();
             let mut settings = settings.borrow_mut();
             settings.language = defaults.language;
             settings.keyboard = defaults.keyboard;
             settings.time_zone = defaults.time_zone;
+            defaults_applied = true;
+        }
+        if defaults_applied {
+            on_change();
         }
 
         let screen = ui::Screen::new(FirstStep::Welcome.title());
@@ -265,6 +272,7 @@ impl FirstRunPage {
             root,
             nav,
             sync,
+            on_change,
         });
         page.install();
         page
@@ -341,15 +349,20 @@ impl FirstRunPage {
     }
 
     fn choose(self: &Rc<Self>) {
-        let effect = {
+        let (effect, zone_changed) = {
             let mut settings = self.settings.borrow_mut();
+            let previous_zone = settings.time_zone.clone();
             let max = self.state.borrow().choice_count().saturating_sub(1);
             let mut state = self.state.borrow_mut();
             state.selected = state.selected.min(max);
-            state.choose(&mut settings)
+            let effect = state.choose(&mut settings);
+            (effect, settings.time_zone != previous_zone)
         };
         if let Err(error) = self.settings.borrow().save(&self.root) {
             eprintln!("carrel: could not save first-run settings: {error}");
+        }
+        if zone_changed {
+            (self.on_change)();
         }
         match effect {
             FirstEffect::Redraw => self.refresh(),

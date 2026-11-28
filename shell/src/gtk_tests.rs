@@ -27,13 +27,16 @@ use crate::first_run::FirstRunPage;
 use crate::handoff::WifiHandoff;
 use crate::history::HistoryPage;
 use crate::keys::Keys;
+use crate::locale;
 use crate::nav::Navigator;
 use crate::palette::{CommandPalette, KeySheet, RenameSheet};
 use crate::quotes::QuotePalette;
-use crate::settings::Settings;
-use crate::settings_page::SettingsPage;
+use crate::settings::{Settings, Theme, ThemeChoice, DAY_END_HOUR, DAY_START_HOUR};
+use crate::settings_page::{SettingRow, SettingsPage};
 use crate::store::Store;
 use crate::sync::{Row, SyncPage};
+use crate::theme;
+use crate::time;
 use crate::wifi::WifiPage;
 
 #[test]
@@ -76,6 +79,7 @@ fn gtk_scenarios() {
     offline_pairing_from_sync_prompts_wifi_and_resumes_pairing();
     offline_self_hosted_pairing_preserves_url_across_wifi_handoff();
     offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing();
+    time_zone_setting_updates_clock_and_automatic_theme();
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.
@@ -1660,6 +1664,7 @@ struct TestShell {
     sync: Rc<SyncPage>,
     wifi: Rc<WifiPage>,
     export: Rc<ExportPage>,
+    settings_page: Rc<SettingsPage>,
     keys: Rc<Keys>,
     nav: Rc<Navigator>,
     first_run: Rc<FirstRunPage>,
@@ -1716,7 +1721,7 @@ impl TestShell {
             store.clone(),
             Rc::clone(&settings),
             stack.clone(),
-            provider,
+            provider.clone(),
             battery,
         );
         let nav = Navigator::new(stack.clone());
@@ -1738,8 +1743,20 @@ impl TestShell {
         );
         let wifi = WifiPage::new(client.clone(), Rc::clone(&nav), handoff);
         let restyle: Rc<dyn Fn()> = {
+            let settings = Rc::clone(&settings);
+            let provider = provider.clone();
             let editor = Rc::clone(&editor);
-            Rc::new(move || editor.reapply_style())
+            Rc::new(move || {
+                {
+                    let settings = settings.borrow();
+                    theme::apply(&provider, &settings);
+                    if let Some(gtk_settings) = gtk::Settings::default() {
+                        gtk_settings
+                            .set_gtk_application_prefer_dark_theme(theme::prefers_dark(&settings));
+                    }
+                }
+                editor.reapply_style();
+            })
         };
         let settings_page = SettingsPage::new(
             client.clone(),
@@ -1759,6 +1776,7 @@ impl TestShell {
             root.clone(),
             Rc::clone(&nav),
             Rc::clone(&sync),
+            Rc::clone(&restyle),
         );
         let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
         dim.add_css_class("overlay-dim");
@@ -1831,7 +1849,7 @@ impl TestShell {
             history,
             Rc::clone(&quotes),
             Rc::clone(&sync),
-            settings_page,
+            Rc::clone(&settings_page),
             Rc::clone(&wifi),
             Rc::clone(&export),
             Rc::clone(&first_run),
@@ -1852,6 +1870,7 @@ impl TestShell {
             sync,
             wifi,
             export: Rc::clone(&export),
+            settings_page,
             keys,
             nav,
             first_run,
@@ -2458,6 +2477,166 @@ fn offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing() {
     pump(|| shell.sync.pairing_code() == "K7Q-4MZ");
     assert_eq!(shell.sync.pairing_code(), "K7Q-4MZ");
     assert_eq!(shell.daemon.pairs(), 1);
+}
+
+/// Changing Time zone in Settings updates the bottom-line clock and Automatic
+/// day/night theme immediately and survives reloading settings from disk.
+fn time_zone_setting_updates_clock_and_automatic_theme() {
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n")], "Alpha.md");
+    shell.daemon.set_update("none");
+    {
+        let mut settings = shell.settings.borrow_mut();
+        settings.clock = true;
+        settings.theme = ThemeChoice::Automatic;
+        settings.time_zone = "UTC".to_owned();
+    }
+    let before_utc = time::clock_text("UTC").expect("UTC clock");
+    shell.editor.reapply_style();
+    settle();
+    let utc_line = shell.editor.bottom_line_text();
+    let after_utc = time::clock_text("UTC").expect("UTC clock");
+    assert!(
+        utc_line.ends_with(&before_utc) || utc_line.ends_with(&after_utc),
+        "bottom line {utc_line:?} should show UTC time ({before_utc} / {after_utc})"
+    );
+
+    shell.settings_page.open_row(SettingRow::TimeZone);
+    settle();
+    assert_eq!(shell.visible(), "settings");
+
+    let cycle_to = |target: &str| {
+        for _ in 0..locale::TIME_ZONES.len() {
+            if shell.settings.borrow().time_zone == target {
+                return;
+            }
+            shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+            settle();
+        }
+        panic!("could not reach time zone {target}");
+    };
+
+    let before_tokyo = time::clock_text("Asia/Tokyo").expect("Tokyo clock");
+    cycle_to("Asia/Tokyo");
+    let tokyo_line = shell.editor.bottom_line_text();
+    let after_tokyo = time::clock_text("Asia/Tokyo").expect("Tokyo clock");
+    assert!(
+        tokyo_line.ends_with(&before_tokyo) || tokyo_line.ends_with(&after_tokyo),
+        "bottom line {tokyo_line:?} should show Asia/Tokyo time ({before_tokyo} / {after_tokyo})"
+    );
+    assert_ne!(
+        utc_line, tokyo_line,
+        "switching between UTC and Asia/Tokyo must change the clock text immediately"
+    );
+
+    // Pick one zone firmly in daytime and one firmly at nighttime (away from
+    // the 07:00 / 19:00 boundaries) so Automatic theme switching is tested at
+    // every hour of the day.
+    let day_zone = locale::TIME_ZONES
+        .iter()
+        .copied()
+        .find(|zone| {
+            *zone != "Local time"
+                && ((DAY_START_HOUR + 1)..(DAY_END_HOUR - 1)).contains(&time::hour(zone))
+        })
+        .expect("a daytime zone in TIME_ZONES");
+    let night_zone = locale::TIME_ZONES
+        .iter()
+        .copied()
+        .find(|zone| {
+            *zone != "Local time"
+                && !((DAY_START_HOUR - 1)..=DAY_END_HOUR).contains(&time::hour(zone))
+        })
+        .expect("a nighttime zone in TIME_ZONES");
+
+    cycle_to(day_zone);
+    assert_eq!(theme::active_theme(&shell.settings.borrow()), Theme::Light);
+    let day_css = shell.editor.applied_css();
+    if let Some(gtk_settings) = gtk::Settings::default() {
+        assert!(!gtk_settings.is_gtk_application_prefer_dark_theme());
+    }
+
+    cycle_to(night_zone);
+    assert_eq!(theme::active_theme(&shell.settings.borrow()), Theme::Dark);
+    let night_css = shell.editor.applied_css();
+    assert_ne!(
+        day_css, night_css,
+        "switching between day ({day_zone}) and night ({night_zone}) zones must reapply the CSS"
+    );
+    if let Some(gtk_settings) = gtk::Settings::default() {
+        assert!(gtk_settings.is_gtk_application_prefer_dark_theme());
+    }
+
+    // Returning to the editor keeps the updated clock, and a simulated restart
+    // loads the saved time zone and renders the same clock immediately.
+    shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    settle();
+    assert_eq!(shell.visible(), "editor");
+
+    let reloaded = Settings::load(&shell.root);
+    assert_eq!(reloaded.time_zone, night_zone);
+    assert!(reloaded.clock);
+    assert_eq!(theme::active_theme(&reloaded), Theme::Dark);
+
+    let fresh_settings = Rc::new(RefCell::new(reloaded));
+    let fresh_store = Store::open(&shell.root).expect("reopen store");
+    let fresh_stack = gtk::Stack::new();
+    let fresh_provider = gtk::CssProvider::new();
+    let fresh_battery: Rc<dyn crate::battery::Battery> = Rc::new(SharedBattery::new());
+    let fresh_editor = EditorPage::new(
+        fresh_store,
+        Rc::clone(&fresh_settings),
+        fresh_stack,
+        fresh_provider,
+        fresh_battery,
+    );
+    let before_reloaded = time::clock_text(night_zone).expect("reloaded clock");
+    fresh_editor.reapply_style();
+    let reloaded_line = fresh_editor.bottom_line_text();
+    let after_reloaded = time::clock_text(night_zone).expect("reloaded clock");
+    assert!(
+        reloaded_line.ends_with(&before_reloaded) || reloaded_line.ends_with(&after_reloaded),
+        "restarted editor bottom line {reloaded_line:?} should show {night_zone} time ({before_reloaded} / {after_reloaded})"
+    );
+
+    // Changing Time zone on First run also re-evaluates the clock and theme immediately.
+    {
+        let mut settings = shell.settings.borrow_mut();
+        settings.time_zone = "UTC".to_owned();
+        settings.first_run_complete = false;
+    }
+    shell.editor.reapply_style();
+    settle();
+    let first_run_utc_line = shell.editor.bottom_line_text();
+    shell.first_run.start();
+    shell.nav.show("first_run");
+    settle();
+    shell.press("Home", gdk::Key::Home, gdk::ModifierType::empty());
+    shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    let utc_idx = locale::TIME_ZONES
+        .iter()
+        .position(|z| *z == "UTC")
+        .expect("UTC in TIME_ZONES");
+    let tokyo_idx = locale::TIME_ZONES
+        .iter()
+        .position(|z| *z == "Asia/Tokyo")
+        .expect("Asia/Tokyo in TIME_ZONES");
+    for _ in utc_idx..tokyo_idx {
+        shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    }
+    let before_fr_tokyo = time::clock_text("Asia/Tokyo").expect("Tokyo clock");
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    settle();
+    let after_fr_tokyo = time::clock_text("Asia/Tokyo").expect("Tokyo clock");
+    assert_eq!(shell.settings.borrow().time_zone, "Asia/Tokyo");
+    let fr_tokyo_line = shell.editor.bottom_line_text();
+    assert!(
+        fr_tokyo_line.ends_with(&before_fr_tokyo) || fr_tokyo_line.ends_with(&after_fr_tokyo),
+        "first-run bottom line {fr_tokyo_line:?} should show Asia/Tokyo time ({before_fr_tokyo} / {after_fr_tokyo})"
+    );
+    assert_ne!(first_run_utc_line, fr_tokyo_line);
 }
 
 /// Print and write the table; fail when a count moved away from the baseline
