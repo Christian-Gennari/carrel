@@ -767,6 +767,9 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         "/usr/lib/carrel/update-url",
         "/usr/lib/systemd/import-pubring.gpg",
         "/usr/share/carrel/keys/verity.crt",
+        # Time zone data: without it every settings.time_zone falls back.
+        "/usr/share/zoneinfo/Europe/Stockholm",
+        "/usr/share/zoneinfo/America/New_York",
         "/usr/lib/systemd/system/carrel-online-update-test.service",
         "/usr/lib/carrel/online-update-test",
     ):
