@@ -1103,12 +1103,19 @@ impl KeySheet {
 
     /// Esc or Ctrl+/ closes the card; every other key belongs to it, so the
     /// page behind cannot change while it is up.
-    pub fn handle_key(&self, keyval: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
+    pub fn handle_key(
+        &self,
+        keyval: gdk::Key,
+        keycode: u32,
+        state: gdk::ModifierType,
+    ) -> glib::Propagation {
         if !self.open.get() {
             return glib::Propagation::Proceed;
         }
-        let control = state.contains(gdk::ModifierType::CONTROL_MASK);
-        if keyval == gdk::Key::Escape || (control && keyval.to_lower() == gdk::Key::slash) {
+        if keyval == gdk::Key::Escape
+            || crate::keys::punctuation_shortcut(keyval, keycode, state)
+                == Some(crate::keys::PunctuationShortcut::KeySheet)
+        {
             self.close();
         }
         glib::Propagation::Stop
