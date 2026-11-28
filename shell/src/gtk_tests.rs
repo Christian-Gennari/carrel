@@ -57,6 +57,7 @@ fn gtk_scenarios() {
     rename_current_file_via_palette_and_shortcut();
     rename_sheet_traps_tab_pauses_auto_naming_and_preserves_undo();
     files_search_finds_a_document_in_any_folder();
+    files_shift_m_types_in_search_and_moves_when_empty();
     recent_files_open_from_the_files_screen();
     new_document_has_one_file_and_two_section_headers();
     opening_a_folder_starts_at_its_first_entry();
@@ -977,6 +978,68 @@ fn files_search_finds_a_document_in_any_folder() {
     assert_eq!(shell.visible(), "editor");
 }
 
+/// Shift+M appends "M" while a search query is active, and only enters Move
+/// mode when the query is empty. The Files hint bar names Shift+M.
+fn files_shift_m_types_in_search_and_moves_when_empty() {
+    let shell = TestShell::new(
+        &[
+            ("Novel/Chapter M.md", "# Chapter M\n"),
+            ("Alpha.md", "# Alpha\n"),
+        ],
+        "Alpha.md",
+    );
+    let none = gdk::ModifierType::empty();
+    let shift = gdk::ModifierType::SHIFT_MASK;
+
+    shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(
+        shell.has_label("Shift+M"),
+        "the Files hint bar should show Shift+M for Move"
+    );
+
+    // While typing a search query, Shift+M appends "M" instead of hijacking to Move mode.
+    shell.type_search("chapter ");
+    shell.press("Shift+M", gdk::Key::m, shift);
+    settle();
+    assert_eq!(shell.files.query(), "chapter M");
+    assert!(
+        !shell.files.is_move_mode(),
+        "Shift+M during search must not enter Move mode"
+    );
+    assert!(shell.has_label("Search “chapter M”"));
+
+    // Real X11/Wayland events deliver the uppercase keysym with SHIFT_MASK.
+    shell.press("BackSpace", gdk::Key::BackSpace, none);
+    shell.press("Shift+M", gdk::Key::M, shift);
+    settle();
+    assert_eq!(shell.files.query(), "chapter M");
+    assert!(!shell.files.is_move_mode());
+
+    // Clearing the query back to empty lets Shift+M enter Move mode.
+    shell.press("Esc", gdk::Key::Escape, none);
+    settle();
+    assert_eq!(shell.files.query(), "");
+    assert!(!shell.files.is_move_mode());
+
+    shell.press("Shift+M", gdk::Key::m, shift);
+    settle();
+    assert!(
+        shell.files.is_move_mode(),
+        "Shift+M with an empty query must enter Move mode"
+    );
+    assert!(shell.has_label("Move “Alpha” to…"));
+
+    // Cancel Move mode, reselect the document, and verify uppercase keysym enters Move mode too.
+    shell.press("Esc", gdk::Key::Escape, none);
+    settle();
+    assert!(!shell.files.is_move_mode());
+    shell.press("Home", gdk::Key::Home, none);
+    shell.press("Shift+M", gdk::Key::M, shift);
+    settle();
+    assert!(shell.files.is_move_mode());
+}
+
 /// The last opened document is the first row of the Files screen, so Enter
 /// reopens it without hunting through the folder tree.
 fn recent_files_open_from_the_files_screen() {
@@ -1761,6 +1824,7 @@ struct TestShell {
     stack: gtk::Stack,
     window: gtk::Window,
     editor: Rc<EditorPage>,
+    files: Rc<FilesPage>,
     quotes: Rc<QuotePalette>,
     palette: Rc<CommandPalette>,
     key_sheet: Rc<KeySheet>,
@@ -1939,7 +2003,7 @@ impl TestShell {
             stack.clone(),
             Rc::clone(&nav),
             Rc::clone(&editor),
-            files,
+            Rc::clone(&files),
             history,
             Rc::clone(&quotes),
             Rc::clone(&sync),
@@ -1957,6 +2021,7 @@ impl TestShell {
             stack,
             window,
             editor,
+            files,
             quotes,
             palette,
             key_sheet,
