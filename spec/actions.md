@@ -219,13 +219,13 @@ Entries displayed on the Key Sheet (`palette.rs:807-832`):
 | Writing | `Goal progress` | `settings_page.rs:279,880` | Toggle `Numbers` vs `Hairline`; switches editor word count display vs 2 px bottom hairline. | `y` | `ok` |
 | Writing | `Focus mode` | `settings_page.rs:286,881` | Toggle `Off` / `On`; dims non-active paragraphs in editor. | `y` | `ok` |
 | Writing | `Typewriter mode` | `settings_page.rs:290,882` | Toggle `Off` / `On`; blocks `Backspace` and `Delete` in editor. | `y` | `ok` |
-| Writing | `Spellcheck` | `settings_page.rs:294,883` | Toggle `Off` / `On` and save JSON; intended to mark misspelled words. | `y` (JSON only) | `issue #64` (never read by editor; no effect) |
+| Writing | `Spellcheck` | `settings_page.rs:294,883` | Toggle `Off` / `On`; underlines words the `Language` dictionary does not know (`shell/src/speller.rs`), at once. | `y` | `ok` |
 | Writing | `Clock` | `settings_page.rs:298,884` | Toggle `Off` / `On`; shows/hides time on the editor bottom line. | `y` | `ok` (`issue #66` for non-UTC timezone) |
 | Connections | `Wi-Fi networks` | `settings_page.rs:341,885` | `Enter` opens the Wi-Fi screen. | `na` | `ok` |
 | Connections | `Sync` | `settings_page.rs:342,886` | `Enter` opens the Sync screen. | `na` | `ok` |
 | Connections | `Sync at shutdown` | `settings_page.rs:302,887` | Toggle `Off` / `On` and save JSON; intended to run a final sync before poweroff. | `y` (JSON only) | `issue #67` (never read at shutdown; no effect) |
 | Device | `Keyboard layout` | `settings_page.rs:306,888` | Cycle XKB layout (`us`, `gb`, `de`, `fr`, `es`, `it`, `pt`, `br`, `pl`, `tr`, `se`, `no`, `dk`) and save JSON. | `y` (JSON only) | `issue #49` (never applied to compositor/session) |
-| Device | `Language` | `settings_page.rs:312,889` | Cycle UI language (`English`, `Deutsch`, `Français`, …) and save JSON. | `y` (JSON only) | `issue #65` (UI text is hardcoded English; no effect) |
+| Device | `Language` | `settings_page.rs:312,889` | Cycle UI language (`English`, `Deutsch`, `Français`, …), save JSON and switch the Spellcheck dictionary. | `y` (JSON only) | `issue #65` (UI text is hardcoded English; only Spellcheck follows it) |
 | Device | `Time zone` | `settings_page.rs:321,890` | Cycle IANA time zone (`Local time`, `UTC`, `Europe/Stockholm`, …) and save JSON. | `y` (JSON only) | `issue #66` (clock & Automatic theme ignore it) |
 | Device | `Update` *(when not ready)* | `settings_page.rs:334,891` | Read-only status (`Up to date`, `Downloading…`, or error). | `na` | `ok` |
 | Device | `About` | `settings_page.rs:335,892` | Read-only version row (`Carrel OS <version>`). | `na` | `ok` |

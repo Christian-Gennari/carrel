@@ -120,7 +120,7 @@ pub fn in_code(text: &str, offset: usize) -> bool {
 }
 
 /// A code fence at the start of `line`: its character and length.
-fn fence_marker(line: &str) -> Option<(char, usize)> {
+pub(crate) fn fence_marker(line: &str) -> Option<(char, usize)> {
     let indent = line.chars().take_while(|&c| c == ' ').count();
     if indent > 3 {
         return None;

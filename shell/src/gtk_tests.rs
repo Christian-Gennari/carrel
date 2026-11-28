@@ -73,6 +73,7 @@ fn gtk_scenarios() {
     markdown_markers_lists_quotes_and_citations_are_styled();
     the_caret_line_holds_its_height();
     // --- end UI round 5 (Editor, issue #32) ---
+    spellcheck_marks_misspelled_words_while_it_is_on();
     incremental_restyle_matches_full_restyle_across_edits_and_cites();
     pasting_cr_crlf_and_paragraph_separator_never_panics_and_styles_accurately();
     intra_buffer_rich_paste_strips_stale_tags();
@@ -1468,6 +1469,78 @@ fn markdown_markers_lists_quotes_and_citations_are_styled() {
     assert!(has(bare, "carrel-cite-hidden"));
     assert!(has(bare + "nostos:cite/".len(), "carrel-cite"));
     assert_eq!(contents(&buffer), text, "the stored Markdown is untouched");
+}
+
+fn spellcheck_marks_misspelled_words_while_it_is_on() {
+    let text = "# Brwon\n\nteh quick `qwzx` fox isn’t here: https://qwzx.example\n\n```\nqwzx\n```\n\nThe end.\n";
+    let shell = TestShell::new(&[("Spell.md", text)], "Spell.md");
+    let editor = &shell.editor;
+    let buffer = editor.buffer();
+    let set = |on: bool, language: &str| {
+        {
+            let mut settings = shell.settings.borrow_mut();
+            settings.spellcheck = on;
+            settings.language = language.to_owned();
+        }
+        editor.reapply_style();
+    };
+    let marked = |expected: &[&str]| {
+        pump(|| editor.misspelled_words() == expected);
+        assert_eq!(editor.misspelled_words(), expected);
+    };
+
+    wait_for(Duration::from_millis(400));
+    assert!(editor.misspelled_words().is_empty(), "off by default");
+
+    set(true, "English");
+    marked(&["Brwon", "teh"]);
+    assert_eq!(editor.spelling_language(), Some("en_US"));
+
+    // The word being typed waits; a space or leaving it marks it.
+    buffer.place_cursor(&buffer.end_iter());
+    type_text(&buffer, "qwick");
+    wait_for(Duration::from_millis(100));
+    marked(&["Brwon", "teh"]);
+    type_text(&buffer, " brwon");
+    marked(&["Brwon", "teh", "qwick"]);
+    buffer.place_cursor(&buffer.start_iter());
+    marked(&["Brwon", "teh", "qwick", "brwon"]);
+
+    // Opening a fence turns what follows into code; removing it, into prose.
+    let after_title = buffer.iter_at_line(1).expect("line").offset();
+    buffer.insert(&mut buffer.iter_at_offset(after_title), "~~~\n");
+    marked(&["Brwon"]);
+    buffer.delete(
+        &mut buffer.iter_at_offset(after_title),
+        &mut buffer.iter_at_offset(after_title + 4),
+    );
+    marked(&["Brwon", "teh", "qwick", "brwon"]);
+
+    set(false, "English");
+    assert!(
+        editor.misspelled_words().is_empty(),
+        "Off removes the marks"
+    );
+    type_text(&buffer, "qwzx ");
+    wait_for(Duration::from_millis(400));
+    assert!(editor.misspelled_words().is_empty());
+
+    // Every offered language has a dictionary here, as in the image.
+    for language in crate::locale::LANGUAGES {
+        set(true, language);
+        let code = crate::spell::dictionary_code(language);
+        pump(|| editor.spelling_language() == code);
+        assert_eq!(editor.spelling_language(), code, "{language}");
+    }
+    set(true, "Deutsch");
+    buffer.set_text("Die Straße ist schön, qwzx.\n");
+    marked(&["qwzx"]);
+
+    // A language without a dictionary is quietly no spellcheck.
+    set(true, "Klingon");
+    wait_for(Duration::from_millis(400));
+    assert_eq!(editor.spelling_language(), None);
+    assert!(editor.misspelled_words().is_empty());
 }
 
 fn incremental_restyle_matches_full_restyle_across_edits_and_cites() {

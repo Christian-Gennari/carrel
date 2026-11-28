@@ -429,7 +429,7 @@ impl SettingsState {
             SettingRow::Keyboard => {
                 "The keys you type on, including an external keyboard.".to_owned()
             }
-            SettingRow::Language => "The language of the screens.".to_owned(),
+            SettingRow::Language => "The language of the screens and of Spellcheck.".to_owned(),
             SettingRow::TimeZone => {
                 "Used for the Automatic day and night and for the clock.".to_owned()
             }
