@@ -452,6 +452,9 @@ fn hints_for(state: &SettingsState, settings: &Settings) -> Vec<(&'static str, &
         SettingRow::Update if state.update.ready() => {
             vec![("Enter", "Update"), ("↑ ↓", "Move"), ("Esc", "Back")]
         }
+        SettingRow::Update | SettingRow::About => {
+            vec![("↑ ↓", "Move"), ("Esc", "Back")]
+        }
         _ => vec![("← →", "Change"), ("↑ ↓", "Move"), ("Esc", "Back")],
     }
 }
@@ -1269,6 +1272,30 @@ mod tests {
         assert!(hints_for(&state, &settings)
             .iter()
             .any(|(key, word)| *key == "Enter" && *word == "Update"));
+    }
+
+    #[test]
+    fn the_hint_bar_omits_change_on_read_only_rows() {
+        let settings = Settings::default();
+        let mut state = SettingsState::default();
+        state.set_update(UpdateState::from_wire("none"));
+        for index in 0..rows(&settings, false).len() {
+            state.select(&settings, index);
+            let row = state.row(&settings);
+            let editable = !matches!(
+                row,
+                SettingRow::Wifi
+                    | SettingRow::SyncBackends
+                    | SettingRow::Update
+                    | SettingRow::About
+            );
+            let hints = hints_for(&state, &settings);
+            assert_eq!(
+                hints.iter().any(|(key, _)| *key == "← →"),
+                editable,
+                "{row:?}: the hint bar should name ← → only where Left/Right changes a value"
+            );
+        }
     }
 
     #[test]
