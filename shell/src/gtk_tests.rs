@@ -76,6 +76,8 @@ fn gtk_scenarios() {
     offline_pairing_from_sync_prompts_wifi_and_resumes_pairing();
     offline_self_hosted_pairing_preserves_url_across_wifi_handoff();
     offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing();
+    changing_keyboard_in_settings_flushes_document_and_restarts_session();
+    changing_keyboard_in_first_run_saves_and_restarts_session();
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.
@@ -1665,6 +1667,7 @@ struct TestShell {
     first_run: Rc<FirstRunPage>,
     settings: Rc<RefCell<Settings>>,
     daemon: Arc<FakeDaemon>,
+    session_restarts: Rc<std::cell::Cell<usize>>,
     sequence: RefCell<Vec<String>>,
     // Dropped last: the writing folder outlives the pages that use it.
     _temp: tempfile::TempDir,
@@ -1741,12 +1744,25 @@ impl TestShell {
             let editor = Rc::clone(&editor);
             Rc::new(move || editor.reapply_style())
         };
+        let session_restarts = Rc::new(std::cell::Cell::new(0usize));
+        let restart_session: Rc<dyn Fn()> = {
+            let editor = Rc::clone(&editor);
+            let session_restarts = Rc::clone(&session_restarts);
+            Rc::new(move || {
+                editor.maybe_name_untitled(true);
+                editor.flush();
+                session_restarts.set(session_restarts.get() + 1);
+            })
+        };
+        let session_keyboard = Some(settings.borrow().keyboard.clone());
         let settings_page = SettingsPage::new(
             client.clone(),
             Rc::clone(&nav),
             Rc::clone(&settings),
             root.clone(),
             Rc::clone(&restyle),
+            session_keyboard.clone(),
+            Rc::clone(&restart_session),
         );
         let export = ExportPage::new(
             client.clone(),
@@ -1759,6 +1775,8 @@ impl TestShell {
             root.clone(),
             Rc::clone(&nav),
             Rc::clone(&sync),
+            session_keyboard,
+            restart_session,
         );
         let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
         dim.add_css_class("overlay-dim");
@@ -1857,6 +1875,7 @@ impl TestShell {
             first_run,
             settings,
             daemon,
+            session_restarts,
             sequence: RefCell::new(Vec::new()),
             _temp: temp,
         }
@@ -2594,4 +2613,81 @@ fn wait_for_dialog_button(label: &str) {
         glib::MainContext::default().iteration(false);
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn changing_keyboard_in_settings_flushes_document_and_restarts_session() {
+    let shell = TestShell::new(&[("Notes.md", "Initial text")], "Notes.md");
+    shell.daemon.set_update("none");
+    shell.type_text(" and unsaved words");
+    assert_eq!(shell.session_restarts.get(), 0);
+
+    // Open Settings via Ctrl+, and jump to Keyboard layout (End, then 4× Up).
+    shell.press("Ctrl+,", gdk::Key::comma, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert_eq!(shell.keys.visible(), "settings");
+    shell.press("End", gdk::Key::End, gdk::ModifierType::empty());
+    for _ in 0..4 {
+        shell.press("Up", gdk::Key::Up, gdk::ModifierType::empty());
+    }
+
+    // Cycle from US (index 0) to Swedish (index 8): cycling must NOT restart
+    // mid-way while the writer is still stepping through layouts.
+    for _ in 0..8 {
+        shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+    }
+    settle();
+    assert_eq!(shell.settings.borrow().keyboard, "se");
+    assert_eq!(Settings::load(&shell.root).keyboard, "se");
+    assert_eq!(shell.session_restarts.get(), 0);
+
+    // Pressing Esc saves and flushes the open document and requests a session
+    // restart so cage picks up XKB_DEFAULT_LAYOUT=se.
+    shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    assert_eq!(shell.session_restarts.get(), 1);
+    let saved = std::fs::read_to_string(shell.root.join("Notes.md")).expect("flushed document");
+    assert_eq!(saved, "Initial text and unsaved words");
+
+    // Pressing Enter on the changed Keyboard row also triggers the reload.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert_eq!(shell.session_restarts.get(), 2);
+
+    // Cycling back to the active session layout ("us") clears the pending reload
+    // so Esc returns to the editor without restarting.
+    for _ in 0..8 {
+        shell.press("Left", gdk::Key::Left, gdk::ModifierType::empty());
+    }
+    assert_eq!(shell.settings.borrow().keyboard, "us");
+    shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    assert_eq!(shell.session_restarts.get(), 2);
+    assert_eq!(shell.keys.visible(), "editor");
+}
+
+fn changing_keyboard_in_first_run_saves_and_restarts_session() {
+    let shell = TestShell::new(&[("Notes.md", "")], "Notes.md");
+    shell.settings.borrow_mut().first_run_complete = false;
+    shell.first_run.start();
+    shell.nav.show("first_run");
+    settle();
+    assert_eq!(shell.keys.visible(), "first_run");
+
+    // Welcome starts on row 3 (Start writing). Two Ups land on row 1 (Keyboard).
+    shell.press("Up", gdk::Key::Up, gdk::ModifierType::empty());
+    shell.press("Up", gdk::Key::Up, gdk::ModifierType::empty());
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    // Keeping US (index 0) does not restart the session.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert_eq!(shell.session_restarts.get(), 0);
+    assert_eq!(shell.settings.borrow().keyboard, "us");
+
+    // Reopen Keyboard (still selected on row 1), move down 8 to Swedish, confirm.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    for _ in 0..8 {
+        shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    }
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert_eq!(shell.settings.borrow().keyboard, "se");
+    let persisted = Settings::load(&shell.root);
+    assert_eq!(persisted.keyboard, "se");
+    assert!(!persisted.first_run_complete);
+    assert_eq!(shell.session_restarts.get(), 1);
 }
