@@ -29,6 +29,14 @@ const PAIRING_HINTS: [(&str, &str); 1] = [("Esc", "Cancel")];
 /// word, short enough not to hold the writer. A pause, not an animation.
 const PAIRED_BEAT: std::time::Duration = std::time::Duration::from_millis(2_000);
 
+/// The message `carreld` sends in `SyncStatus` when syncing before power off.
+pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before power off…";
+
+/// True when a `SyncStatus` signal announces the pre-poweroff sync.
+pub fn is_shutdown_sync(info: &SyncInfo) -> bool {
+    info.state == "syncing" && info.message.trim() == SHUTDOWN_SYNC_MESSAGE
+}
+
 /// The sentence under the one action an error offers.
 const REMEDY_NOTE: &str = "Your writing stays here. Carrel syncs when you are back online.";
 const PAIR_REMEDY_NOTE: &str =
@@ -1942,5 +1950,29 @@ mod tests {
         assert_eq!(state.remedy(), Some(Remedy::Wifi));
         assert_eq!(state.detail(), "Set up Wi-Fi to pair with Nostos.");
         assert_eq!(state.failed_pair, Some((Backend::Nostos, String::new())));
+    }
+
+    #[test]
+    fn shutdown_sync_signal_is_recognised_and_shown_as_hero() {
+        let shutdown = SyncInfo {
+            state: "syncing".into(),
+            message: SHUTDOWN_SYNC_MESSAGE.into(),
+            last_sync: 0,
+        };
+        assert!(is_shutdown_sync(&shutdown));
+        assert!(!is_shutdown_sync(&SyncInfo {
+            state: "syncing".into(),
+            message: "Syncing…".into(),
+            last_sync: 0,
+        }));
+        assert!(!is_shutdown_sync(&SyncInfo {
+            state: "idle".into(),
+            message: SHUTDOWN_SYNC_MESSAGE.into(),
+            last_sync: 0,
+        }));
+
+        let mut state = SyncState::default();
+        state.on_sync(shutdown);
+        assert_eq!(state.hero(), SHUTDOWN_SYNC_MESSAGE);
     }
 }

@@ -237,7 +237,14 @@ pub fn run(application: &gtk::Application) {
                 battery.set(status);
                 editor.on_battery();
             }
-            DaemonEvent::Sync(info) => sync.on_sync(info),
+            DaemonEvent::Sync(info) => {
+                if crate::sync::is_shutdown_sync(&info) {
+                    editor.maybe_name_untitled(true);
+                    editor.flush();
+                    editor.flash_note(&info.message, 15);
+                }
+                sync.on_sync(info);
+            }
             DaemonEvent::Pair {
                 state,
                 code,
