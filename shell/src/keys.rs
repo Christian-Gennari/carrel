@@ -10,6 +10,7 @@
 
 use std::rc::Rc;
 
+use gtk::prelude::DisplayExtManual;
 use gtk::{gdk, glib};
 
 use crate::editor::EditorPage;
@@ -115,7 +116,7 @@ impl Keys {
 
         // The key sheet is on top of everything until Esc. First run is a
         // closed flow: the palette and the sheet do not exist there.
-        if self.key_sheet.handle_key(keyval, state) == glib::Propagation::Stop {
+        if self.key_sheet.handle_key(keyval, keycode, state) == glib::Propagation::Stop {
             return glib::Propagation::Stop;
         }
         if visible == "first_run" {
@@ -135,6 +136,8 @@ impl Keys {
             return glib::Propagation::Stop;
         }
 
+        let punctuation = punctuation_shortcut(keyval, keycode, state);
+
         // A modal confirmation card owns the keyboard until it is answered;
         // global chords must never switch screens behind an open dialog.
         if control && !self.dialog_open() {
@@ -145,7 +148,7 @@ impl Keys {
             }
             // Ctrl+/: the key sheet. `?` stays a normal character in the
             // editor, so the sheet has a chord of its own.
-            if key == gdk::Key::slash {
+            if punctuation == Some(PunctuationShortcut::KeySheet) {
                 self.key_sheet.open();
                 return glib::Propagation::Stop;
             }
@@ -175,7 +178,7 @@ impl Keys {
                 self.nav.show("export");
                 return glib::Propagation::Stop;
             }
-            if key == gdk::Key::comma {
+            if punctuation == Some(PunctuationShortcut::Settings) {
                 self.nav.show("settings");
                 return glib::Propagation::Stop;
             }
@@ -192,12 +195,120 @@ impl Keys {
             "first_run" => self.first_run.handle_key(keyval, state),
             // The Quotes palette (Ctrl+' and the `@` trigger) lives in the
             // editor, so it sees the editor's keys first.
-            _ => match self.quotes.handle_key(keyval, state) {
+            _ => match self.quotes.handle_key(keyval, keycode, state) {
                 glib::Propagation::Stop => glib::Propagation::Stop,
                 glib::Propagation::Proceed => self.editor.handle_key(keyval, keycode, state),
             },
         }
     }
+}
+
+/// Hardware keycodes (XKB = Linux evdev + 8) of the US punctuation keys and
+/// keypad operators behind the shortcuts.
+pub(crate) const KEYCODE_MINUS: u32 = 20; // KEY_MINUS (12) + 8
+pub(crate) const KEYCODE_EQUAL: u32 = 21; // KEY_EQUAL (13) + 8
+pub(crate) const KEYCODE_APOSTROPHE: u32 = 48; // KEY_APOSTROPHE (40) + 8
+pub(crate) const KEYCODE_COMMA: u32 = 59; // KEY_COMMA (51) + 8
+pub(crate) const KEYCODE_SLASH: u32 = 61; // KEY_SLASH (53) + 8
+pub(crate) const KEYCODE_KP_SUBTRACT: u32 = 82; // KEY_KPMINUS (74) + 8
+pub(crate) const KEYCODE_KP_ADD: u32 = 86; // KEY_KPPLUS (78) + 8
+
+/// Every `Ctrl` + punctuation shortcut. One matcher serves them all, so that a
+/// symbol the layout really produces always beats another shortcut's hardware
+/// position: on Swedish and German the US `/` key types `-`, so it zooms out,
+/// and the key sheet is `Ctrl+Shift+7` (their `/`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PunctuationShortcut {
+    KeySheet,
+    Settings,
+    Quotes,
+    ZoomIn,
+    ZoomOut,
+}
+
+fn punctuation_for_keyval(keyval: gdk::Key) -> Option<PunctuationShortcut> {
+    use PunctuationShortcut::*;
+    match keyval {
+        gdk::Key::slash => Some(KeySheet),
+        gdk::Key::comma => Some(Settings),
+        gdk::Key::apostrophe => Some(Quotes),
+        gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add | gdk::Key::KP_Equal => Some(ZoomIn),
+        gdk::Key::minus | gdk::Key::underscore | gdk::Key::KP_Subtract => Some(ZoomOut),
+        _ => None,
+    }
+}
+
+fn punctuation_for_keycode(keycode: u32, keyval: gdk::Key) -> Option<PunctuationShortcut> {
+    use PunctuationShortcut::*;
+    // Dvorak and others put letters on the last three keys: `Ctrl+Z` on the
+    // US `/` key must stay Undo.
+    let letter = keyval.to_unicode().is_some_and(|c| c.is_ascii_alphabetic());
+    match keycode {
+        KEYCODE_EQUAL | KEYCODE_KP_ADD => Some(ZoomIn),
+        KEYCODE_MINUS | KEYCODE_KP_SUBTRACT => Some(ZoomOut),
+        KEYCODE_SLASH if !letter => Some(KeySheet),
+        KEYCODE_COMMA if !letter => Some(Settings),
+        KEYCODE_APOSTROPHE if !letter => Some(Quotes),
+        _ => None,
+    }
+}
+
+/// Match a `Ctrl` + punctuation shortcut, in this order:
+///
+/// 1. the layout-translated `keyval`, with or without Shift;
+/// 2. with Shift held, `base_keyval`: the level-0 symbol of the same key (US
+///    `Ctrl+Shift+/` arrives as `?`, as does Swedish `Ctrl+Shift++`);
+/// 3. the hardware keycode, for layouts that type something else there (a
+///    dead key, `ä`, `ß`).
+pub(crate) fn match_punctuation(
+    keyval: gdk::Key,
+    keycode: u32,
+    state: gdk::ModifierType,
+    base_keyval: Option<gdk::Key>,
+) -> Option<PunctuationShortcut> {
+    if !state.contains(gdk::ModifierType::CONTROL_MASK)
+        || state.contains(gdk::ModifierType::ALT_MASK)
+    {
+        return None;
+    }
+    let base = base_keyval.filter(|_| state.contains(gdk::ModifierType::SHIFT_MASK));
+    punctuation_for_keyval(keyval)
+        .or_else(|| base.and_then(punctuation_for_keyval))
+        .or_else(|| punctuation_for_keycode(keycode, keyval))
+}
+
+/// [`match_punctuation`] with the base symbol read from the display's keymap.
+pub(crate) fn punctuation_shortcut(
+    keyval: gdk::Key,
+    keycode: u32,
+    state: gdk::ModifierType,
+) -> Option<PunctuationShortcut> {
+    let base = if state.contains(gdk::ModifierType::SHIFT_MASK) {
+        base_keyval_for_keycode(keycode, keyval)
+    } else {
+        None
+    };
+    match_punctuation(keyval, keycode, state, base)
+}
+
+/// Look up the unshifted (level 0) keyval of `keycode` in the layout group
+/// that produced `keyval`. Matching the group ensures multi-layout sessions
+/// (or synthetic tests on a US display) never substitute a different layout's
+/// base symbol.
+fn base_keyval_for_keycode(keycode: u32, keyval: gdk::Key) -> Option<gdk::Key> {
+    if keycode == 0 {
+        return None;
+    }
+    let display = gdk::Display::default()?;
+    let entries = display.map_keycode(keycode)?;
+    let group = entries
+        .iter()
+        .find(|(_, candidate)| *candidate == keyval)
+        .map(|(keymap_key, _)| keymap_key.group())?;
+    entries
+        .iter()
+        .find(|(keymap_key, _)| keymap_key.group() == group && keymap_key.level() == 0)
+        .map(|(_, key)| *key)
 }
 
 /// Parse the `CARREL_SHOT_KEYS` script: comma-separated key names, each with
@@ -239,8 +350,11 @@ pub fn parse_script(script: &str) -> Vec<(gdk::Key, gdk::ModifierType)> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_script;
-    use gtk::gdk;
+    use super::PunctuationShortcut::*;
+    use super::*;
+
+    const CTRL: gdk::ModifierType = gdk::ModifierType::CONTROL_MASK;
+    const SHIFT: gdk::ModifierType = gdk::ModifierType::SHIFT_MASK;
 
     #[test]
     fn scripts_name_keys_and_chords() {
@@ -250,17 +364,195 @@ mod tests {
         assert_eq!(keys[1].0, gdk::Key::Down);
         assert_eq!(keys[2].0, gdk::Key::Return);
         assert_eq!(keys[3].0, gdk::Key::e);
-        assert_eq!(keys[3].1, gdk::ModifierType::CONTROL_MASK);
+        assert_eq!(keys[3].1, CTRL);
         assert_eq!(keys[4].0, gdk::Key::s);
-        assert_eq!(
-            keys[4].1,
-            gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK
-        );
+        assert_eq!(keys[4].1, CTRL | SHIFT);
     }
 
     #[test]
     fn unknown_keys_are_skipped() {
         assert!(parse_script("Down,NotAKey,Return").len() == 2);
         assert!(parse_script("").is_empty());
+    }
+
+    /// `(keyval, keycode, shift held, level-0 keyval, expected)`.
+    type Case = (
+        gdk::Key,
+        u32,
+        bool,
+        Option<gdk::Key>,
+        Option<PunctuationShortcut>,
+    );
+
+    fn check(cases: &[Case]) {
+        for &(keyval, keycode, shift, base, expected) in cases {
+            let state = if shift { CTRL | SHIFT } else { CTRL };
+            assert_eq!(
+                match_punctuation(keyval, keycode, state, base),
+                expected,
+                "{keyval:?} on keycode {keycode}, shift {shift}, base {base:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn punctuation_matches_us_and_keypad_keyvals() {
+        use gdk::Key;
+        check(&[
+            (Key::slash, KEYCODE_SLASH, false, None, Some(KeySheet)),
+            (Key::comma, KEYCODE_COMMA, false, None, Some(Settings)),
+            (
+                Key::apostrophe,
+                KEYCODE_APOSTROPHE,
+                false,
+                None,
+                Some(Quotes),
+            ),
+            (Key::equal, KEYCODE_EQUAL, false, None, Some(ZoomIn)),
+            (Key::plus, KEYCODE_EQUAL, true, None, Some(ZoomIn)),
+            (Key::KP_Add, KEYCODE_KP_ADD, false, None, Some(ZoomIn)),
+            (Key::KP_Add, KEYCODE_KP_ADD, true, None, Some(ZoomIn)),
+            (Key::minus, KEYCODE_MINUS, false, None, Some(ZoomOut)),
+            (Key::underscore, KEYCODE_MINUS, true, None, Some(ZoomOut)),
+            (
+                Key::KP_Subtract,
+                KEYCODE_KP_SUBTRACT,
+                false,
+                None,
+                Some(ZoomOut),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn shift_uses_the_level_zero_symbol_of_the_same_key() {
+        use gdk::Key;
+        check(&[
+            // US `?`, `"` and `<`.
+            (
+                Key::question,
+                KEYCODE_SLASH,
+                true,
+                Some(Key::slash),
+                Some(KeySheet),
+            ),
+            (
+                Key::quotedbl,
+                KEYCODE_APOSTROPHE,
+                true,
+                Some(Key::apostrophe),
+                Some(Quotes),
+            ),
+            (
+                Key::less,
+                KEYCODE_COMMA,
+                true,
+                Some(Key::comma),
+                Some(Settings),
+            ),
+            // Swedish `Ctrl+Shift++` is `?` on the US `-` key: `+` wins over
+            // that position's zoom out.
+            (
+                Key::question,
+                KEYCODE_MINUS,
+                true,
+                Some(Key::plus),
+                Some(ZoomIn),
+            ),
+            // Without Shift the base symbol is ignored.
+            (Key::_7, 16, false, Some(Key::slash), None),
+        ]);
+    }
+
+    #[test]
+    fn swedish_and_german_symbols_beat_us_positions() {
+        use gdk::Key;
+        check(&[
+            // The US `/` key types `-` and `_`: zoom out, not the key sheet.
+            (Key::minus, KEYCODE_SLASH, false, None, Some(ZoomOut)),
+            (
+                Key::underscore,
+                KEYCODE_SLASH,
+                true,
+                Some(Key::minus),
+                Some(ZoomOut),
+            ),
+            // `/` is Shift+7.
+            (Key::slash, 16, true, Some(Key::_7), Some(KeySheet)),
+            // `'` is next to Enter: plain on Swedish, shifted on German.
+            (Key::apostrophe, 51, false, None, Some(Quotes)),
+            (
+                Key::apostrophe,
+                51,
+                true,
+                Some(Key::numbersign),
+                Some(Quotes),
+            ),
+            // `+` is on the US `-` key, `=` is Shift+0.
+            (Key::plus, KEYCODE_MINUS, false, None, Some(ZoomIn)),
+            (Key::equal, 19, true, Some(Key::_0), Some(ZoomIn)),
+            // Spanish `'` and Turkish `-` on other US positions.
+            (Key::apostrophe, KEYCODE_MINUS, false, None, Some(Quotes)),
+            (Key::minus, KEYCODE_EQUAL, false, None, Some(ZoomOut)),
+        ]);
+    }
+
+    #[test]
+    fn other_symbols_fall_back_to_the_hardware_keycode() {
+        use gdk::Key;
+        check(&[
+            // French `!` and `;`.
+            (Key::exclam, KEYCODE_SLASH, false, None, Some(KeySheet)),
+            (Key::semicolon, KEYCODE_COMMA, false, None, Some(Settings)),
+            // Swedish `ä` and US-International dead acute.
+            (
+                Key::adiaeresis,
+                KEYCODE_APOSTROPHE,
+                false,
+                None,
+                Some(Quotes),
+            ),
+            (
+                Key::dead_acute,
+                KEYCODE_APOSTROPHE,
+                false,
+                None,
+                Some(Quotes),
+            ),
+            // Swedish dead acute and German `ß`.
+            (Key::dead_acute, KEYCODE_EQUAL, false, None, Some(ZoomIn)),
+            (Key::ssharp, KEYCODE_MINUS, false, None, Some(ZoomOut)),
+            (Key::VoidSymbol, KEYCODE_KP_ADD, false, None, Some(ZoomIn)),
+            (
+                Key::VoidSymbol,
+                KEYCODE_KP_SUBTRACT,
+                false,
+                None,
+                Some(ZoomOut),
+            ),
+        ]);
+    }
+
+    #[test]
+    fn letters_and_unrelated_keys_stay_free() {
+        use gdk::Key;
+        check(&[
+            // Dvorak `z` and `w` on the US `/` and `,` keys.
+            (Key::z, KEYCODE_SLASH, false, None, None),
+            (Key::Z, KEYCODE_SLASH, true, Some(Key::z), None),
+            (Key::w, KEYCODE_COMMA, false, None, None),
+            (Key::a, 38, false, None, None),
+            (Key::_0, 19, false, None, None),
+        ]);
+    }
+
+    #[test]
+    fn punctuation_needs_ctrl_without_alt() {
+        let alt = CTRL | gdk::ModifierType::ALT_MASK;
+        for state in [gdk::ModifierType::empty(), SHIFT, alt] {
+            for keyval in [gdk::Key::slash, gdk::Key::apostrophe, gdk::Key::plus] {
+                assert_eq!(match_punctuation(keyval, KEYCODE_SLASH, state, None), None);
+            }
+        }
     }
 }

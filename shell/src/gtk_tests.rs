@@ -87,6 +87,7 @@ fn gtk_scenarios() {
     changing_keyboard_in_first_run_saves_and_restarts_session();
     modal_dialogs_block_global_shortcuts_and_ctrl_o_works_from_other_screens();
     time_zone_setting_updates_clock_and_automatic_theme();
+    punctuation_shortcuts_handle_non_us_layouts_without_stealing_zoom();
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.
@@ -176,7 +177,7 @@ fn settle() {
 }
 
 fn press(palette: &Rc<QuotePalette>, key: gdk::Key, state: gdk::ModifierType) -> bool {
-    let stopped = palette.handle_key(key, state) == glib::Propagation::Stop;
+    let stopped = palette.handle_key(key, 0, state) == glib::Propagation::Stop;
     // A key press ends with the idle that withdraws the palette's permission.
     settle();
     stopped
@@ -187,7 +188,7 @@ fn press(palette: &Rc<QuotePalette>, key: gdk::Key, state: gdk::ModifierType) ->
 fn type_keys(palette: &Rc<QuotePalette>, buffer: &sourceview::Buffer, text: &str) {
     for character in text.chars() {
         // Any plain key: the palette only needs to know a key was pressed.
-        palette.handle_key(gdk::Key::a, gdk::ModifierType::empty());
+        palette.handle_key(gdk::Key::a, 0, gdk::ModifierType::empty());
         buffer.insert_at_cursor(&character.to_string());
     }
     settle();
@@ -283,7 +284,7 @@ fn the_palette_follows_the_text_and_the_keys() {
 /// Bring the palette back on the `@room` at the end of the buffer by moving
 /// the caret there with a key, and wait for its answer.
 fn pump_open(palette: &Rc<QuotePalette>, buffer: &sourceview::Buffer) {
-    palette.handle_key(gdk::Key::End, gdk::ModifierType::empty());
+    palette.handle_key(gdk::Key::End, 0, gdk::ModifierType::empty());
     buffer.place_cursor(&buffer.end_iter());
     settle();
     assert!(palette.is_open(), "the caret came back to @room");
@@ -2766,7 +2767,7 @@ fn offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing() {
 /// layout keyvals and hardware keycode fallbacks, briefly show the new size,
 /// stay in sync with Settings > Size, and persist to disk.
 fn zoom_shortcuts_handle_keypad_shift_and_non_us_layouts() {
-    use crate::editor::{KEYCODE_EQUAL, KEYCODE_KP_ADD, KEYCODE_KP_SUBTRACT, KEYCODE_MINUS};
+    use crate::keys::{KEYCODE_EQUAL, KEYCODE_KP_ADD, KEYCODE_KP_SUBTRACT, KEYCODE_MINUS};
     use crate::settings::{MAX_FONT_SIZE, MIN_FONT_SIZE};
 
     let ctrl = gdk::ModifierType::CONTROL_MASK;
@@ -3078,6 +3079,195 @@ fn time_zone_setting_updates_clock_and_automatic_theme() {
         "first-run bottom line {fr_tokyo_line:?} should show Asia/Tokyo time ({before_fr_tokyo} / {after_fr_tokyo})"
     );
     assert_ne!(first_run_utc_line, fr_tokyo_line);
+}
+
+/// Issue #68: Ctrl+/ (key sheet open & close), Ctrl+' (Quotes), and Ctrl+,
+/// (Settings) resolve through the shared keyval → level-0 → keycode
+/// matcher without stealing Swedish/German Ctrl+- zoom out on physical US `/`.
+fn punctuation_shortcuts_handle_non_us_layouts_without_stealing_zoom() {
+    use crate::keys::{KEYCODE_APOSTROPHE, KEYCODE_COMMA, KEYCODE_EQUAL, KEYCODE_SLASH};
+
+    let ctrl = gdk::ModifierType::CONTROL_MASK;
+    let ctrl_shift = ctrl | gdk::ModifierType::SHIFT_MASK;
+    let none = gdk::ModifierType::empty();
+
+    let shell = TestShell::new(&[("Alpha.md", "# Alpha\n\nSome prose ")], "Alpha.md");
+    assert_eq!(shell.visible(), "editor");
+    assert_eq!(shell.settings.borrow().font_size, 19);
+
+    // Swedish/German Ctrl+Shift+7 (`/` on keycode 16) opens and closes the key sheet.
+    shell.press_keycode("SE/DE Ctrl+Shift+7", gdk::Key::slash, 16, ctrl_shift);
+    settle();
+    assert!(
+        shell.key_sheet.is_open(),
+        "Swedish/German Ctrl+Shift+7 should open the key sheet"
+    );
+    shell.press_keycode("SE/DE Ctrl+Shift+7 close", gdk::Key::slash, 16, ctrl_shift);
+    settle();
+    assert!(
+        !shell.key_sheet.is_open(),
+        "Swedish/German Ctrl+Shift+7 should also close the key sheet"
+    );
+
+    // Swedish/German Ctrl + physical US `/` (keycode 61) produces `-` (and `_`
+    // with Shift): keyval match MUST win so zoom-out works and the key sheet
+    // never steals Ctrl+-.
+    shell.press_keycode("SE/DE Ctrl+-", gdk::Key::minus, KEYCODE_SLASH, ctrl);
+    settle();
+    assert!(
+        !shell.key_sheet.is_open(),
+        "Swedish/German Ctrl+- on physical US `/` must not open the key sheet"
+    );
+    assert_eq!(
+        shell.settings.borrow().font_size,
+        18,
+        "Swedish/German Ctrl+- on physical US `/` must zoom out"
+    );
+    shell.press_keycode(
+        "SE/DE Ctrl+Shift+-",
+        gdk::Key::underscore,
+        KEYCODE_SLASH,
+        ctrl_shift,
+    );
+    settle();
+    assert!(!shell.key_sheet.is_open());
+    assert_eq!(shell.settings.borrow().font_size, 17);
+
+    // Physical US `/` (keycode 61) on layouts where it does NOT produce `-`
+    // or an ASCII letter (e.g. French AZERTY `!`) falls back by hardware
+    // keycode to open and close the key sheet.
+    shell.press_keycode("FR Ctrl+!", gdk::Key::exclam, KEYCODE_SLASH, ctrl);
+    settle();
+    assert!(
+        shell.key_sheet.is_open(),
+        "hardware keycode fallback on physical US `/` should open the key sheet"
+    );
+    shell.press_keycode("FR Ctrl+! close", gdk::Key::exclam, KEYCODE_SLASH, ctrl);
+    settle();
+    assert!(
+        !shell.key_sheet.is_open(),
+        "hardware keycode fallback on physical US `/` should close the key sheet"
+    );
+
+    // US Ctrl+Shift+/ sends `?` on keycode 61; level-0 lookup resolves `/`.
+    shell.press_keycode(
+        "US Ctrl+Shift+/",
+        gdk::Key::question,
+        KEYCODE_SLASH,
+        ctrl_shift,
+    );
+    settle();
+    assert!(shell.key_sheet.is_open());
+    shell.press_keycode(
+        "US Ctrl+Shift+/ close",
+        gdk::Key::question,
+        KEYCODE_SLASH,
+        ctrl_shift,
+    );
+    settle();
+    assert!(!shell.key_sheet.is_open());
+
+    // Dvorak Ctrl+Z sits on physical US `/` (keycode 61): ASCII letters must
+    // never fall back to a punctuation shortcut.
+    shell.press_keycode("Dvorak Ctrl+Z", gdk::Key::z, KEYCODE_SLASH, ctrl);
+    settle();
+    assert!(
+        !shell.key_sheet.is_open(),
+        "ASCII letter Ctrl+Z on keycode 61 must not open the key sheet"
+    );
+
+    // Quotes palette (Ctrl+'): Swedish unshifted `'` (keycode 51), German
+    // shifted `'` (`Ctrl+Shift+#`, keycode 51), Swedish/German physical US `'`
+    // (`ä`, keycode 48), and US-Intl dead acute (`dead_acute`, keycode 48).
+    let buffer = shell.editor.buffer();
+    buffer.place_cursor(&buffer.end_iter());
+    let before = contents(&buffer);
+
+    for (label, keyval, keycode, state) in [
+        ("SE Ctrl+'", gdk::Key::apostrophe, 51, ctrl),
+        ("DE Ctrl+Shift+#", gdk::Key::apostrophe, 51, ctrl_shift),
+        (
+            "SE/DE Ctrl+ä (US ' keycode)",
+            gdk::Key::adiaeresis,
+            KEYCODE_APOSTROPHE,
+            ctrl,
+        ),
+        (
+            "US-Intl Ctrl+dead_acute (US ' keycode)",
+            gdk::Key::dead_acute,
+            KEYCODE_APOSTROPHE,
+            ctrl,
+        ),
+    ] {
+        shell.press_keycode(label, keyval, keycode, state);
+        settle();
+        assert!(shell.quotes.is_open(), "{label} should open Quotes palette");
+        shell.press("Esc", gdk::Key::Escape, none);
+        settle();
+        assert!(!shell.quotes.is_open());
+        assert_eq!(
+            contents(&buffer),
+            before,
+            "Esc after {label} should leave text unchanged"
+        );
+    }
+
+    // Swedish/German dead_acute on physical US `=` (keycode 21) still zooms in
+    // and does NOT open Quotes; Dvorak `-` on physical US `'` (keycode 48)
+    // zooms out by keyval and does NOT open Quotes.
+    shell.press_keycode(
+        "SE/DE Ctrl+dead_acute (=)",
+        gdk::Key::dead_acute,
+        KEYCODE_EQUAL,
+        ctrl,
+    );
+    settle();
+    assert!(!shell.quotes.is_open());
+    assert_eq!(shell.settings.borrow().font_size, 18);
+
+    shell.press_keycode(
+        "Dvorak Ctrl+- (US ' keycode)",
+        gdk::Key::minus,
+        KEYCODE_APOSTROPHE,
+        ctrl,
+    );
+    settle();
+    assert!(!shell.quotes.is_open());
+    assert_eq!(shell.settings.borrow().font_size, 17);
+
+    // Settings (Ctrl+,): French AZERTY `;` on physical US `,` (keycode 59)
+    // opens Settings by hardware keycode fallback, and SE/DE Ctrl+Shift+7 opens
+    // the key sheet over Settings while SE/DE Ctrl+- stays a no-op there.
+    shell.press_keycode("FR Ctrl+;", gdk::Key::semicolon, KEYCODE_COMMA, ctrl);
+    settle();
+    assert_eq!(shell.visible(), "settings");
+
+    shell.press_keycode(
+        "SE/DE Ctrl+- on Settings",
+        gdk::Key::minus,
+        KEYCODE_SLASH,
+        ctrl,
+    );
+    settle();
+    assert!(!shell.key_sheet.is_open());
+    assert_eq!(shell.visible(), "settings");
+
+    shell.press_keycode(
+        "SE/DE Ctrl+Shift+7 on Settings",
+        gdk::Key::slash,
+        16,
+        ctrl_shift,
+    );
+    settle();
+    assert!(shell.key_sheet.is_open());
+    shell.press_keycode(
+        "SE/DE Ctrl+Shift+7 close on Settings",
+        gdk::Key::slash,
+        16,
+        ctrl_shift,
+    );
+    settle();
+    assert!(!shell.key_sheet.is_open());
 }
 
 /// Print and write the table; fail when a count moved away from the baseline
