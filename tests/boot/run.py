@@ -18,11 +18,11 @@ Scenarios (all run by `make test-boot`):
              Boot enforcing (shim -> Debian systemd-boot -> Debian kernel);
              assert the installer made Carrel the first UEFI boot entry
   update-secureboot  update + forced rollback on the Secure Boot install
-  release    flash the release .img.xz onto a fresh, larger virtual USB disk,
-             try Carrel from it on UEFI, UEFI Secure Boot and BIOS
+  release    flash the release .img.xz onto a fresh, larger virtual external
+             drive and choose Start Carrel on UEFI, UEFI Secure Boot and BIOS
   actions    walk the user-facing action inventory (spec/actions.md) via QMP
              keys, checking visible OCR effects and /data files across a reboot
-             (pass --swedish once #49 lands to also check å ä ö typing)
+             (pass --swedish to also check å ä ö typing)
 
 Only the Python standard library and the tools in dev/Dockerfile are used.
 """
@@ -767,6 +767,15 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         "/usr/lib/carrel/online-update-test",
     ):
         expect(root_file(path).exists(), f"missing {path}", failures)
+    installer = root_file("/usr/lib/carrel/installer").read_text()
+    expect("Start Carrel" in installer and "Install Carrel" in installer,
+           "installer menu does not offer Start Carrel / Install Carrel", failures)
+    expect("Carrel runs from the external drive and saves your writing there." in installer,
+           "installer menu is missing Start Carrel explanation", failures)
+    expect("Carrel copies itself to an internal disk and erases that disk." in installer,
+           "installer menu is missing Install Carrel explanation", failures)
+    expect("USB stick" not in installer and "Try Carrel" not in installer,
+           "installer still mentions USB stick or Try Carrel", failures)
     update_url = root_file("/usr/lib/carrel/update-url").read_text().strip()
     expect(update_url.startswith("http"), f"update URL is not a URL: {update_url!r}", failures)
     expect(root_file("/usr/lib/systemd/import-pubring.gpg").stat().st_size > 100,
@@ -799,7 +808,12 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
            "session does not read the renderer choice", failures)
     expect("ExecStopPost=+/usr/lib/carrel/session-check" in session,
            "session does not fall back to software after a renderer failure", failures)
-    for helper in ("/usr/lib/carrel/session-env", "/usr/lib/carrel/session-check"):
+    for helper in (
+        "/usr/lib/carrel/session-env",
+        "/usr/lib/carrel/session-check",
+        "/usr/lib/carrel/keyboard-layout",
+        "/usr/bin/loadkeys",
+    ):
         path = root_file(helper)
         expect(path.is_file() and path.stat().st_mode & 0o111 != 0,
                f"{helper} is missing or not executable", failures)
@@ -1145,6 +1159,91 @@ def scenario_powercut(disk: Path, out: Path, timeout: float) -> None:
     print("powercut: PASS", flush=True)
 
 
+def scenario_keyboard(image: Path, out: Path, timeout: float) -> None:
+    """Switch Keyboard layout to Swedish in Settings and type å ä ö via QMP."""
+    disk = out / "test" / "keyboard" / "disk.img"
+    disk.parent.mkdir(parents=True, exist_ok=True)
+    disk.unlink(missing_ok=True)
+    run("cp", "--sparse=always", "--reflink=auto", image, disk)
+
+    with Qemu("keyboard", out, "uefi", [{"path": disk, "format": "raw"}]) as qemu:
+        boot_to_editor(qemu, timeout, first_run=True)
+        runtime_check(qemu)
+        # Type before changing layout to verify the open document is saved
+        # before the session reloads.
+        qemu.type_text("Before ")
+        time.sleep(0.8)
+
+        # Open Settings (Ctrl+,), jump to Keyboard layout (End, then 4× Up),
+        # cycle 8 steps from US to Swedish, and leave with Esc to reload cage.
+        qemu.key("ctrl-comma")
+        time.sleep(1.5)
+        qemu.key("end")
+        time.sleep(0.3)
+        for _ in range(4):
+            qemu.key("up")
+            time.sleep(0.2)
+        for _ in range(8):
+            qemu.key("right")
+            time.sleep(0.2)
+        time.sleep(0.5)
+        qemu.key("esc")
+
+        # Session restarts cleanly so cage picks up XKB_DEFAULT_LAYOUT=se.
+        # systemd stops echoing unit status lines to ttyS0 after boot, so
+        # wait until the restarted editor has reopened "Before".
+        time.sleep(3)
+        with tempfile.TemporaryDirectory(prefix="keyboard-reload-") as scratch:
+            shot = Path(scratch) / "screen.png"
+            deadline = time.monotonic() + min(timeout, 90.0)
+            while True:
+                qemu.screenshot(shot)
+                text = ocr(shot)
+                if "Before" in text and "Settings" not in text:
+                    break
+                if time.monotonic() > deadline:
+                    raise BootError(
+                        f"[keyboard] editor did not reopen after reload; OCR:\n{text}"
+                    )
+                time.sleep(1.5)
+        time.sleep(1.5)
+
+        # Physical US keys [ ' ; map to å ä ö under the Swedish XKB layout.
+        for key in (
+            "bracket_left",
+            "apostrophe",
+            "semicolon",
+            "spc",
+            "shift-bracket_left",
+            "shift-apostrophe",
+            "shift-semicolon",
+        ):
+            qemu.key(key)
+            time.sleep(0.15)
+        time.sleep(6)  # autosave flushes after 5 s idle
+        qemu.screenshot(out / "screenshot-keyboard-se.png")
+        qemu.powerdown()
+
+    parts = read_gpt(disk)
+    data = part_named(parts, "carrel-data")
+    saved_keyboard = None
+    found: list[str] = []
+    with mounted(disk, data, "ext4", root=out / "test") as root:
+        settings_file = root / "writing" / ".carrel" / "settings.json"
+        if settings_file.is_file():
+            saved_keyboard = json.loads(settings_file.read_text()).get("keyboard")
+        for path in (root / "writing").rglob("*.md"):
+            if path.is_file():
+                found.append(path.read_text(errors="replace"))
+    if saved_keyboard != "se":
+        raise BootError(f"expected saved keyboard 'se', got {saved_keyboard!r}")
+    if not any("Before " in text and "åäö ÅÄÖ" in text for text in found):
+        raise BootError(
+            f"Swedish characters åäö ÅÄÖ did not reach /data/writing; found: {found!r}"
+        )
+    print("keyboard: PASS (Swedish layout produced åäö ÅÄÖ)", flush=True)
+
+
 def stage_update(disk: Path, update_dir: Path, out: Path) -> None:
     parts = read_gpt(disk)
     data = part_named(parts, "carrel-data")
@@ -1278,10 +1377,10 @@ def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
 
 
 def flash_release(archive: Path, out: Path) -> Path:
-    """Decompress a release .img.xz onto a fresh virtual USB disk.
+    """Decompress a release .img.xz onto a fresh virtual external drive.
 
-    The disk is larger than the image, like a real stick: the image is written
-    to its start with dd, as the README tells users to do.
+    The drive is larger than the image, like a real external drive: the image
+    is written to its start with dd, as the README tells users to do.
     """
     usb = out / "test" / "release" / "usb.img"
     usb.parent.mkdir(parents=True, exist_ok=True)
@@ -1296,7 +1395,7 @@ def flash_release(archive: Path, out: Path) -> Path:
 
 
 def scenario_release(archive: Path, out: Path, timeout: float) -> None:
-    """Try Carrel from the flashed release image on UEFI, Secure Boot and BIOS."""
+    """Start Carrel from the flashed release image on UEFI, Secure Boot and BIOS."""
     for label, mode, secure in (
         ("uefi", "uefi", False), ("secureboot", "uefi", True), ("bios", "bios", False),
     ):
@@ -1306,15 +1405,16 @@ def scenario_release(archive: Path, out: Path, timeout: float) -> None:
                   usb={"path": usb, "format": "raw"}) as qemu:
             wait_installer(qemu, "main menu", timeout)
             time.sleep(2)
-            qemu.key("ret")  # Try Carrel (the default choice)
-            wait_installer(qemu, "try selected", 60)
+            qemu.screenshot(out / f"screenshot-release-{label}-menu.png", light=False)
+            qemu.key("ret")  # Start Carrel (the default choice)
+            wait_installer(qemu, "start selected", 60)
             boot_to_editor(qemu, timeout, first_run=True)
             runtime_check(qemu)
             qemu.type_text("The quiet morning")
             time.sleep(1.5)
             qemu.screenshot(out / f"screenshot-release-{label}.png")
             # The first boot grows the data partition (carrel-grow-data) and its
-            # file system (systemd-growfs) to the stick's size.
+            # file system (systemd-growfs) to the external drive's size.
             if "Starting systemd-growfs@data.service" not in qemu.text():
                 raise BootError(f"[{name}] the data file system was not grown")
             qemu.powerdown()
@@ -1322,9 +1422,9 @@ def scenario_release(archive: Path, out: Path, timeout: float) -> None:
         if data["size"] < 10 * 1024**3:
             raise BootError(
                 f"[{name}] data is {data['size'] // 1024**2} MiB after the first boot; "
-                "expected it to fill the 16 GiB stick"
+                "expected it to fill the 16 GiB external drive"
             )
-        print(f"release-{label}: PASS (flashed image, try Carrel)", flush=True)
+        print(f"release-{label}: PASS (flashed image, Start Carrel)", flush=True)
     usb.unlink(missing_ok=True)
 
 
@@ -1640,12 +1740,12 @@ def main() -> int:
     parser.add_argument("--release-image", type=Path,
                         help="release .img.xz for the 'release' scenario")
     parser.add_argument("--scenario", default="all",
-                        choices=("all", "checks", "uefi", "bios", "install",
-                                 "recovery", "powercut", "update", "online",
-                                 "secureboot", "update-secureboot", "release",
-                                 "actions"))
+                        choices=("all", "checks", "uefi", "bios", "keyboard",
+                                 "install", "recovery", "powercut", "update",
+                                 "online", "secureboot", "update-secureboot",
+                                 "release", "actions"))
     parser.add_argument("--swedish", action="store_true",
-                        help="enable Swedish layout typing checks in the 'actions' scenario (once #49 lands)")
+                        help="enable Swedish layout typing checks in the 'actions' scenario")
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="seconds for one boot (default 300)")
     parser.add_argument("--expect-version", default="0.3.0",
@@ -1681,6 +1781,8 @@ def main() -> int:
             scenario_boot("uefi", args.image, args.out, args.timeout)
         if args.scenario in ("all", "bios"):
             scenario_boot("bios", args.image, args.out, args.timeout)
+        if args.scenario in ("all", "keyboard"):
+            scenario_keyboard(args.image, args.out, args.timeout)
         if args.scenario in ("all", "actions"):
             scenario_actions(args.image, args.out, args.timeout,
                              swedish=args.swedish)

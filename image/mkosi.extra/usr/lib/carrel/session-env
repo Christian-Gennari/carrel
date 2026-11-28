@@ -1,5 +1,5 @@
 #!/bin/sh
-# Chooses how the Carrel session draws, before every start of
+# Configures the Carrel session environment before every start of
 # carrel-session.service (runs as root, writes /run/carrel/session.env, which
 # the unit reads as its EnvironmentFile).
 #
@@ -10,22 +10,40 @@
 # 3D on). A writing screen needs no GPU, so pixman in cage and cairo in GTK are
 # the dependable choice there. The same applies on real hardware once
 # session-check has seen the session fail right after it started on this boot.
+#
+# Keyboard layout: cage reads XKB_DEFAULT_LAYOUT (and XKB_DEFAULT_VARIANT) only
+# at start, so session-env writes them from the saved user setting (falling back
+# to /etc/default/keyboard or us).
 set -eu
 
-dir=/run/carrel
+dir="${CARREL_RUN_DIR:-/run/carrel}"
 mkdir -p "$dir"
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+keyboard_helper="${CARREL_KEYBOARD_HELPER:-$script_dir/keyboard-layout}"
 
 software=no
 if [ -e "$dir/software-render" ]; then
     software=yes
-elif systemd-detect-virt --vm --quiet; then
+elif [ "${CARREL_DETECT_VIRT:-auto}" = yes ]; then
+    software=yes
+elif [ "${CARREL_DETECT_VIRT:-auto}" = auto ] \
+    && command -v systemd-detect-virt >/dev/null 2>&1 \
+    && systemd-detect-virt --vm --quiet; then
     software=yes
 fi
 
-if [ "$software" = yes ]; then
-    printf 'WLR_RENDERER=pixman\nGSK_RENDERER=cairo\n' > "$dir/session.env.tmp"
-else
-    : > "$dir/session.env.tmp"
-fi
-mv "$dir/session.env.tmp" "$dir/session.env"
+tmp="$dir/session.env.tmp"
+{
+    printf 'CARREL_SESSION=1\n'
+    if [ "$software" = yes ]; then
+        printf 'WLR_RENDERER=pixman\nGSK_RENDERER=cairo\n'
+    fi
+    if [ -x "$keyboard_helper" ]; then
+        "$keyboard_helper" --xkb
+    else
+        printf 'XKB_DEFAULT_LAYOUT=us\n'
+    fi
+} > "$tmp"
+mv "$tmp" "$dir/session.env"
 date +%s > "$dir/session-start"

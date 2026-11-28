@@ -99,6 +99,15 @@ impl Keys {
     }
 
     pub fn handle(&self, keyval: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
+        self.handle_keycode(keyval, 0, state)
+    }
+
+    pub fn handle_keycode(
+        &self,
+        keyval: gdk::Key,
+        keycode: u32,
+        state: gdk::ModifierType,
+    ) -> glib::Propagation {
         let visible = self.visible();
         let control = state.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = state.contains(gdk::ModifierType::SHIFT_MASK);
@@ -185,7 +194,7 @@ impl Keys {
             // editor, so it sees the editor's keys first.
             _ => match self.quotes.handle_key(keyval, state) {
                 glib::Propagation::Stop => glib::Propagation::Stop,
-                glib::Propagation::Proceed => self.editor.handle_key(keyval, state),
+                glib::Propagation::Proceed => self.editor.handle_key(keyval, keycode, state),
             },
         }
     }

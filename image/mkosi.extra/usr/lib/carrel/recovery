@@ -12,6 +12,10 @@ log() {
     echo "CARREL-RECOVERY: $*" >>/dev/ttyS0 2>/dev/null || true
 }
 
+if [ -x /usr/lib/carrel/keyboard-layout ]; then
+    /usr/lib/carrel/keyboard-layout --apply-vconsole 2>/dev/null || true
+fi
+
 slot="$(sed -n 's/.*carrel\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
 case "$slot" in
     a) other=b ;;
