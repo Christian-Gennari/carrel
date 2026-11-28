@@ -57,7 +57,7 @@ const SHUTDOWN_NETWORK_WAIT: Duration = Duration::from_secs(7);
 
 /// The status line while the last sync before power off runs. The shell shows
 /// it over the editor.
-pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before power off…";
+pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before shutting down…";
 
 /// How long a pairing may wait for the user to approve the code.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(600);
@@ -1176,6 +1176,35 @@ impl DaemonCore {
         Ok(battery)
     }
 
+    // ----- shut down, restart, suspend ------------------------------------
+
+    /// Shut the computer down for the Command palette. The history commit
+    /// keeps the version the shell has just saved; "Sync at shutdown" runs
+    /// from logind's `PrepareForShutdown(true)`, like for the power button.
+    pub async fn shut_down(&self) -> Result<()> {
+        self.commit_before("before shut down").await;
+        self.session.shut_down().await
+    }
+
+    /// Like [`Self::shut_down`], but the computer comes back up.
+    pub async fn restart(&self) -> Result<()> {
+        self.commit_before("before restart").await;
+        self.session.restart().await
+    }
+
+    /// Suspend for the Command palette. The history commit is the one
+    /// [`Self::handle_sleep_pending`] makes for any suspend.
+    pub async fn suspend(&self) -> Result<()> {
+        self.session.suspend().await
+    }
+
+    /// A failed commit never keeps the computer on: the file is already saved.
+    async fn commit_before(&self, reason: &str) {
+        if let Err(error) = self.commit_async(reason).await {
+            tracing::error!(%error, reason, "history commit failed");
+        }
+    }
+
     // ----- updates ---------------------------------------------------------
 
     /// The update row's one-line state.
@@ -1589,12 +1618,24 @@ mod tests {
     #[derive(Default)]
     struct FakeSession {
         suspends: AtomicUsize,
+        shutdowns: AtomicUsize,
+        restarts: AtomicUsize,
     }
 
     #[async_trait]
     impl Session for FakeSession {
         async fn suspend(&self) -> Result<()> {
             self.suspends.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn shut_down(&self) -> Result<()> {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn restart(&self) -> Result<()> {
+            self.restarts.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
 
@@ -2413,6 +2454,31 @@ mod tests {
         assert_eq!(outcome, ShutdownSync::NotPaired);
         assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
         assert!(harness.rfkill.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn palette_power_actions_commit_then_ask_logind() {
+        let harness = Harness::new(Arc::new(FakeRunner::default()), BatteryStatus::UNKNOWN);
+        let note = harness.core.writing_dir.join("note.md");
+        let versions = || {
+            let history = harness.core.history.lock().unwrap();
+            history.history("note.md").unwrap().len()
+        };
+
+        // Suspend leaves the commit to the PrepareForSleep path.
+        fs::write(&note, "one").unwrap();
+        harness.core.suspend().await.unwrap();
+        assert_eq!(harness.session.suspends.load(Ordering::SeqCst), 1);
+        assert_eq!(versions(), 0);
+
+        harness.core.shut_down().await.unwrap();
+        assert_eq!(harness.session.shutdowns.load(Ordering::SeqCst), 1);
+        assert_eq!(versions(), 1);
+
+        fs::write(&note, "one two").unwrap();
+        harness.core.restart().await.unwrap();
+        assert_eq!(harness.session.restarts.load(Ordering::SeqCst), 1);
+        assert_eq!(versions(), 2);
     }
 
     #[tokio::test]

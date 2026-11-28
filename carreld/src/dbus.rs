@@ -331,6 +331,26 @@ impl Daemon1 {
         self.core.apply_update().map_err(failed)
     }
 
+    // ----- shut down, restart, suspend -------------------------------------
+
+    /// Commit history, then ask logind to shut the computer down.
+    #[zbus(name = "ShutDown")]
+    async fn shut_down(&self) -> fdo::Result<()> {
+        self.core.shut_down().await.map_err(failed)
+    }
+
+    /// Commit history, then ask logind to restart the computer.
+    #[zbus(name = "Restart")]
+    async fn restart(&self) -> fdo::Result<()> {
+        self.core.restart().await.map_err(failed)
+    }
+
+    /// Ask logind to suspend, as closing the lid does.
+    #[zbus(name = "Suspend")]
+    async fn suspend(&self) -> fdo::Result<()> {
+        self.core.suspend().await.map_err(failed)
+    }
+
     // ----- library (Quotes palette) ---------------------------------------
 
     /// Ranked quotes, notes and passages from the cached Nostos library.

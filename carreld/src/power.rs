@@ -152,8 +152,12 @@ pub trait DelayGuard: Send {
 /// logind, abstracted so the sleep and shutdown paths are testable.
 #[async_trait]
 pub trait Session: Send + Sync {
-    /// Ask logind to suspend now (low battery).
+    /// Ask logind to suspend now (low battery, or the Command palette).
     async fn suspend(&self) -> Result<()>;
+    /// Ask logind to shut the computer down.
+    async fn shut_down(&self) -> Result<()>;
+    /// Ask logind to restart the computer.
+    async fn restart(&self) -> Result<()>;
     /// Take a delay inhibitor for the next suspend.
     async fn inhibit_sleep(&self) -> Result<Box<dyn DelayGuard>>;
     /// Take a delay inhibitor for the next power off or reboot.
@@ -197,6 +201,17 @@ impl LogindSession {
         Self::default()
     }
 
+    /// Call `Suspend`, `PowerOff` or `Reboot` without a polkit prompt.
+    /// carreld runs as root, so logind needs no polkit rule for it.
+    async fn ask(&self, method: &'static str) -> Result<()> {
+        let manager = self.manager().await?;
+        manager
+            .call_method(method, &(false,))
+            .await
+            .with_context(|| format!("ask logind to {method}"))?;
+        Ok(())
+    }
+
     async fn connection(&self) -> Result<Connection> {
         let mut slot = self.connection.lock().await;
         if let Some(connection) = slot.as_ref() {
@@ -226,12 +241,15 @@ impl LogindSession {
 #[async_trait]
 impl Session for LogindSession {
     async fn suspend(&self) -> Result<()> {
-        let manager = self.manager().await?;
-        manager
-            .call_method("Suspend", &(false,))
-            .await
-            .context("ask logind to suspend")?;
-        Ok(())
+        self.ask("Suspend").await
+    }
+
+    async fn shut_down(&self) -> Result<()> {
+        self.ask("PowerOff").await
+    }
+
+    async fn restart(&self) -> Result<()> {
+        self.ask("Reboot").await
     }
 
     async fn inhibit_sleep(&self) -> Result<Box<dyn DelayGuard>> {

@@ -336,7 +336,7 @@ boots `carrel-recovery.conf`, i.e. `systemd.unit=carrel-recovery.target`.
 - Copy all writing to a USB drive (first partition: ext4, FAT or exFAT; on
   FAT and exFAT, names those drives cannot hold are changed, never overwritten)
 - Reset settings (keeps writing)
-- Power off
+- Shut down
 
 There is no shell or getty in the recovery target.
 

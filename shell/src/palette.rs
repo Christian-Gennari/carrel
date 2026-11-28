@@ -14,13 +14,14 @@
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gtk::prelude::*;
 use gtk::{gdk, glib, pango};
 
-use crate::daemon::Client;
+use crate::daemon::{Client, DaemonClient, DaemonError};
 use crate::editor::EditorPage;
-use crate::i18n::{tr, trf};
+use crate::i18n::{daemon_message, tr, trf};
 use crate::nav::Navigator;
 use crate::quotes::QuotePalette;
 use crate::settings::{FontChoice, GoalDisplay, Settings, ThemeChoice};
@@ -71,6 +72,9 @@ pub enum Action {
     Wifi,
     Pair,
     Update,
+    ShutDown,
+    Restart,
+    Suspend,
     /// A document by its path relative to the writing root.
     Open(PathBuf),
 }
@@ -180,6 +184,10 @@ pub fn actions(settings: &Settings, update: Option<&str>) -> Vec<PaletteRow> {
         };
         add(&label, "", Action::Update);
     }
+    // Last, so no short query lands on them by accident.
+    add(tr("palette.shut_down"), "", Action::ShutDown);
+    add(tr("palette.restart"), "", Action::Restart);
+    add(tr("palette.suspend"), "", Action::Suspend);
     rows
 }
 
@@ -663,6 +671,9 @@ impl CommandPalette {
                 self.settings_page.open_row(SettingRow::Update);
                 self.settings_page.apply_update();
             }
+            Action::ShutDown => self.power(|daemon| daemon.shut_down()),
+            Action::Restart => self.power(|daemon| daemon.restart()),
+            Action::Suspend => self.power(|daemon| daemon.suspend()),
             Action::Open(path) => {
                 self.nav.show_editor();
                 if let Err(error) = self.editor.open_rel(&path) {
@@ -670,6 +681,30 @@ impl CommandPalette {
                 }
             }
         }
+    }
+
+    /// Save the open document, then shut down, restart or suspend. A document
+    /// that cannot be saved keeps the computer on and says why.
+    fn power<W>(self: &Rc<Self>, ask: W)
+    where
+        W: FnOnce(Arc<dyn DaemonClient>) -> Result<(), DaemonError> + Send + 'static,
+    {
+        self.editor.maybe_name_untitled(true);
+        if let Err(error) = self.editor.flush_now() {
+            self.nav.show_editor();
+            self.editor.flash_note(&error, 8);
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        self.client.spawn(ask, move |result| {
+            let (Some(palette), Err(error)) = (weak.upgrade(), result) else {
+                return;
+            };
+            palette.nav.show_editor();
+            palette
+                .editor
+                .flash_note(&daemon_message(&error.to_string()), 8);
+        });
     }
 
     fn save_settings(&self) {
@@ -1324,6 +1359,62 @@ mod tests {
         assert_eq!(ready_version("none"), None);
         let rows = rows_for("update", &settings, Some("0.2.0"), &[]);
         assert_eq!(rows[0].label, "Install update 0.2.0");
+    }
+
+    #[test]
+    fn the_palette_ends_with_shut_down_restart_and_suspend() {
+        let rows = actions(&settings(), Some("0.2.0"));
+        let last: Vec<(&str, &str, Action)> = rows[rows.len() - 3..]
+            .iter()
+            .map(|row| (row.label.as_str(), row.keys, row.action.clone()))
+            .collect();
+        assert_eq!(
+            last,
+            vec![
+                ("Shut down", "", Action::ShutDown),
+                ("Restart", "", Action::Restart),
+                ("Suspend", "", Action::Suspend),
+            ]
+        );
+        for (query, action) in [
+            ("shut", Action::ShutDown),
+            ("restart", Action::Restart),
+            ("suspend", Action::Suspend),
+        ] {
+            assert_eq!(rows_for(query, &settings(), None, &[])[0].action, action);
+        }
+    }
+
+    #[test]
+    fn the_power_actions_are_worded_in_every_language() {
+        let wanted = [
+            ("English", ["Shut down", "Restart", "Suspend"]),
+            ("Deutsch", ["Herunterfahren", "Neu starten", "Standby"]),
+            ("Français", ["Éteindre", "Redémarrer", "Mettre en veille"]),
+            ("Español", ["Apagar", "Reiniciar", "Suspender"]),
+            ("Italiano", ["Spegni", "Riavvia", "Sospendi"]),
+            ("Português", ["Desligar", "Reiniciar", "Suspender"]),
+            (
+                "Nederlands",
+                ["Uitschakelen", "Opnieuw opstarten", "Slaapstand"],
+            ),
+            ("Polski", ["Wyłącz", "Uruchom ponownie", "Uśpij"]),
+            (
+                "Türkçe",
+                ["Bilgisayarı kapat", "Yeniden başlat", "Uyku moduna al"],
+            ),
+        ];
+        assert_eq!(wanted.map(|(name, _)| name), crate::locale::LANGUAGES);
+        for (language, labels) in wanted {
+            crate::i18n::set_language(language);
+            let rows = actions(&settings(), None);
+            let shown: Vec<&str> = rows[rows.len() - 3..]
+                .iter()
+                .map(|row| row.label.as_str())
+                .collect();
+            assert_eq!(shown, labels, "{language}");
+        }
+        crate::i18n::set_language("English");
     }
 
     #[test]

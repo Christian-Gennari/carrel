@@ -185,7 +185,7 @@ while true; do
         "previous" "Boot previous system" \
         "copy" "Copy all writing to USB drive" \
         "reset" "Reset settings (keeps writing)" \
-        "poweroff" "Power off" \
+        "poweroff" "Shut down" \
         3>&1 1>&2 2>&3)" || choice=poweroff
 
     case "$choice" in
@@ -193,7 +193,7 @@ while true; do
         copy) copy_writing ;;
         reset) reset_settings ;;
         poweroff)
-            log "power off"
+            log "shut down"
             systemctl poweroff
             exit 0
             ;;

@@ -81,8 +81,12 @@
 - D-Bus API: `Commit()`, `History(path)`, `Restore(path, rev)`, `Sync()`,
   `SyncStatus` signal, `Pair(backend, …)`, `Unpair()`, `WifiScan()`,
   `WifiConnect(…)`, `SearchLibrary(query, filters)`, `UpdateStatus()`,
-  `ApplyUpdate()`.
-- Sync at shutdown: on `PrepareForShutdown(true)` (power off or reboot), when
+  `ApplyUpdate()`, `ShutDown()`, `Restart()`, `Suspend()`.
+- `ShutDown()`, `Restart()` and `Suspend()` ask logind (`PowerOff`, `Reboot`,
+  `Suspend`). The shell saves the open file before it calls them. `carreld`
+  makes the call because it runs as root: the `writer` user gets no polkit
+  rights and the image needs no polkit.
+- Sync at shutdown: on `PrepareForShutdown(true)` (shut down or restart), when
   the setting is on and a backend is paired, one last sync (no update check)
   before the inhibitor is released. 12 s for everything, of which at most 7 s
   waiting for a saved Wi-Fi network; skipped at once when offline with no saved

@@ -283,7 +283,7 @@ pub enum DaemonEvent {
 
 /// The `SyncStatus` message of the last sync before power off
 /// (`carreld::SHUTDOWN_SYNC_MESSAGE`).
-pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before power off…";
+pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before shutting down…";
 
 /// Everything the shell needs from `page.nostos.Carrel.Daemon1`.
 ///
@@ -333,6 +333,15 @@ pub trait DaemonClient: Send + Sync + 'static {
 
     /// `ApplyUpdate()`.
     fn apply_update(&self) -> Result<(), DaemonError>;
+
+    /// `ShutDown()`: logind powers the computer off. The caller saves first.
+    fn shut_down(&self) -> Result<(), DaemonError>;
+
+    /// `Restart()`: logind reboots. The caller saves first.
+    fn restart(&self) -> Result<(), DaemonError>;
+
+    /// `Suspend()`: the same as closing the lid. The caller saves first.
+    fn suspend(&self) -> Result<(), DaemonError>;
 
     /// `ListDrives()`. Not on the daemon interface yet (WP6 adds it).
     fn list_drives(&self) -> Result<Vec<Drive>, DaemonError>;
@@ -641,6 +650,18 @@ impl DaemonClient for ZbusDaemon {
         self.call_unit("ApplyUpdate", &())
     }
 
+    fn shut_down(&self) -> Result<(), DaemonError> {
+        self.call_unit("ShutDown", &())
+    }
+
+    fn restart(&self) -> Result<(), DaemonError> {
+        self.call_unit("Restart", &())
+    }
+
+    fn suspend(&self) -> Result<(), DaemonError> {
+        self.call_unit("Suspend", &())
+    }
+
     fn list_drives(&self) -> Result<Vec<Drive>, DaemonError> {
         Err(DaemonError::unsupported(tr("daemon.no_drives")))
     }
@@ -878,6 +899,8 @@ struct FakeState {
     quotes: Vec<FakeQuote>,
     library_unavailable: bool,
     search_filters: Vec<(String, HashMap<String, String>)>,
+    /// `ShutDown`, `Restart` and `Suspend` calls, in order.
+    power: Vec<&'static str>,
 }
 
 /// An in-memory daemon with plausible data.
@@ -1021,6 +1044,7 @@ impl FakeDaemon {
                 quotes: demo_quotes(),
                 library_unavailable: false,
                 search_filters: Vec::new(),
+                power: Vec::new(),
             }),
             listeners: Mutex::new(Vec::new()),
         }
@@ -1114,6 +1138,21 @@ impl FakeDaemon {
             _ => {}
         }
         fake
+    }
+
+    /// The power calls received so far, by D-Bus method name.
+    pub fn power_calls(&self) -> Vec<&'static str> {
+        self.state
+            .lock()
+            .map(|state| state.power.clone())
+            .unwrap_or_default()
+    }
+
+    fn record_power(&self, call: &'static str) -> Result<(), DaemonError> {
+        self.state
+            .lock()
+            .map(|mut state| state.power.push(call))
+            .map_err(|_| DaemonError::failed("fake lock"))
     }
 
     pub fn set_battery(&self, battery: BatteryStatus) {
@@ -1450,6 +1489,18 @@ impl DaemonClient for FakeDaemon {
             state.update = "applying".into();
         }
         Ok(())
+    }
+
+    fn shut_down(&self) -> Result<(), DaemonError> {
+        self.record_power("ShutDown")
+    }
+
+    fn restart(&self) -> Result<(), DaemonError> {
+        self.record_power("Restart")
+    }
+
+    fn suspend(&self) -> Result<(), DaemonError> {
+        self.record_power("Suspend")
     }
 
     fn list_drives(&self) -> Result<Vec<Drive>, DaemonError> {
