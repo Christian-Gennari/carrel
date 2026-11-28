@@ -1600,7 +1600,9 @@ class FakeSyncServer:
         self.files: dict[str, dict] = {}
         self.seq = 0
         self.rounds = 0
+        self.finished = -1
         self.lock = threading.Lock()
+        self.requests: list[str] = []
         for index in range(self.FILES):
             self._change(str(uuid.UUID(int=index + 1)), f"Synced/Part {index}.md")
 
@@ -1636,6 +1638,8 @@ class FakeSyncServer:
                              "content": self.files[file_id]["content"]}
             if route == "/library":
                 if since == str(self.rounds):
+                    # The library is the last step of a sync round.
+                    self.finished = self.rounds
                     return 200, {"cursor": since}
                 items = [{"id": f"item-{n}", "kind": "highlight", "book_id": "b",
                           "text": f"round {self.rounds} quote {n} " * 20}
@@ -1685,9 +1689,11 @@ def fake_sync_server(directory: Path):
             self.wfile.write(data)
 
         def do_GET(self) -> None:
+            server.requests.append(f"{time.monotonic():.1f} GET {self.path}")
             self.reply(*server.get(self.path))
 
         def do_PUT(self) -> None:
+            server.requests.append(f"{time.monotonic():.1f} PUT {self.path}")
             body = self.rfile.read(int(self.headers["Content-Length"]))
             self.reply(*server.put(self.path, json.loads(body)))
 
@@ -1710,13 +1716,12 @@ def fake_sync_server(directory: Path):
         httpd.server_close()
 
 
-def type_paragraphs(qemu: Qemu, count: int, pause: float) -> None:
-    """Sentences with pauses long enough for the idle autosave (5 s)."""
-    for number in range(count):
-        qemu.type_text("the quiet morning came slowly over the hill. ", delay=0.08)
-        if number % 2:
-            qemu.key("ret")
-        time.sleep(pause)
+def type_sentence(qemu: Qemu, number: int, pause: float) -> None:
+    """A sentence, then a pause long enough to matter to the autosave."""
+    qemu.type_text("the quiet morning came slowly over the hill. ", delay=0.08)
+    if number % 2:
+        qemu.key("ret")
+    time.sleep(pause)
 
 
 def scenario_typing_slow_disk(image: Path, out: Path, timeout: float) -> None:
@@ -1757,7 +1762,11 @@ def scenario_typing_slow_disk(image: Path, out: Path, timeout: float) -> None:
             qemu.type_text("a slow stick", delay=0.08)
             qemu.key("ret")
             time.sleep(3)
-            type_paragraphs(qemu, 8, 6.0)
+            sentences = 0
+            unfinished = 0
+            for _ in range(8):
+                type_sentence(qemu, sentences, 6.0)
+                sentences += 1
             qemu.screenshot(out / "screenshot-typing-slow-disk.png")
 
             # Typing while sync rounds run.
@@ -1767,14 +1776,25 @@ def scenario_typing_slow_disk(image: Path, out: Path, timeout: float) -> None:
                 time.sleep(2)
                 qemu.key("esc")
                 time.sleep(1)
-                type_paragraphs(qemu, 8, 3.0)
+                # Type for as long as the round runs, and a little after.
+                started = sentences
+                while server.finished < server.rounds or sentences - started < 4:
+                    if sentences - started >= 40:
+                        unfinished += 1
+                        qemu.screenshot(out / "screenshot-typing-slow-disk-stuck.png")
+                        break
+                    type_sentence(qemu, sentences, 3.0)
+                    sentences += 1
             qemu.screenshot(out / "screenshot-typing-slow-disk-sync.png")
 
             qemu.qmp.command("block_set_io_throttle", device="usb",
                              **dict.fromkeys(SLOW_STICK, 0))
             time.sleep(15)
             qemu.powerdown()
+        (base / "requests.log").write_text("\n".join(server.requests))
 
+    # The first boot grew the data partition to fill the drive.
+    data = part_named(read_gpt(usb), "carrel-data")
     with mounted(usb, data, "ext4", root=out / "test") as root:
         journal = subprocess.run(
             ["journalctl", "--directory", str(root / "var" / "log" / "journal"),
@@ -1788,18 +1808,31 @@ def scenario_typing_slow_disk(image: Path, out: Path, timeout: float) -> None:
     if "carrel-stall: typing" not in lines:
         raise BootError("the shell logged no typing; the stall log did not run")
     after = lines[lines.index("carrel-stall: typing"):]
-    stalls = [int(match.group(1)) for line in after
-              if (match := re.fullmatch(r"carrel-stall: (\d+) ms", line))]
+    stalls: list[int] = []
+    phases: dict[str, list[int]] = {"sync off": [], "during sync": []}
+    phase = "sync off"
+    for line in after:
+        if line == "carrel-stall: sync syncing":
+            phase = "during sync"
+        elif line.startswith("carrel-stall: sync "):
+            phase = "sync off"
+        elif match := re.fullmatch(r"carrel-stall: (\d+) ms", line):
+            stalls.append(int(match.group(1)))
+            phases[phase].append(int(match.group(1)))
     synced = sum("sync finished" in line for line in lines)
     typed = written.count("quiet morning")
-    print(f"typing-slow-disk: {len(stalls)} stalls over 50 ms, "
-          f"worst {max(stalls, default=0)} ms, total {sum(stalls)} ms; "
-          f"{synced} sync rounds finished; {typed} of 24 sentences on disk\n"
-          f"  stalls (ms): {stalls}", flush=True)
+    print(f"typing-slow-disk: {synced} sync rounds finished; "
+          f"{typed} of {sentences} sentences on disk", flush=True)
+    for name, found in phases.items():
+        print(f"  {name}: {len(found)} stalls over 50 ms, worst "
+              f"{max(found, default=0)} ms, total {sum(found)} ms: {found}",
+              flush=True)
+    if unfinished:
+        raise BootError(f"{unfinished} sync round(s) did not finish in time")
     if synced < 2:
         raise BootError(f"expected two finished sync rounds, saw {synced}")
-    if typed != 24:
-        raise BootError(f"expected 24 typed sentences on disk, found {typed}")
+    if typed != sentences:
+        raise BootError(f"expected {sentences} typed sentences on disk, found {typed}")
     if stalls:
         raise BootError(f"the main loop stalled while typing: {stalls}")
     usb.unlink(missing_ok=True)

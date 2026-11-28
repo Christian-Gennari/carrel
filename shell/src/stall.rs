@@ -40,6 +40,13 @@ pub fn edited() {
     }
 }
 
+/// Put `text` in the log, to tell the stalls of one phase from another.
+pub fn note(text: &str) {
+    if WATCHING.get() {
+        eprintln!("carrel-stall: {text}");
+    }
+}
+
 /// Call `report` with the lateness of every tick that is over [`LIMIT`], for
 /// as long as the returned handle is not set.
 pub fn watch(report: impl Fn(Duration) + 'static) -> Rc<Cell<bool>> {
