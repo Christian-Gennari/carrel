@@ -7,7 +7,8 @@ Scenarios (all run by `make test-boot`):
   bios       same through SeaBIOS + GRUB
   install    boot the base image as a USB stick, install to a blank disk,
              boot the installed disk and screenshot the editor
-  recovery   boot the recovery entry and screenshot its menu
+  recovery   boot the recovery entry, copy the writing to ext4, FAT and exFAT
+             USB drives, check the copies, then reset settings and power off
   powercut   type with QMP sendkey, system_reset, boot again and check that
              the text reached /data/writing
   shutdown-sync  turn "Sync at shutdown" on, pair a server that never answers,
@@ -192,12 +193,14 @@ def loop_device(image: Path, part: dict):
 
 @contextlib.contextmanager
 def mounted(image: Path, part: dict, fstype: str, *, writable: bool = False,
-            root: Path | None = None):
+            root: Path | None = None, extra_options: str = ""):
     if root is not None:
         root.mkdir(parents=True, exist_ok=True)
     with loop_device(image, part) as dev:
         mountpoint = Path(tempfile.mkdtemp(prefix="mnt-", dir=root))
         options = "rw" if writable else "ro"
+        if extra_options:
+            options += f",{extra_options}"
         try:
             run("mount", "-t", fstype, "-o", options, dev, mountpoint)
         except subprocess.CalledProcessError:
@@ -289,18 +292,29 @@ def serve_directory(directory: Path):
             proc.wait()
 
 
-def make_usb_disk(path: Path, size: str = "512M") -> dict:
-    """A small raw disk with one ext4 partition, for the recovery copy test."""
+# Filesystem: (MBR partition type, mkfs command, options to read it back).
+USB_FILESYSTEMS = {
+    "ext4": ("83", ("mkfs.ext4", "-q", "-F"), ""),
+    "vfat": ("0c", ("mkfs.vfat",), "utf8"),
+    "exfat": ("07", ("mkfs.exfat",), ""),
+}
+
+
+def make_usb_disk(path: Path, fstype: str, size: str = "512M") -> dict:
+    """A small raw disk with one partition, for the recovery copy test."""
+    kind, mkfs, _ = USB_FILESYSTEMS[fstype]
     path.parent.mkdir(parents=True, exist_ok=True)
     path.unlink(missing_ok=True)
     run("truncate", "-s", size, path)
     run(
         tool("sfdisk"), path,
-        input="label: dos\nstart=2048, size=1046528, type=83\n",
+        input=f"label: dos\nstart=2048, size=1046528, type={kind}\n",
         text=True,
     )
-    run(tool("mkfs.ext4"), "-q", "-F", "-E", "offset=1048576", path)
-    return {"first": 2048, "size": 1046528 * 512}
+    part = {"first": 2048, "size": 1046528 * 512}
+    with loop_device(path, part) as dev:
+        run(tool(mkfs[0]), *mkfs[1:], dev, stdout=subprocess.DEVNULL)
+    return part
 
 
 # --------------------------------------------------------------------------
@@ -1095,51 +1109,152 @@ def scenario_install(image: Path, out: Path, timeout: float,
     return target
 
 
+# Writing seeded for the recovery copy.  ext4 allows all of these names; FAT
+# and exFAT reject some characters and ignore case, so the copy renames them.
+RECOVERY_PLAIN_NAMES = (
+    "Recovery note.md",
+    "Anteckning om sjön åäö.md",
+    "Chapters/Part one.md",
+)
+RECOVERY_HARD_NAMES = (
+    'What is "truth" <now> | *maybe*.md',
+    "Draft?.md",
+    "Draft-.md",
+    "Time: 12.md",
+    "Case.md",
+    "case.md",
+    "Ideas./Inside.md",
+)
+
+
+def _recovery_copy(disk: Path, usb: Path, out: Path, timeout: float,
+                   fstype: str, *, reset: bool) -> None:
+    """Boot the recovery menu, copy to the USB drive, optionally reset."""
+    name = f"recovery-{fstype}"
+    with Qemu(name, out, "uefi", [{"path": disk, "format": "raw"}],
+              usb={"path": usb, "format": "raw"}) as qemu:
+        qemu.wait(r"CARREL-RECOVERY: menu", timeout)
+        time.sleep(3)  # whiptail draws over the last kernel console lines
+        qemu.screenshot(out / f"screenshot-{name}.png", light=False)
+        if "Started carrel-session.service" in qemu.text():
+            raise BootError("the session started while booted into recovery")
+        # Menu: Boot previous, Copy writing, Reset settings, Power off.
+        qemu.key("down")
+        qemu.key("ret")
+        time.sleep(2)  # the disk menu is drawn by whiptail
+        qemu.key("ret")
+        qemu.wait(r"CARREL-RECOVERY: (copied to|copy failed|could not mount)", 180)
+        time.sleep(1)
+        qemu.screenshot(out / f"screenshot-{name}-copy.png", light=False)
+        if "CARREL-RECOVERY: copied to" not in qemu.text():
+            raise BootError(f"recovery copy to {fstype} failed\n{qemu.serial_tail(30)}")
+        if reset:
+            qemu.key("ret")  # close the "Writing copied" box
+            time.sleep(2)
+            qemu.key("down")
+            qemu.key("down")
+            qemu.key("ret")
+            time.sleep(2)
+            qemu.screenshot(out / "screenshot-recovery-reset.png", light=False)
+            qemu.key("ret")  # Yes
+            qemu.wait(r"CARREL-RECOVERY: settings reset", 60)
+            time.sleep(1)
+            qemu.key("ret")  # close the "Settings were reset" box
+            time.sleep(2)
+            for _ in range(3):
+                qemu.key("down")
+            qemu.key("ret")  # Power off, which flushes /data
+            qemu.wait(r"CARREL-RECOVERY: power off", 60)
+            qemu.proc.wait(timeout=90)
+        qemu.stop()
+
+
+def _check_recovery_copy(usb: Path, part: dict, out: Path, fstype: str,
+                         seeded: dict[str, str]) -> None:
+    options = USB_FILESYSTEMS[fstype][2]
+    with mounted(usb, part, fstype, root=out / "test",
+                 extra_options=options) as root:
+        copies = list(root.glob("carrel-writing-*"))
+        if len(copies) != 1:
+            raise BootError(f"{fstype}: expected one copy folder, found {copies}")
+        copy = copies[0]
+        found = {
+            str(path.relative_to(copy)): path.read_bytes().decode(errors="replace")
+            for path in copy.rglob("*") if path.is_file()
+        }
+    exact = seeded if fstype == "ext4" else {
+        name: text for name, text in seeded.items()
+        if name in RECOVERY_PLAIN_NAMES
+        or name in (".carrel/settings.json", ".carrel/stats.json")
+    }
+    wrong = [name for name, text in exact.items() if found.get(name) != text]
+    if wrong:
+        raise BootError(f"{fstype}: missing or changed on the drive: {wrong}; "
+                        f"found {sorted(found)}")
+    # Renamed files keep their contents and never overwrite each other.
+    lost = [name for name, text in seeded.items() if text not in found.values()]
+    if lost:
+        raise BootError(f"{fstype}: contents lost for {lost}; found {sorted(found)}")
+
+
 def scenario_recovery(disk: Path, out: Path, timeout: float) -> None:
     parts = read_gpt(disk)
     esp = part_typed(parts, ESP_GUID)
     data = part_named(parts, "carrel-data")
     loader_path = "loader/loader.conf"
-    note = "Recovery note\n\nThis must reach the USB drive.\n"
+    seeded = {
+        name: f"{name}\n\nThis must reach the USB drive.\n"
+        for name in RECOVERY_PLAIN_NAMES + RECOVERY_HARD_NAMES
+    }
+    seeded[".carrel/settings.json"] = '{"theme": "dark"}\n'
+    seeded[".carrel/stats.json"] = '{"words": 1}\n'
+    seeded[".carrel/trash/recovery/Old?.md"] = "A deleted draft.\n"
     with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
-        writing = root / "writing"
-        writing.mkdir(parents=True, exist_ok=True)
-        (writing / "Recovery note.md").write_text(note)
-    usb = out / "test" / "recovery" / "usb.img"
-    usb_part = make_usb_disk(usb)
+        for name, text in seeded.items():
+            path = root / "writing" / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+    filesystems = [
+        fstype for fstype, (_, mkfs, _) in USB_FILESYSTEMS.items()
+        if Path(tool(mkfs[0])).exists()
+    ]
     with mounted(disk, esp, "vfat", writable=True, root=out / "test") as boot:
         loader = boot / loader_path
         original = loader.read_text()
         loader.write_text("default carrel-recovery.conf\ntimeout 2\neditor no\n")
+    failures: list[str] = []
     try:
-        with Qemu("recovery", out, "uefi", [{"path": disk, "format": "raw"}],
-                  usb={"path": usb, "format": "raw"}) as qemu:
-            qemu.wait(r"CARREL-RECOVERY: menu", timeout)
-            time.sleep(3)  # whiptail draws over the last kernel console lines
-            qemu.screenshot(out / "screenshot-recovery.png", light=False)
-            if "Started carrel-session.service" in qemu.text():
-                raise BootError("the session started while booted into recovery")
-            # Menu: Boot previous, Copy writing, Reset settings, Power off.
-            qemu.key("down")
-            qemu.key("ret")
-            time.sleep(2)  # the disk menu is drawn by whiptail
-            qemu.key("ret")
-            qemu.wait(r"CARREL-RECOVERY: copied to", 180)
-            time.sleep(1)
-            qemu.screenshot(out / "screenshot-recovery-copy.png", light=False)
-            qemu.stop()
+        for fstype in filesystems:
+            usb = out / "test" / "recovery" / f"usb-{fstype}.img"
+            part = make_usb_disk(usb, fstype)
+            # Reset last: the earlier copies must still see the settings.
+            reset = fstype == filesystems[-1]
+            try:
+                _recovery_copy(disk, usb, out, timeout, fstype, reset=reset)
+                _check_recovery_copy(usb, part, out, fstype, seeded)
+                print(f"recovery: {fstype} copy ok", flush=True)
+            except BootError as exc:
+                failures.append(str(exc))
+                print(f"recovery: {fstype} FAILED: {exc}", flush=True)
     finally:
         with mounted(disk, esp, "vfat", writable=True, root=out / "test") as boot:
             (boot / loader_path).write_text(original)
+    if failures:
+        raise BootError("; ".join(failures))
 
-    found = []
-    with mounted(usb, usb_part, "ext4", root=out / "test") as root:
-        for path in root.rglob("*"):
-            if path.is_file():
-                found.append(path.read_text(errors="replace"))
-    if not any("This must reach the USB drive." in text for text in found):
-        raise BootError("recovery copy did not put the writing on the USB drive")
-    print("recovery: PASS (writing copied to USB)", flush=True)
+    with mounted(disk, data, "ext4", root=out / "test") as root:
+        writing = root / "writing"
+        for name in (".carrel/settings.json", ".carrel/stats.json"):
+            if (writing / name).exists():
+                raise BootError(f"reset settings left {name}")
+        for name, text in seeded.items():
+            if name in (".carrel/settings.json", ".carrel/stats.json"):
+                continue
+            path = writing / name
+            if not path.is_file() or path.read_text() != text:
+                raise BootError(f"reset settings damaged {name}")
+    print(f"recovery: PASS (copied to {', '.join(filesystems)}; settings reset)",
+          flush=True)
 
 
 def scenario_powercut(disk: Path, out: Path, timeout: float) -> None:
