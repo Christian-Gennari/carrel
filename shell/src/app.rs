@@ -284,7 +284,9 @@ pub fn run(application: &gtk::Application) {
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
     {
         let keys = Rc::clone(&keys);
-        key.connect_key_pressed(move |_, keyval, _, state| keys.handle(keyval, state));
+        key.connect_key_pressed(move |_, keyval, keycode, state| {
+            keys.handle_keycode(keyval, keycode, state)
+        });
     }
     window.add_controller(key);
 
