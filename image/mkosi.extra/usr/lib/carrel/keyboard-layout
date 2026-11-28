@@ -1,0 +1,145 @@
+#!/bin/sh
+# Resolves Carrel's saved keyboard layout for the Wayland session (cage) and
+# for the Linux console ttys (recovery and installer).
+#
+# Modes:
+#   --xkb             print XKB_DEFAULT_LAYOUT=... (and XKB_DEFAULT_VARIANT=...)
+#   --vconsole        print the Linux console keymap name for loadkeys
+#   --apply-vconsole  load the Linux console keymap with loadkeys (best effort)
+#
+# Precedence:
+#   1. $CARREL_SETTINGS_FILE (default /data/writing/.carrel/settings.json)
+#   2. $CARREL_ETC_KEYBOARD  (default /etc/default/keyboard)
+#   3. us
+set -eu
+
+settings="${CARREL_SETTINGS_FILE:-/data/writing/.carrel/settings.json}"
+etc_keyboard="${CARREL_ETC_KEYBOARD:-/etc/default/keyboard}"
+
+trim() {
+    printf '%s' "$1" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+}
+
+# Extract a JSON string value for a given key from pretty or compact JSON.
+json_string() {
+    file=$1
+    key=$2
+    [ -r "$file" ] || return 1
+    { tr '\n\r' '  ' < "$file"; printf '\n'; } \
+        | sed -n 's/.*"'"$key"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
+# Extract the first comma-separated entry of a KEY=VALUE line from
+# /etc/default/keyboard.
+etc_value() {
+    file=$1
+    key=$2
+    [ -r "$file" ] || return 1
+    sed -n 's/^[[:space:]]*'"$key"'=//p' "$file" | head -n 1 | {
+        IFS= read -r val || exit 0
+        val=$(trim "$val")
+        val=${val#\"}; val=${val%\"}
+        val=${val#\'}; val=${val%\'}
+        trim "${val%%,*}"
+        printf '\n'
+    }
+}
+
+# Keep only safe XKB identifiers so a hand-edited file cannot inject extra
+# environment lines or flags.
+is_safe_token() {
+    case "$1" in
+        ''|*[!a-zA-Z0-9_-]*) return 1 ;;
+        -*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
+layout=""
+variant=""
+
+# 1. Saved user setting from settings.json.
+if [ -r "$settings" ]; then
+    raw_keyboard=$(trim "$(json_string "$settings" keyboard || true)")
+    raw_variant=$(trim "$(json_string "$settings" keyboard_variant || true)")
+    if [ -n "$raw_keyboard" ]; then
+        # Accept either "se" or XKB "layout(variant)" notation.
+        case "$raw_keyboard" in
+            *'('*')')
+                cand_layout=${raw_keyboard%%(*}
+                cand_variant=${raw_keyboard#*(}
+                cand_variant=${cand_variant%)}
+                ;;
+            *)
+                cand_layout=$raw_keyboard
+                cand_variant=$raw_variant
+                ;;
+        esac
+        cand_layout=$(printf '%s' "$cand_layout" | tr 'A-Z' 'a-z')
+        if is_safe_token "$cand_layout"; then
+            layout=$cand_layout
+            if is_safe_token "$cand_variant"; then
+                variant=$cand_variant
+            fi
+        fi
+    fi
+fi
+
+# 2. Image default from /etc/default/keyboard (first boot before settings.json).
+if [ -z "$layout" ] && [ -r "$etc_keyboard" ]; then
+    cand_layout=$(trim "$(etc_value "$etc_keyboard" XKBLAYOUT || true)" | tr 'A-Z' 'a-z')
+    cand_variant=$(trim "$(etc_value "$etc_keyboard" XKBVARIANT || true)")
+    if is_safe_token "$cand_layout"; then
+        layout=$cand_layout
+        if is_safe_token "$cand_variant"; then
+            variant=$cand_variant
+        fi
+    fi
+fi
+
+# 3. Safe fallback.
+if [ -z "$layout" ]; then
+    layout=us
+    variant=""
+fi
+
+vconsole_keymap() {
+    case "$1" in
+        us) printf '%s\n' us ;;
+        gb) printf '%s\n' uk ;;
+        de) printf '%s\n' de-latin1 ;;
+        fr) printf '%s\n' fr-latin9 ;;
+        es) printf '%s\n' es ;;
+        it) printf '%s\n' it ;;
+        pt) printf '%s\n' pt-latin1 ;;
+        br) printf '%s\n' br-abnt2 ;;
+        se) printf '%s\n' se-latin1 ;;
+        no) printf '%s\n' no-latin1 ;;
+        dk) printf '%s\n' dk-latin1 ;;
+        pl) printf '%s\n' pl ;;
+        tr) printf '%s\n' trq ;;
+        *)  printf '%s\n' us ;;
+    esac
+}
+
+case "${1:---xkb}" in
+    --xkb)
+        printf 'XKB_DEFAULT_LAYOUT=%s\n' "$layout"
+        if [ -n "$variant" ]; then
+            printf 'XKB_DEFAULT_VARIANT=%s\n' "$variant"
+        fi
+        ;;
+    --vconsole)
+        vconsole_keymap "$layout"
+        ;;
+    --apply-vconsole)
+        km=$(vconsole_keymap "$layout")
+        if command -v loadkeys >/dev/null 2>&1; then
+            loadkeys -q "$km" || true
+        fi
+        ;;
+    *)
+        echo "usage: $0 [--xkb|--vconsole|--apply-vconsole]" >&2
+        exit 2
+        ;;
+esac
