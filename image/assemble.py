@@ -70,7 +70,7 @@ BASE_CMDLINE = (
     "console=tty0 console=ttyS0,115200 systemd.getty_auto=no audit=0 "
     "ro rootfstype=erofs"
 )
-VERSION = os.environ.get("CARREL_VERSION", "0.2.3")
+VERSION = os.environ.get("CARREL_VERSION", "0.2.4")
 UPDATE_VERSION = os.environ.get("CARREL_UPDATE_VERSION", "0.3.0")
 
 SYSTEMD_REPART = "/usr/bin/systemd-repart"

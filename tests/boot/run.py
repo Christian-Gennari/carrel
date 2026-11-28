@@ -1270,7 +1270,9 @@ def scenario_recovery(disk: Path, out: Path, timeout: float) -> None:
 
 def scenario_powercut(disk: Path, out: Path, timeout: float) -> None:
     with Qemu("powercut", out, "uefi", [{"path": disk, "format": "raw"}]) as qemu:
-        boot_to_editor(qemu, timeout)
+        # In an "all" run the disk comes from the recovery scenario, which ends
+        # with "Reset settings", so this boot can start at First run again.
+        boot_to_editor(qemu, timeout, first_run=True)
         qemu.type_text("hello power cut")
         time.sleep(2.5)  # journal fdatasync is at most 1 s behind
         qemu.reset()
