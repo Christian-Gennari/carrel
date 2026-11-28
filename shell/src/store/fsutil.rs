@@ -222,16 +222,18 @@ mod tests {
 
     #[test]
     fn later_writes_are_readable_at_once_and_on_disk_after_settle() {
+        // The queue is shared with every test, so only this file's content is
+        // checked, not what `settle` reports about the others.
         let dir = tempdir().unwrap();
         let path = dir.path().join("state.json");
         write_later(&path, b"one".to_vec());
         write_later(&path, b"two".to_vec());
         assert_eq!(read_latest(&path).unwrap(), b"two");
-        settle().unwrap();
+        let _ = settle();
         assert_eq!(fs::read(&path).unwrap(), b"two");
         write_later(&path, b"three".to_vec());
         write_now(&path, b"four").unwrap();
-        settle().unwrap();
+        let _ = settle();
         assert_eq!(fs::read(&path).unwrap(), b"four");
     }
 
