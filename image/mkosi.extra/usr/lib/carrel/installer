@@ -35,6 +35,10 @@ fi
 
 log "external drive boot on /dev/$src_disk"
 
+if [ -x /usr/lib/carrel/keyboard-layout ]; then
+    /usr/lib/carrel/keyboard-layout --apply-vconsole 2>/dev/null || true
+fi
+
 # Make Carrel the default UEFI boot entry.  The entry points at Microsoft-
 # signed shim on the new ESP, so Secure Boot stays on and the writer never opens
 # the firmware settings.  Best effort: a firmware that refuses the entry still

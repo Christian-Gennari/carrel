@@ -805,7 +805,12 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
            "session does not read the renderer choice", failures)
     expect("ExecStopPost=+/usr/lib/carrel/session-check" in session,
            "session does not fall back to software after a renderer failure", failures)
-    for helper in ("/usr/lib/carrel/session-env", "/usr/lib/carrel/session-check"):
+    for helper in (
+        "/usr/lib/carrel/session-env",
+        "/usr/lib/carrel/session-check",
+        "/usr/lib/carrel/keyboard-layout",
+        "/usr/bin/loadkeys",
+    ):
         path = root_file(helper)
         expect(path.is_file() and path.stat().st_mode & 0o111 != 0,
                f"{helper} is missing or not executable", failures)
@@ -1151,6 +1156,91 @@ def scenario_powercut(disk: Path, out: Path, timeout: float) -> None:
     print("powercut: PASS", flush=True)
 
 
+def scenario_keyboard(image: Path, out: Path, timeout: float) -> None:
+    """Switch Keyboard layout to Swedish in Settings and type å ä ö via QMP."""
+    disk = out / "test" / "keyboard" / "disk.img"
+    disk.parent.mkdir(parents=True, exist_ok=True)
+    disk.unlink(missing_ok=True)
+    run("cp", "--sparse=always", "--reflink=auto", image, disk)
+
+    with Qemu("keyboard", out, "uefi", [{"path": disk, "format": "raw"}]) as qemu:
+        boot_to_editor(qemu, timeout, first_run=True)
+        runtime_check(qemu)
+        # Type before changing layout to verify the open document is saved
+        # before the session reloads.
+        qemu.type_text("Before ")
+        time.sleep(0.8)
+
+        # Open Settings (Ctrl+,), jump to Keyboard layout (End, then 4× Up),
+        # cycle 8 steps from US to Swedish, and leave with Esc to reload cage.
+        qemu.key("ctrl-comma")
+        time.sleep(1.5)
+        qemu.key("end")
+        time.sleep(0.3)
+        for _ in range(4):
+            qemu.key("up")
+            time.sleep(0.2)
+        for _ in range(8):
+            qemu.key("right")
+            time.sleep(0.2)
+        time.sleep(0.5)
+        qemu.key("esc")
+
+        # Session restarts cleanly so cage picks up XKB_DEFAULT_LAYOUT=se.
+        # systemd stops echoing unit status lines to ttyS0 after boot, so
+        # wait until the restarted editor has reopened "Before".
+        time.sleep(3)
+        with tempfile.TemporaryDirectory(prefix="keyboard-reload-") as scratch:
+            shot = Path(scratch) / "screen.png"
+            deadline = time.monotonic() + min(timeout, 90.0)
+            while True:
+                qemu.screenshot(shot)
+                text = ocr(shot)
+                if "Before" in text and "Settings" not in text:
+                    break
+                if time.monotonic() > deadline:
+                    raise BootError(
+                        f"[keyboard] editor did not reopen after reload; OCR:\n{text}"
+                    )
+                time.sleep(1.5)
+        time.sleep(1.5)
+
+        # Physical US keys [ ' ; map to å ä ö under the Swedish XKB layout.
+        for key in (
+            "bracket_left",
+            "apostrophe",
+            "semicolon",
+            "spc",
+            "shift-bracket_left",
+            "shift-apostrophe",
+            "shift-semicolon",
+        ):
+            qemu.key(key)
+            time.sleep(0.15)
+        time.sleep(6)  # autosave flushes after 5 s idle
+        qemu.screenshot(out / "screenshot-keyboard-se.png")
+        qemu.powerdown()
+
+    parts = read_gpt(disk)
+    data = part_named(parts, "carrel-data")
+    saved_keyboard = None
+    found: list[str] = []
+    with mounted(disk, data, "ext4", root=out / "test") as root:
+        settings_file = root / "writing" / ".carrel" / "settings.json"
+        if settings_file.is_file():
+            saved_keyboard = json.loads(settings_file.read_text()).get("keyboard")
+        for path in (root / "writing").rglob("*.md"):
+            if path.is_file():
+                found.append(path.read_text(errors="replace"))
+    if saved_keyboard != "se":
+        raise BootError(f"expected saved keyboard 'se', got {saved_keyboard!r}")
+    if not any("Before " in text and "åäö ÅÄÖ" in text for text in found):
+        raise BootError(
+            f"Swedish characters åäö ÅÄÖ did not reach /data/writing; found: {found!r}"
+        )
+    print("keyboard: PASS (Swedish layout produced åäö ÅÄÖ)", flush=True)
+
+
 def stage_update(disk: Path, update_dir: Path, out: Path) -> None:
     parts = read_gpt(disk)
     data = part_named(parts, "carrel-data")
@@ -1350,9 +1440,10 @@ def main() -> int:
     parser.add_argument("--release-image", type=Path,
                         help="release .img.xz for the 'release' scenario")
     parser.add_argument("--scenario", default="all",
-                        choices=("all", "checks", "uefi", "bios", "install",
-                                 "recovery", "powercut", "update", "online",
-                                 "secureboot", "update-secureboot", "release"))
+                        choices=("all", "checks", "uefi", "bios", "keyboard",
+                                 "install", "recovery", "powercut", "update",
+                                 "online", "secureboot", "update-secureboot",
+                                 "release"))
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="seconds for one boot (default 300)")
     parser.add_argument("--expect-version", default="0.3.0",
@@ -1388,6 +1479,8 @@ def main() -> int:
             scenario_boot("uefi", args.image, args.out, args.timeout)
         if args.scenario in ("all", "bios"):
             scenario_boot("bios", args.image, args.out, args.timeout)
+        if args.scenario in ("all", "keyboard"):
+            scenario_keyboard(args.image, args.out, args.timeout)
         if args.scenario in ("all", "install", "recovery", "powercut", "update",
                              "online"):
             reused = args.out / "test" / "install" / "disk.img"
