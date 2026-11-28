@@ -41,7 +41,7 @@ const HINTS: [(&str, &str); 5] = [
     ("Enter", "Open"),
     ("Type", "Search"),
     ("F2", "Rename"),
-    ("M", "Move"),
+    ("Shift+M", "Move"),
     ("Del", "Delete"),
 ];
 const MOVE_HINTS: [(&str, &str); 3] =
@@ -154,6 +154,16 @@ impl FilesPage {
         self.screen.is_dialog_open()
     }
 
+    #[cfg(test)]
+    pub(crate) fn query(&self) -> String {
+        self.query.borrow().clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_move_mode(&self) -> bool {
+        self.mode.get() == EntryMode::Move
+    }
+
     pub(crate) fn handle_key(
         self: &Rc<Self>,
         keyval: gdk::Key,
@@ -245,9 +255,15 @@ impl FilesPage {
                 glib::Propagation::Stop
             }
             _ => {
-                // Plain letters search; the capital M moves, so every letter
-                // (including a lowercase m) can start a query.
-                if shift && key == gdk::Key::m {
+                // Plain letters search; Shift+M moves only when no search query
+                // is active, so typing a capital M inside a query still searches.
+                if !control
+                    && !state
+                        .intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK)
+                    && shift
+                    && key == gdk::Key::m
+                    && self.query.borrow().is_empty()
+                {
                     self.start_move();
                     return glib::Propagation::Stop;
                 }
@@ -582,6 +598,10 @@ impl FilesPage {
             }
             // The folder tree starts here.
             self.recent_rows.set(self.rows.borrow().len());
+        }
+        if !entries.is_empty() || !recent.is_empty() {
+            let header = folder_section_header(&self.current_dir.borrow());
+            self.push_header(&header);
         }
         for entry in entries {
             if entry.is_dir {
@@ -1435,7 +1455,7 @@ fn folder_label(dir: &Path) -> String {
 
 /// The printable character a key press means, or `None` for a command chord,
 /// a function key or an editing key. Shift is allowed: it is how the writer
-/// types a capital in the query (and capital M is Move).
+/// types a capital in the query (and Shift+M moves when the query is empty).
 fn typed_character(keyval: gdk::Key, state: gdk::ModifierType) -> Option<char> {
     if state.intersects(
         gdk::ModifierType::CONTROL_MASK
@@ -1461,6 +1481,13 @@ fn display_path(dir: &Path) -> String {
     } else {
         format!("Writing / {}", dir.display())
     }
+}
+
+fn folder_section_header(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "All files".to_owned())
 }
 
 /// Reject empty names, path separators, and hidden names.
@@ -1515,7 +1542,8 @@ pub(crate) fn ensure_document_extension(
 #[cfg(test)]
 mod tests {
     use super::{
-        editable_name, ensure_document_extension, fuzzy_score, moved_path, typed_character,
+        editable_name, ensure_document_extension, folder_section_header, fuzzy_score, moved_path,
+        typed_character,
     };
     use gtk::gdk;
     use std::path::{Path, PathBuf};
@@ -1609,5 +1637,12 @@ mod tests {
             typed_character(gdk::Key::Return, gdk::ModifierType::empty()),
             None
         );
+    }
+
+    #[test]
+    fn folder_section_header_uses_all_files_at_root_and_folder_name_inside() {
+        assert_eq!(folder_section_header(Path::new("")), "All files");
+        assert_eq!(folder_section_header(Path::new("Novel")), "Novel");
+        assert_eq!(folder_section_header(Path::new("Novel/Part 1")), "Part 1");
     }
 }

@@ -451,6 +451,7 @@ impl EditorPage {
     pub(crate) fn handle_key(
         self: &Rc<Self>,
         keyval: gdk::Key,
+        keycode: u32,
         state: gdk::ModifierType,
     ) -> glib::Propagation {
         let control = state.contains(gdk::ModifierType::CONTROL_MASK);
@@ -468,12 +469,13 @@ impl EditorPage {
                 }
                 return glib::Propagation::Stop;
             }
-            if matches!(keyval, gdk::Key::equal | gdk::Key::plus) {
-                self.change_font(true);
-                return glib::Propagation::Stop;
-            }
-            if keyval == gdk::Key::minus {
-                self.change_font(false);
+            let base = if state.contains(gdk::ModifierType::SHIFT_MASK) {
+                base_keyval_for_keycode(keycode, keyval)
+            } else {
+                None
+            };
+            if let Some(direction) = zoom_direction(keyval, keycode, state, base) {
+                self.change_font(direction == ZoomDirection::In);
                 return glib::Propagation::Stop;
             }
         }
@@ -1308,6 +1310,11 @@ impl EditorPage {
         self.bottom.has_css_class("typing")
     }
 
+    #[cfg(test)]
+    pub(crate) fn note_text(&self) -> Option<String> {
+        self.note.is_visible().then(|| self.note.text().to_string())
+    }
+
     pub fn open_rel(&self, rel: &Path) -> Result<(), String> {
         self.close_document();
         let doc = self
@@ -1644,19 +1651,20 @@ impl EditorPage {
     }
 
     pub(crate) fn change_font(self: &Rc<Self>, larger: bool) {
-        let changed = {
+        let (changed, size) = {
             let mut settings = self.settings.borrow_mut();
-            if larger {
+            let changed = if larger {
                 settings.larger_font()
             } else {
                 settings.smaller_font()
-            }
+            };
+            (changed, settings.font_size)
         };
-        if !changed {
-            return;
+        if changed {
+            self.save_settings();
+            self.reapply_style();
         }
-        self.save_settings();
-        self.reapply_style();
+        self.flash_note(&format!("Text size {size}"), 2);
     }
 
     pub(crate) fn toggle_bottom_line(self: &Rc<Self>) {
@@ -2006,5 +2014,211 @@ impl Lines for BufferLines<'_> {
             iter.forward_to_line_end();
         }
         iter.offset()
+    }
+}
+
+/// Hardware keycodes (XKB = Linux evdev + 8) for the physical zoom keys on a
+/// standard keyboard, used as a fallback when the layout-translated keyval
+/// does not already name `+`, `=`, `-` or the keypad keys.
+pub(crate) const KEYCODE_MINUS: u32 = 20; // KEY_MINUS (12) + 8
+pub(crate) const KEYCODE_EQUAL: u32 = 21; // KEY_EQUAL (13) + 8
+pub(crate) const KEYCODE_KP_SUBTRACT: u32 = 82; // KEY_KPMINUS (74) + 8
+pub(crate) const KEYCODE_KP_ADD: u32 = 86; // KEY_KPPLUS (78) + 8
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ZoomDirection {
+    In,
+    Out,
+}
+
+fn zoom_for_keyval(keyval: gdk::Key) -> Option<ZoomDirection> {
+    match keyval {
+        gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add | gdk::Key::KP_Equal => {
+            Some(ZoomDirection::In)
+        }
+        gdk::Key::minus | gdk::Key::underscore | gdk::Key::KP_Subtract => Some(ZoomDirection::Out),
+        _ => None,
+    }
+}
+
+/// Resolve a zoom shortcut in the editor.
+///
+/// 1. Match the layout-translated `keyval` the writer sees (`+`, `=`, `-`,
+///    `_`, and keypad `KP_Add` / `KP_Subtract` / `KP_Equal`), with or without
+///    Shift (so `Ctrl+Shift+plus` and Nordic/German `Ctrl+Shift+0` for `=`
+///    both work).
+/// 2. When Shift is held and the shifted symbol is not a zoom key (for
+///    instance `Ctrl+Shift++` sends `?` on Swedish or `*` on German), check
+///    the unshifted `base_keyval` of that key on the active layout.
+/// 3. Fall back to the hardware keycode (XKB = evdev + 8) for the keypad and
+///    the physical `=` / `-` positions so non-US layouts still zoom even when
+///    the keyval is a dead key or another symbol.
+pub(crate) fn zoom_direction(
+    keyval: gdk::Key,
+    keycode: u32,
+    state: gdk::ModifierType,
+    base_keyval: Option<gdk::Key>,
+) -> Option<ZoomDirection> {
+    if !state.contains(gdk::ModifierType::CONTROL_MASK)
+        || state.contains(gdk::ModifierType::ALT_MASK)
+    {
+        return None;
+    }
+    if let Some(direction) = zoom_for_keyval(keyval) {
+        return Some(direction);
+    }
+    if state.contains(gdk::ModifierType::SHIFT_MASK) {
+        if let Some(direction) = base_keyval.and_then(zoom_for_keyval) {
+            return Some(direction);
+        }
+    }
+    match keycode {
+        KEYCODE_EQUAL | KEYCODE_KP_ADD => Some(ZoomDirection::In),
+        KEYCODE_MINUS | KEYCODE_KP_SUBTRACT => Some(ZoomDirection::Out),
+        _ => None,
+    }
+}
+
+/// Look up the unshifted (level 0) keyval of `keycode` in the layout group
+/// that produced `keyval`. Matching the group ensures multi-layout sessions
+/// (or synthetic tests on a US display) never substitute a different layout's
+/// base symbol.
+fn base_keyval_for_keycode(keycode: u32, keyval: gdk::Key) -> Option<gdk::Key> {
+    if keycode == 0 {
+        return None;
+    }
+    let display = gdk::Display::default()?;
+    let entries = display.map_keycode(keycode)?;
+    let group = entries
+        .iter()
+        .find(|(_, candidate)| *candidate == keyval)
+        .map(|(keymap_key, _)| keymap_key.group())?;
+    entries
+        .iter()
+        .find(|(keymap_key, _)| keymap_key.group() == group && keymap_key.level() == 0)
+        .map(|(_, key)| *key)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zoom_matches_us_keypad_and_shift_chords() {
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+        let ctrl_shift = ctrl | gdk::ModifierType::SHIFT_MASK;
+
+        assert_eq!(
+            zoom_direction(gdk::Key::equal, KEYCODE_EQUAL, ctrl, None),
+            Some(ZoomDirection::In)
+        );
+        assert_eq!(
+            zoom_direction(gdk::Key::plus, KEYCODE_EQUAL, ctrl_shift, None),
+            Some(ZoomDirection::In)
+        );
+        assert_eq!(
+            zoom_direction(gdk::Key::KP_Add, KEYCODE_KP_ADD, ctrl, None),
+            Some(ZoomDirection::In)
+        );
+        assert_eq!(
+            zoom_direction(gdk::Key::KP_Add, KEYCODE_KP_ADD, ctrl_shift, None),
+            Some(ZoomDirection::In)
+        );
+        assert_eq!(
+            zoom_direction(gdk::Key::minus, KEYCODE_MINUS, ctrl, None),
+            Some(ZoomDirection::Out)
+        );
+        assert_eq!(
+            zoom_direction(gdk::Key::underscore, KEYCODE_MINUS, ctrl_shift, None),
+            Some(ZoomDirection::Out)
+        );
+        assert_eq!(
+            zoom_direction(gdk::Key::KP_Subtract, KEYCODE_KP_SUBTRACT, ctrl, None),
+            Some(ZoomDirection::Out)
+        );
+    }
+
+    #[test]
+    fn zoom_prefers_layout_keyval_over_us_hardware_keycode() {
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+        let ctrl_shift = ctrl | gdk::ModifierType::SHIFT_MASK;
+
+        // Swedish `+` sits on the US `-` physical key (keycode 20): keyval wins.
+        assert_eq!(
+            zoom_direction(gdk::Key::plus, KEYCODE_MINUS, ctrl, None),
+            Some(ZoomDirection::In)
+        );
+        // Swedish `Ctrl+Shift++` sends `?` on keycode 20; level-0 is `+`.
+        assert_eq!(
+            zoom_direction(
+                gdk::Key::question,
+                KEYCODE_MINUS,
+                ctrl_shift,
+                Some(gdk::Key::plus)
+            ),
+            Some(ZoomDirection::In)
+        );
+        // Swedish `-` sits on the US `/` physical key (keycode 61).
+        assert_eq!(
+            zoom_direction(gdk::Key::minus, 61, ctrl, None),
+            Some(ZoomDirection::Out)
+        );
+        // Swedish/German `=` sits on Shift+0 (keycode 19).
+        assert_eq!(
+            zoom_direction(gdk::Key::equal, 19, ctrl_shift, None),
+            Some(ZoomDirection::In)
+        );
+        // Turkish `-` sits on the US `=` physical key (keycode 21): keyval wins.
+        assert_eq!(
+            zoom_direction(gdk::Key::minus, KEYCODE_EQUAL, ctrl, None),
+            Some(ZoomDirection::Out)
+        );
+    }
+
+    #[test]
+    fn zoom_falls_back_to_hardware_keycode_on_non_us_layouts() {
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+
+        // Physical `=` key sending a dead key (Swedish/German) still zooms in.
+        assert_eq!(
+            zoom_direction(gdk::Key::dead_acute, KEYCODE_EQUAL, ctrl, None),
+            Some(ZoomDirection::In)
+        );
+        // Physical `-` key sending `ß` (German) still zooms out.
+        assert_eq!(
+            zoom_direction(gdk::Key::ssharp, KEYCODE_MINUS, ctrl, None),
+            Some(ZoomDirection::Out)
+        );
+        // Keypad hardware keycodes work even if a layout remaps their keyval.
+        assert_eq!(
+            zoom_direction(gdk::Key::VoidSymbol, KEYCODE_KP_ADD, ctrl, None),
+            Some(ZoomDirection::In)
+        );
+        assert_eq!(
+            zoom_direction(gdk::Key::VoidSymbol, KEYCODE_KP_SUBTRACT, ctrl, None),
+            Some(ZoomDirection::Out)
+        );
+    }
+
+    #[test]
+    fn zoom_ignores_alt_unmodified_and_other_keys() {
+        let ctrl = gdk::ModifierType::CONTROL_MASK;
+        let none = gdk::ModifierType::empty();
+
+        assert_eq!(
+            zoom_direction(gdk::Key::plus, KEYCODE_EQUAL, none, None),
+            None
+        );
+        assert_eq!(
+            zoom_direction(
+                gdk::Key::plus,
+                KEYCODE_EQUAL,
+                ctrl | gdk::ModifierType::ALT_MASK,
+                None
+            ),
+            None
+        );
+        assert_eq!(zoom_direction(gdk::Key::a, 38, ctrl, None), None);
+        assert_eq!(zoom_direction(gdk::Key::_0, 19, ctrl, None), None);
     }
 }

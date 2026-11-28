@@ -1,12 +1,13 @@
 #!/bin/bash
 # Carrel installer.
 #
-# Runs only when the running root is on a USB disk (removable or TRAN=usb).
-# Offers "Try Carrel" or "Install to this computer".  Installing copies the
-# running USB image to the internal disk with dd, grows the data partition to
-# fill the disk, makes Carrel the first UEFI boot entry (when the computer
-# booted in UEFI mode) and reboots.  The writer must type ERASE; there is no
-# other confirmation path.
+# Runs only when the running root is on an external drive (removable or
+# TRAN=usb).  Offers "Start Carrel" or "Install Carrel".  "Start Carrel" runs
+# from the external drive and saves writing there.  "Install Carrel" copies the
+# running external drive image to an internal disk with dd, grows the data
+# partition to fill the disk, makes Carrel the first UEFI boot entry (when the
+# computer booted in UEFI mode) and reboots.  The writer must type ERASE; there
+# is no other confirmation path.
 set -u
 
 export TERM=linux
@@ -17,7 +18,8 @@ log() {
     echo "CARREL-INSTALLER: $*" >>/dev/ttyS0 2>/dev/null || true
 }
 
-# The installer is only for USB boots.  Booting the installed disk skips it.
+# The installer is only for boots from an external drive.  Booting an internal
+# disk skips it.
 root_src="$(findmnt -n -o SOURCE / 2>/dev/null || true)"
 # With dm-verity the root is /dev/mapper/root; follow the dependency chain
 # backwards to the physical disk (lsblk -s) instead of only looking at the
@@ -31,7 +33,7 @@ if [ "$removable" != "1" ] && [ "$transport" != "usb" ]; then
     exit 0
 fi
 
-log "USB boot on /dev/$src_disk"
+log "external drive boot on /dev/$src_disk"
 
 if [ -x /usr/lib/carrel/keyboard-layout ]; then
     /usr/lib/carrel/keyboard-layout --apply-vconsole 2>/dev/null || true
@@ -93,11 +95,15 @@ register_boot_entry() {
 
 menu() {
     log "main menu"
-    whiptail --title "Carrel" --menu \
-        "This USB stick runs Carrel. You can try it, or install it on this computer." \
-        15 70 2 \
-        "try" "Try Carrel (nothing is changed)" \
-        "install" "Install to this computer" \
+    whiptail --title "Carrel" --notags --menu \
+        "Start Carrel
+  Carrel runs from the external drive and saves your writing there.
+
+Install Carrel
+  Carrel copies itself to an internal disk and erases that disk." \
+        14 74 2 \
+        "start" "Start Carrel" \
+        "install" "Install Carrel" \
         3>&1 1>&2 2>&3
 }
 
@@ -126,8 +132,8 @@ choose_disk() {
 
 while true; do
     choice="$(menu)" || { log "cancelled; powering off"; systemctl poweroff; exit 0; }
-    if [ "$choice" = "try" ]; then
-        log "try selected"
+    if [ "$choice" = "start" ]; then
+        log "start selected"
         exit 0
     fi
 
@@ -176,7 +182,7 @@ Type ERASE (in capitals) to continue." \
     whiptail --title "Carrel installed" --msgbox \
         "Carrel is installed on /dev/$target.
 
-Remove the USB stick, then press Enter to reboot." 10 70
+Remove the external drive, then press Enter to reboot." 10 70
     log "rebooting"
     systemctl reboot
     exit 0
