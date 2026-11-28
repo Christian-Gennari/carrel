@@ -23,6 +23,13 @@ const NM: &str = "org.freedesktop.NetworkManager";
 const NM_PATH: &str = "/org/freedesktop/NetworkManager";
 const NM_SETTINGS_PATH: &str = "/org/freedesktop/NetworkManager/Settings";
 
+const NM_STATE_ASLEEP: u32 = 10;
+const NM_STATE_DISCONNECTED: u32 = 20;
+const NM_STATE_DISCONNECTING: u32 = 30;
+const NM_STATE_CONNECTED_LOCAL: u32 = 50;
+const NM_STATE_CONNECTED_SITE: u32 = 60;
+const NM_STATE_CONNECTED_GLOBAL: u32 = 70;
+
 const DEVICE_TYPE_WIFI: u32 = 2;
 const AP_FLAG_PRIVACY: u32 = 0x1;
 const ACTIVE_STATE_ACTIVATED: u32 = 2;
@@ -49,6 +56,31 @@ pub enum Connectivity {
     Portal,
     Limited,
     Full,
+}
+
+/// Combine NetworkManager's `State` and `Connectivity` properties.
+///
+/// The image turns connectivity checks off, so `Connectivity` alone does not
+/// say that a device is offline: `State` does. A network with addresses but no
+/// default route (`CONNECTED_LOCAL`) counts as limited, not offline, so a sync
+/// server on that local network stays reachable. While connecting, and when
+/// `State` is unknown, only `Connectivity` counts.
+fn classify_connectivity(state: u32, connectivity: u32) -> Connectivity {
+    let reported = match connectivity {
+        1 => Connectivity::None,
+        2 => Connectivity::Portal,
+        3 => Connectivity::Limited,
+        4 => Connectivity::Full,
+        _ => Connectivity::Unknown,
+    };
+    match (state, reported) {
+        (NM_STATE_ASLEEP | NM_STATE_DISCONNECTED | NM_STATE_DISCONNECTING, _) => Connectivity::None,
+        (NM_STATE_CONNECTED_LOCAL | NM_STATE_CONNECTED_SITE, Connectivity::Unknown) => {
+            Connectivity::Limited
+        }
+        (NM_STATE_CONNECTED_GLOBAL, Connectivity::Unknown) => Connectivity::Full,
+        _ => reported,
+    }
 }
 
 /// Everything the daemon needs from the network manager.
@@ -113,14 +145,9 @@ impl Network for NetworkManager {
     async fn connectivity(&self) -> Result<Connectivity> {
         let connection = self.connection().await?;
         let nm = manager_proxy(&connection).await?;
+        let state: u32 = nm.get_property("State").await.unwrap_or(0);
         let connectivity: u32 = nm.get_property("Connectivity").await.unwrap_or(0);
-        Ok(match connectivity {
-            1 => Connectivity::None,
-            2 => Connectivity::Portal,
-            3 => Connectivity::Limited,
-            4 => Connectivity::Full,
-            _ => Connectivity::Unknown,
-        })
+        Ok(classify_connectivity(state, connectivity))
     }
 }
 
@@ -419,6 +446,46 @@ fn profile_ssid(settings: &HashMap<String, HashMap<String, OwnedValue>>) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn without_a_real_network_the_device_is_offline() {
+        for state in [10, 20, 30] {
+            for connectivity in 0..=4 {
+                assert_eq!(
+                    classify_connectivity(state, connectivity),
+                    Connectivity::None,
+                    "state {state}, connectivity {connectivity}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_local_only_network_is_limited_not_offline() {
+        assert_eq!(classify_connectivity(50, 0), Connectivity::Limited);
+        assert_eq!(classify_connectivity(50, 1), Connectivity::None);
+    }
+
+    #[test]
+    fn connecting_or_unknown_state_follows_the_connectivity_property() {
+        for state in [0, 40] {
+            assert_eq!(classify_connectivity(state, 0), Connectivity::Unknown);
+            assert_eq!(classify_connectivity(state, 1), Connectivity::None);
+            assert_eq!(classify_connectivity(state, 4), Connectivity::Full);
+        }
+    }
+
+    #[test]
+    fn connected_states_use_connectivity_and_fill_in_when_unchecked() {
+        assert_eq!(classify_connectivity(60, 0), Connectivity::Limited);
+        assert_eq!(classify_connectivity(70, 0), Connectivity::Full);
+        for state in [60, 70] {
+            assert_eq!(classify_connectivity(state, 1), Connectivity::None);
+            assert_eq!(classify_connectivity(state, 2), Connectivity::Portal);
+            assert_eq!(classify_connectivity(state, 3), Connectivity::Limited);
+            assert_eq!(classify_connectivity(state, 4), Connectivity::Full);
+        }
+    }
 
     #[test]
     fn profile_ssid_reads_the_802_11_wireless_section() {
