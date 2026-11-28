@@ -25,8 +25,8 @@ futures-util.workspace = true
 qrcode = { version = "0.14", default-features = false }
 tokio.workspace = true
 zbus.workspace = true
+carrel-protocol = { path = "../protocol" }
 
 [dev-dependencies]
 tempfile = "3"
 carreld = { path = "../carreld" }
-carrel-protocol = { path = "../protocol" }

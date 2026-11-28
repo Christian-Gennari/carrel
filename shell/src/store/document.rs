@@ -10,6 +10,10 @@
 //!   allows one second, half leaves room for process scheduling), and
 //! * after five seconds without edits, write the Markdown file atomically:
 //!   `name.md.tmp` → fsync → rename → fsync directory, then clear the journal.
+//!
+//! A sync can write the file while it is open. A save never loses that text:
+//! it is first moved to a conflict copy. A document with nothing to save takes
+//! it over instead ([`Document::look_at_disk`]).
 
 use std::fs::{self, File};
 use std::io;
@@ -17,6 +21,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+use carrel_protocol::{conflict_copy_path, format_conflict_timestamp, now_unix};
 
 use super::fsutil::{atomic_write, slow_disk, sync_dir};
 use super::hash::fnv1a64;
@@ -96,6 +102,12 @@ struct DocState {
     /// When the last edit happened, used for the five second idle save.
     last_edit: Option<Instant>,
     closed: bool,
+    /// Hash of the file as this document last read or wrote it.
+    disk: u64,
+    /// Someone asked for the file to be read again.
+    look: bool,
+    /// The file's new text and the `disk` hash it differs from.
+    external: Option<(String, u64)>,
 }
 
 /// Open a document and replay its journal. Called through `Store`.
@@ -124,6 +136,7 @@ pub fn open(
         .map(|record| record.seq)
         .max();
 
+    let disk = fnv1a64(base.as_bytes());
     let mut text = base;
     let mut char_len = text.chars().count();
     let mut applied_edits = false;
@@ -182,6 +195,9 @@ pub fn open(
         dirty_since: applied_edits.then_some(now),
         last_edit: applied_edits.then_some(now),
         closed: false,
+        disk,
+        look: false,
+        external: None,
     };
 
     let inner = Arc::new(DocInner {
@@ -330,6 +346,28 @@ impl Document {
                 .expect("document state")
                 .rename_failed,
         )
+    }
+
+    /// Read the file again on the writer thread, after a sync may have
+    /// written it. [`Self::take_external`] hands over a changed text.
+    pub fn look_at_disk(&self) {
+        self.inner.state.lock().expect("document state").look = true;
+        self.inner.cv.notify_all();
+    }
+
+    /// The text someone else wrote to the file, now also this document's. The
+    /// caller must show it before the next [`Self::apply`]. `None` while there
+    /// are unsaved edits: their save keeps the other text as a conflict copy.
+    pub fn take_external(&self) -> Option<String> {
+        let mut state = self.inner.state.lock().expect("document state");
+        let (text, replaces) = state.external.take()?;
+        if state.dirty || state.disk != replaces {
+            return None;
+        }
+        state.disk = fnv1a64(text.as_bytes());
+        state.char_len = text.chars().count();
+        state.text = text.clone();
+        Some(text)
     }
 
     /// Do a pending rename, fdatasync the journal and, if needed, atomically
@@ -529,7 +567,9 @@ fn write_snapshot(inner: &DocInner, require_idle: bool, always_sync: bool) -> St
     }
 
     let path = inner.location.lock().expect("location").path.clone();
+    keep_other_version(inner, &path, &snapshot_text)?;
     atomic_write(&path, snapshot_text.as_bytes())?;
+    inner.state.lock().expect("document state").disk = fnv1a64(snapshot_text.as_bytes());
 
     // Only clear the journal if no new edits arrived while we were syncing and
     // writing. If edits arrived in flight, keep the journal (with the durable
@@ -560,6 +600,54 @@ fn write_snapshot(inner: &DocInner, require_idle: bool, always_sync: bool) -> St
     Ok(())
 }
 
+/// Before a save replaces the file: if someone else wrote it since this
+/// document last did, keep their text next to it, named as `carreld` names a
+/// conflict copy (spec/02-sync-protocol.md).
+fn keep_other_version(inner: &DocInner, path: &Path, saving: &str) -> io::Result<()> {
+    let other = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    let known = inner.state.lock().expect("document state").disk;
+    if fnv1a64(&other) == known || other == saving.as_bytes() {
+        return Ok(());
+    }
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Ok(());
+    };
+    let name = name.to_string_lossy();
+    for minute in 0.. {
+        let stamp = format_conflict_timestamp(now_unix() + minute * 60);
+        let copy = parent.join(conflict_copy_path(&name, &stamp, "sync"));
+        match fs::read(&copy) {
+            Ok(existing) if existing == other => break,
+            Ok(_) => continue,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                atomic_write(&copy, &other)?;
+                break;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Read the file for [`Document::look_at_disk`].
+fn read_external(inner: &DocInner) {
+    let _save_guard = inner.save_lock.lock().expect("save mutex");
+    let path = inner.location.lock().expect("location").path.clone();
+    slow_disk(&path);
+    // A file that is gone or no longer text leaves the document as it is.
+    let Ok(text) = fs::read_to_string(&path) else {
+        return;
+    };
+    let mut state = inner.state.lock().expect("document state");
+    if fnv1a64(text.as_bytes()) != state.disk {
+        state.external = Some((text, state.disk));
+    }
+}
+
 fn sync_journal(inner: &DocInner) -> io::Result<()> {
     let path = inner.journal_path.lock().expect("journal path").clone();
     slow_disk(&path);
@@ -568,7 +656,7 @@ fn sync_journal(inner: &DocInner) -> io::Result<()> {
 
 fn writer_loop(inner: Arc<DocInner>) {
     loop {
-        let (sync_due, sync_seq, sync_started, save_due, move_due) = {
+        let (sync_due, sync_seq, sync_started, save_due, move_due, look) = {
             let mut state = inner.state.lock().expect("document state");
             if state.closed {
                 return;
@@ -587,7 +675,7 @@ fn writer_loop(inner: Arc<DocInner>) {
                 (a, b) => a.or(b),
             };
 
-            if state.move_to.is_none() {
+            if state.move_to.is_none() && !state.look {
                 match next {
                     Some(deadline) if deadline > now => {
                         let (guard, _) = inner
@@ -615,8 +703,20 @@ fn writer_loop(inner: Arc<DocInner>) {
                 && state
                     .last_edit
                     .is_some_and(|last| now >= last + inner.cfg.idle_save);
-            (sync_due, state.seq, now, save_due, state.move_to.is_some())
+            let look = std::mem::take(&mut state.look);
+            (
+                sync_due,
+                state.seq,
+                now,
+                save_due,
+                state.move_to.is_some(),
+                look,
+            )
         };
+
+        if look {
+            read_external(&inner);
+        }
 
         if move_due {
             let _save_guard = inner.save_lock.lock().expect("save mutex");
@@ -1033,6 +1133,62 @@ mod tests {
             std::fs::read_to_string(dir.path().join("note.md")).unwrap(),
             "first second"
         );
+    }
+
+    /// The conflict copies next to `note.md`, with their text.
+    fn copies(dir: &Path) -> Vec<(String, String)> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().to_string())
+            .filter(|name| name.starts_with("note (conflict "))
+            .map(|name| {
+                let text = std::fs::read_to_string(dir.join(&name)).unwrap();
+                (name, text)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_save_keeps_what_someone_else_wrote_as_a_conflict_copy() {
+        let (dir, store, _journal) = setup();
+        let doc = store.open_document(Path::new("note.md")).unwrap();
+        doc.apply(0, 0, "mine").unwrap();
+        doc.flush().unwrap();
+        assert!(copies(dir.path()).is_empty());
+
+        std::fs::write(dir.path().join("note.md"), "from the server").unwrap();
+        doc.apply(4, 0, " and more").unwrap();
+        doc.flush().unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "mine and more"
+        );
+        let copies = copies(dir.path());
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert!(copies[0].0.ends_with(" from sync).md"), "{copies:?}");
+        assert_eq!(copies[0].1, "from the server");
+    }
+
+    #[test]
+    fn a_clean_document_takes_over_what_someone_else_wrote() {
+        let (dir, store, _journal) = setup();
+        let doc = store.open_document(Path::new("note.md")).unwrap();
+        std::fs::write(dir.path().join("note.md"), "pulled").unwrap();
+        doc.look_at_disk();
+        let mut taken = None;
+        assert!(wait_until(|| {
+            taken = doc.take_external();
+            taken.is_some()
+        }));
+        assert_eq!(taken.as_deref(), Some("pulled"));
+        doc.apply(6, 0, " and typed").unwrap();
+        doc.flush().unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("note.md")).unwrap(),
+            "pulled and typed"
+        );
+        assert!(copies(dir.path()).is_empty());
     }
 
     #[test]
