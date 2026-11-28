@@ -18,8 +18,8 @@ Scenarios (all run by `make test-boot`):
              Boot enforcing (shim -> Debian systemd-boot -> Debian kernel);
              assert the installer made Carrel the first UEFI boot entry
   update-secureboot  update + forced rollback on the Secure Boot install
-  release    flash the release .img.xz onto a fresh, larger virtual USB disk,
-             try Carrel from it on UEFI, UEFI Secure Boot and BIOS
+  release    flash the release .img.xz onto a fresh, larger virtual external
+             drive and choose Start Carrel on UEFI, UEFI Secure Boot and BIOS
 
 Only the Python standard library and the tools in dev/Dockerfile are used.
 """
@@ -764,6 +764,15 @@ def check_image(image: Path, update_dir: Path, out: Path) -> None:
         "/usr/lib/carrel/online-update-test",
     ):
         expect(root_file(path).exists(), f"missing {path}", failures)
+    installer = root_file("/usr/lib/carrel/installer").read_text()
+    expect("Start Carrel" in installer and "Install Carrel" in installer,
+           "installer menu does not offer Start Carrel / Install Carrel", failures)
+    expect("Carrel runs from the external drive and saves your writing there." in installer,
+           "installer menu is missing Start Carrel explanation", failures)
+    expect("Carrel copies itself to an internal disk and erases that disk." in installer,
+           "installer menu is missing Install Carrel explanation", failures)
+    expect("USB stick" not in installer and "Try Carrel" not in installer,
+           "installer still mentions USB stick or Try Carrel", failures)
     update_url = root_file("/usr/lib/carrel/update-url").read_text().strip()
     expect(update_url.startswith("http"), f"update URL is not a URL: {update_url!r}", failures)
     expect(root_file("/usr/lib/systemd/import-pubring.gpg").stat().st_size > 100,
@@ -1275,10 +1284,10 @@ def scenario_update(disk: Path, update_dir: Path, out: Path, timeout: float,
 
 
 def flash_release(archive: Path, out: Path) -> Path:
-    """Decompress a release .img.xz onto a fresh virtual USB disk.
+    """Decompress a release .img.xz onto a fresh virtual external drive.
 
-    The disk is larger than the image, like a real stick: the image is written
-    to its start with dd, as the README tells users to do.
+    The drive is larger than the image, like a real external drive: the image
+    is written to its start with dd, as the README tells users to do.
     """
     usb = out / "test" / "release" / "usb.img"
     usb.parent.mkdir(parents=True, exist_ok=True)
@@ -1293,7 +1302,7 @@ def flash_release(archive: Path, out: Path) -> Path:
 
 
 def scenario_release(archive: Path, out: Path, timeout: float) -> None:
-    """Try Carrel from the flashed release image on UEFI, Secure Boot and BIOS."""
+    """Start Carrel from the flashed release image on UEFI, Secure Boot and BIOS."""
     for label, mode, secure in (
         ("uefi", "uefi", False), ("secureboot", "uefi", True), ("bios", "bios", False),
     ):
@@ -1303,15 +1312,16 @@ def scenario_release(archive: Path, out: Path, timeout: float) -> None:
                   usb={"path": usb, "format": "raw"}) as qemu:
             wait_installer(qemu, "main menu", timeout)
             time.sleep(2)
-            qemu.key("ret")  # Try Carrel (the default choice)
-            wait_installer(qemu, "try selected", 60)
+            qemu.screenshot(out / f"screenshot-release-{label}-menu.png", light=False)
+            qemu.key("ret")  # Start Carrel (the default choice)
+            wait_installer(qemu, "start selected", 60)
             boot_to_editor(qemu, timeout, first_run=True)
             runtime_check(qemu)
             qemu.type_text("The quiet morning")
             time.sleep(1.5)
             qemu.screenshot(out / f"screenshot-release-{label}.png")
             # The first boot grows the data partition (carrel-grow-data) and its
-            # file system (systemd-growfs) to the stick's size.
+            # file system (systemd-growfs) to the external drive's size.
             if "Starting systemd-growfs@data.service" not in qemu.text():
                 raise BootError(f"[{name}] the data file system was not grown")
             qemu.powerdown()
@@ -1319,9 +1329,9 @@ def scenario_release(archive: Path, out: Path, timeout: float) -> None:
         if data["size"] < 10 * 1024**3:
             raise BootError(
                 f"[{name}] data is {data['size'] // 1024**2} MiB after the first boot; "
-                "expected it to fill the 16 GiB stick"
+                "expected it to fill the 16 GiB external drive"
             )
-        print(f"release-{label}: PASS (flashed image, try Carrel)", flush=True)
+        print(f"release-{label}: PASS (flashed image, Start Carrel)", flush=True)
     usb.unlink(missing_ok=True)
 
 
