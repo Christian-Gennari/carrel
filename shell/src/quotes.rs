@@ -25,21 +25,23 @@ use gtk::{gdk, glib, pango};
 
 use crate::daemon::{Client, LibraryHit};
 use crate::editor::EditorPage;
+use crate::i18n::{self, tr, trf};
 use crate::quote_trigger::{self, Trigger};
 
 /// The spec's sentences for a library that is absent or has never synced.
-pub const UNAVAILABLE_MESSAGE: &str = "Quotes need a Nostos account.";
-pub const EMPTY_MESSAGE: &str = "Sync once to download your library.";
+/// These four are i18n keys.
+pub const UNAVAILABLE_MESSAGE: &str = "quotes.unavailable";
+pub const EMPTY_MESSAGE: &str = "quotes.empty";
 /// Shown while the first answer is on its way.
-pub const SEARCHING_MESSAGE: &str = "Searching…";
+pub const SEARCHING_MESSAGE: &str = "quotes.searching";
 /// The heading above the list for a bare `@`: the library's newest items.
-pub const RECENT_HEADING: &str = "Recent";
+pub const RECENT_HEADING: &str = "quotes.recent";
 
 /// The key hints under the list, in the same key-cap bar as every screen.
 const HINTS: [(&str, &str); 3] = [
-    ("Enter", "Quote"),
-    ("Shift+Enter", "Citation"),
-    ("Esc", "Close"),
+    ("Enter", "hint.quote"),
+    ("Shift+Enter", "hint.citation"),
+    ("Esc", "hint.close"),
 ];
 
 /// How long after the last keystroke the palette asks the daemon.
@@ -128,7 +130,7 @@ impl QuotesState {
             self.message.clear();
         } else if self.query.trim().is_empty() {
             self.status = QuotesStatus::Empty;
-            self.message = EMPTY_MESSAGE.to_string();
+            self.message = tr(EMPTY_MESSAGE).to_string();
         } else {
             self.status = QuotesStatus::Ready;
             self.message = no_matches_message(&self.query);
@@ -143,12 +145,12 @@ impl QuotesState {
         self.searching = false;
         if message.contains("Nostos account") {
             self.status = QuotesStatus::Unavailable;
-            self.message = UNAVAILABLE_MESSAGE.to_string();
+            self.message = tr(UNAVAILABLE_MESSAGE).to_string();
             self.error = None;
         } else {
             self.status = QuotesStatus::Ready;
             self.message.clear();
-            self.error = Some(message);
+            self.error = Some(i18n::daemon_message(&message));
         }
     }
 
@@ -158,9 +160,9 @@ impl QuotesState {
         if self.hits.is_empty() {
             ""
         } else if self.searching {
-            SEARCHING_MESSAGE
+            tr(SEARCHING_MESSAGE)
         } else if self.query.trim().is_empty() {
-            RECENT_HEADING
+            tr(RECENT_HEADING)
         } else {
             ""
         }
@@ -172,9 +174,9 @@ impl QuotesState {
             return Some(error.clone());
         }
         match self.status {
-            QuotesStatus::Loading => Some(SEARCHING_MESSAGE.to_string()),
-            QuotesStatus::Unavailable => Some(UNAVAILABLE_MESSAGE.to_string()),
-            QuotesStatus::Empty => Some(EMPTY_MESSAGE.to_string()),
+            QuotesStatus::Loading => Some(tr(SEARCHING_MESSAGE).to_string()),
+            QuotesStatus::Unavailable => Some(tr(UNAVAILABLE_MESSAGE).to_string()),
+            QuotesStatus::Empty => Some(tr(EMPTY_MESSAGE).to_string()),
             QuotesStatus::Ready if !self.message.is_empty() => Some(self.message.clone()),
             QuotesStatus::Ready => None,
         }
@@ -200,7 +202,7 @@ impl QuotesState {
 
 /// What a search that matched nothing says.
 pub fn no_matches_message(query: &str) -> String {
-    format!("No quotes match “{}”.", query.trim())
+    trf("quotes.no_match", &[("query", query.trim())])
 }
 
 /// The citation link for a hit. The daemon sends ready-to-insert Markdown;
@@ -211,7 +213,7 @@ pub fn citation_for(hit: &LibraryHit) -> String {
         return markdown.to_string();
     }
     let label = if hit.book_title.trim().is_empty() {
-        "Quote".to_string()
+        tr("quotes.quote").to_string()
     } else {
         hit.book_title.trim().to_string()
     };
@@ -325,7 +327,7 @@ impl QuotePalette {
         message.set_visible(false);
 
         let hint = crate::ui::card_hint_bar(&HINTS);
-        let message_hint = crate::ui::card_hint_bar(&[("Esc", "Close")]);
+        let message_hint = crate::ui::card_hint_bar(&[("Esc", "hint.close")]);
         message_hint.set_visible(false);
 
         let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1031,12 +1033,12 @@ mod tests {
         let mut state = QuotesState::default();
         state.set_hits(Vec::new());
         assert_eq!(state.status, QuotesStatus::Empty);
-        assert_eq!(state.notice().as_deref(), Some(EMPTY_MESSAGE));
+        assert_eq!(state.notice().as_deref(), Some(tr(EMPTY_MESSAGE)));
 
         let mut state = QuotesState::default();
-        state.set_error(UNAVAILABLE_MESSAGE.to_string());
+        state.set_error(tr(UNAVAILABLE_MESSAGE).to_string());
         assert_eq!(state.status, QuotesStatus::Unavailable);
-        assert_eq!(state.notice().as_deref(), Some(UNAVAILABLE_MESSAGE));
+        assert_eq!(state.notice().as_deref(), Some(tr(UNAVAILABLE_MESSAGE)));
         assert!(state.error.is_none());
 
         let mut state = QuotesState::default();
@@ -1055,15 +1057,19 @@ mod tests {
     #[test]
     fn a_new_state_says_it_is_searching_until_the_answer_comes() {
         let mut state = QuotesState::default();
-        assert_eq!(state.notice().as_deref(), Some(SEARCHING_MESSAGE));
+        assert_eq!(state.notice().as_deref(), Some(tr(SEARCHING_MESSAGE)));
         assert_eq!(state.heading(), "");
         state.set_hits(vec![hit("q1", "One")]);
         assert_eq!(state.notice(), None);
-        assert_eq!(state.heading(), RECENT_HEADING, "a bare @ lists the newest");
+        assert_eq!(
+            state.heading(),
+            tr(RECENT_HEADING),
+            "a bare @ lists the newest"
+        );
         // Typing keeps the old list and says so, then the answer replaces it.
         state.set_query("one");
         assert_eq!(state.hits.len(), 1);
-        assert_eq!(state.heading(), SEARCHING_MESSAGE);
+        assert_eq!(state.heading(), tr(SEARCHING_MESSAGE));
         state.set_hits(vec![hit("q2", "Two")]);
         assert_eq!(state.heading(), "");
         assert_eq!(state.current().unwrap().id, "q2");

@@ -13,6 +13,7 @@ use sourceview::prelude::*;
 use crate::battery::{Battery, BatteryHint, BATTERY_NOTE_SECONDS};
 use crate::focus::{self, Lines};
 use crate::goal;
+use crate::i18n::{tr, trf, trn};
 use crate::markdown::{CachedLine, Kind, LineCache};
 use crate::settings::{GoalDisplay, Settings};
 use crate::store::{display_name, naming, stats, DailyStats, Document, StatsWriter, Store};
@@ -38,7 +39,8 @@ const TYPEWRITER_LINE: f64 = 0.5;
 /// How long the bottom line and the document name stay dim after a key.
 const TYPING_DIM: Duration = Duration::from_millis(1400);
 /// The one quiet line an empty document shows, where the text will begin.
-pub const START_HINT: &str = "Start writing. Ctrl+K for everything else.";
+/// Its i18n key.
+pub const START_HINT: &str = "editor.start_hint";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct OpenCite {
@@ -186,7 +188,7 @@ impl EditorPage {
         // Where the text will begin: one quiet line in an empty document. It
         // sits exactly over the first character and leaves with the first
         // typed key.
-        let start_hint = gtk::Label::new(Some(START_HINT));
+        let start_hint = crate::ui::tr_label(START_HINT);
         start_hint.add_css_class("start-hint");
         start_hint.set_halign(gtk::Align::Start);
         start_hint.set_valign(gtk::Align::Start);
@@ -328,6 +330,13 @@ impl EditorPage {
     }
 
     fn install(self: &Rc<Self>) {
+        // The words on the bottom line follow a language chosen elsewhere.
+        let weak = Rc::downgrade(self);
+        self.widget.connect_map(move |_| {
+            if let Some(page) = weak.upgrade() {
+                page.refresh_status();
+            }
+        });
         let weak = Rc::downgrade(self);
         self.buffer.connect_insert_text(move |_, location, text| {
             let Some(page) = weak.upgrade() else {
@@ -1143,7 +1152,10 @@ impl EditorPage {
         }
         let due = self.battery_hint.borrow_mut().observe(status, charging);
         if let Some(percent) = due {
-            self.flash_note(&format!("{percent}% battery"), BATTERY_NOTE_SECONDS);
+            self.flash_note(
+                &trf("editor.battery_note", &[("percent", &percent.to_string())]),
+                BATTERY_NOTE_SECONDS,
+            );
         }
     }
 
@@ -1163,7 +1175,7 @@ impl EditorPage {
     /// returning so the next commit sees it.
     pub fn replace_text(self: &Rc<Self>, text: &str) -> Result<(), String> {
         if self.doc.borrow().is_none() {
-            return Err("No file is open.".to_owned());
+            return Err(tr("editor.no_file").to_owned());
         }
         self.loading.set(false);
         self.buffer.set_text(text);
@@ -1204,7 +1216,7 @@ impl EditorPage {
         block: &str,
     ) -> Result<(), String> {
         if self.doc.borrow().is_none() {
-            return Err("No file is open.".to_owned());
+            return Err(tr("editor.no_file").to_owned());
         }
         if block.is_empty() {
             return Ok(());
@@ -1323,10 +1335,15 @@ impl EditorPage {
 
     pub fn open_rel(&self, rel: &Path) -> Result<(), String> {
         self.close_document();
-        let doc = self
-            .store
-            .open_document(rel)
-            .map_err(|error| format!("Cannot open {}: {error}", rel.display()))?;
+        let doc = self.store.open_document(rel).map_err(|error| {
+            trf(
+                "editor.cannot_open",
+                &[
+                    ("path", &rel.display().to_string()),
+                    ("error", &error.to_string()),
+                ],
+            )
+        })?;
         let text = doc.text();
         let words = stats::count_words(&text);
 
@@ -1399,10 +1416,21 @@ impl EditorPage {
         let rel = self
             .store
             .unique_rel_path(dir, "Untitled", "md")
-            .map_err(|error| format!("Cannot choose a name: {error}"))?;
-        self.store
-            .create_file(&rel)
-            .map_err(|error| format!("Cannot create {}: {error}", rel.display()))?;
+            .map_err(|error| {
+                trf(
+                    "editor.cannot_choose_name",
+                    &[("error", &error.to_string())],
+                )
+            })?;
+        self.store.create_file(&rel).map_err(|error| {
+            trf(
+                "editor.cannot_create",
+                &[
+                    ("path", &rel.display().to_string()),
+                    ("error", &error.to_string()),
+                ],
+            )
+        })?;
         self.open_rel(&rel)?;
         self.untitled.set(true);
         self.last_edit_at.set(Instant::now());
@@ -1470,9 +1498,9 @@ impl EditorPage {
     /// cursor position, and undo history intact.
     pub fn rename_current(&self, raw_name: &str) -> Result<PathBuf, String> {
         let Some(source) = self.current_rel() else {
-            return Err("No file is open.".to_owned());
+            return Err(tr("editor.no_file").to_owned());
         };
-        let name = crate::files::validate_entry_name(raw_name).map_err(str::to_owned)?;
+        let name = crate::files::validate_entry_name(raw_name).map_err(|key| tr(key).to_owned())?;
         let new_name = crate::files::ensure_document_extension(name, &source, true);
         let target = source
             .parent()
@@ -1482,12 +1510,16 @@ impl EditorPage {
             return Ok(target);
         }
         if self.store.root().join(&target).exists() {
-            return Err(format!("“{}” already exists.", display_name(&new_name)));
+            return Err(trf("editor.exists", &[("name", &display_name(&new_name))]));
         }
 
         if let Some(doc) = self.doc.borrow().as_ref() {
-            doc.flush()
-                .map_err(|error| format!("Cannot save before rename: {error}"))?;
+            doc.flush().map_err(|error| {
+                trf(
+                    "editor.cannot_save_rename",
+                    &[("error", &error.to_string())],
+                )
+            })?;
             self.save_error.set(false);
             self.refresh_status();
         }
@@ -1510,7 +1542,13 @@ impl EditorPage {
                     Err(error) => {
                         self.save_error.set(true);
                         self.refresh_status();
-                        Err(format!("Cannot reopen {}: {error}", target.display()))
+                        Err(trf(
+                            "editor.cannot_reopen",
+                            &[
+                                ("path", &target.display().to_string()),
+                                ("error", &error.to_string()),
+                            ],
+                        ))
                     }
                 }
             }
@@ -1518,7 +1556,10 @@ impl EditorPage {
                 if let Ok(doc) = self.store.open_document(&source) {
                     *self.doc.borrow_mut() = Some(doc);
                 }
-                Err(format!("Cannot rename: {error}"))
+                Err(trf(
+                    "editor.cannot_rename",
+                    &[("error", &error.to_string())],
+                ))
             }
         }
     }
@@ -1620,14 +1661,21 @@ impl EditorPage {
         let numbers = settings.goal_display == GoalDisplay::Numbers;
         let mut parts = Vec::new();
         if numbers {
-            parts.push(format!(
-                "{} words",
-                stats::format_number(self.last_words.get())
+            parts.push(trn(
+                "editor.words",
+                self.last_words.get(),
+                &stats::format_number(self.last_words.get()),
+                &[],
             ));
-            parts.push(format!(
-                "{} / {} today",
-                stats::format_number(self.today_words.get()),
-                stats::format_number(u64::from(settings.daily_goal))
+            parts.push(trf(
+                "editor.today",
+                &[
+                    ("today", &stats::format_number(self.today_words.get())),
+                    (
+                        "goal",
+                        &stats::format_number(u64::from(settings.daily_goal)),
+                    ),
+                ],
             ));
         }
         // A desktop or a virtual machine has no battery: say nothing rather
@@ -1642,7 +1690,8 @@ impl EditorPage {
         }
         let mut line = parts.join(" · ");
         if self.save_error.get() {
-            line.push_str(" · not saved");
+            line.push_str(" · ");
+            line.push_str(tr("editor.not_saved"));
         }
         self.status.set_text(&line);
 
@@ -1670,7 +1719,7 @@ impl EditorPage {
             self.save_settings();
             self.reapply_style();
         }
-        self.flash_note(&format!("Text size {size}"), 2);
+        self.flash_note(&trf("flash.text_size", &[("size", &size.to_string())]), 2);
     }
 
     pub(crate) fn toggle_bottom_line(self: &Rc<Self>) {

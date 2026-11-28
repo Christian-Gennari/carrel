@@ -86,6 +86,7 @@ fn gtk_scenarios() {
     changing_keyboard_in_first_run_saves_and_restarts_session();
     modal_dialogs_block_global_shortcuts_and_ctrl_o_works_from_other_screens();
     time_zone_setting_updates_clock_and_automatic_theme();
+    changing_the_language_changes_the_screens_at_once();
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.
@@ -3314,4 +3315,54 @@ fn modal_dialogs_block_global_shortcuts_and_ctrl_o_works_from_other_screens() {
     shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
     assert!(!has_dialog_button("Delete"));
     assert_eq!(shell.visible(), "files");
+}
+
+fn changing_the_language_changes_the_screens_at_once() {
+    let shell = TestShell::new(&[("Notes.md", "one two")], "Notes.md");
+    shell.daemon.set_update("none");
+    let press = |label: &str, key: gdk::Key| {
+        shell.press(label, key, gdk::ModifierType::empty());
+        settle();
+    };
+    shell.press("Ctrl+,", gdk::Key::comma, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(shell.has_label("Settings"));
+    // Language is the fourth row from the end.
+    press("End", gdk::Key::End);
+    for _ in 0..3 {
+        press("Up", gdk::Key::Up);
+    }
+    press("Right", gdk::Key::Right);
+    assert_eq!(shell.settings.borrow().language, "Deutsch");
+    assert!(shell.has_label("Einstellungen"), "the title");
+    assert!(shell.has_label("Ändern"), "a hint word");
+    assert!(shell.has_label("Sprache"), "a row");
+
+    // Text built once follows when it is next shown.
+    press("Esc", gdk::Key::Escape);
+    assert!(shell.editor.bottom_line_text().contains("2 Wörter"));
+    shell.press("Ctrl+/", gdk::Key::slash, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    let sheet = shell.key_sheet.widget.upcast_ref::<gtk::Widget>();
+    assert!(widget_has_label(sheet, "Tastenkürzel"));
+    assert!(widget_has_label(sheet, "Schließen"));
+    assert!(widget_has_label(sheet, "Schreiben"), "a group");
+    assert!(widget_has_label(sheet, "Neue Datei"), "a key's word");
+    press("Esc", gdk::Key::Escape);
+
+    shell.press("Ctrl+,", gdk::Key::comma, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    press("Left", gdk::Key::Left);
+    assert_eq!(shell.settings.borrow().language, "English");
+    assert!(shell.has_label("Settings"));
+    assert!(shell.has_label("Change"));
+    assert!(!shell.has_label("Einstellungen"));
+    press("Esc", gdk::Key::Escape);
+    assert!(shell.editor.bottom_line_text().contains("2 words"));
+    shell.press("Ctrl+/", gdk::Key::slash, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(widget_has_label(
+        shell.key_sheet.widget.upcast_ref(),
+        "Keyboard shortcuts"
+    ));
 }

@@ -17,16 +17,26 @@ use gtk::{gdk, glib};
 
 use crate::daemon::Backend;
 use crate::first_run_defaults;
+use crate::i18n::{self, tr};
 use crate::locale;
 use crate::nav::Navigator;
 use crate::settings::{settings_path, Settings};
 use crate::sync::SyncPage;
 use crate::ui;
 
-const HINTS: [(&str, &str); 3] = [("Enter", "Choose"), ("↑ ↓", "Move"), ("Esc", "Back")];
-const WELCOME_HINTS: [(&str, &str); 2] = [("Enter", "Open"), ("↑ ↓", "Move")];
-const START_HINTS: [(&str, &str); 2] = [("Enter", "Start"), ("↑ ↓", "Move")];
-const SYNC_CHOICES: [&str; 4] = ["Not now", "Nostos", "Self-hosted server", "Google Drive"];
+const HINTS: [(&str, &str); 3] = [
+    ("Enter", "hint.choose"),
+    ("↑ ↓", "hint.move"),
+    ("Esc", "hint.back"),
+];
+const WELCOME_HINTS: [(&str, &str); 2] = [("Enter", "hint.open"), ("↑ ↓", "hint.move")];
+const START_HINTS: [(&str, &str); 2] = [("Enter", "hint.start"), ("↑ ↓", "hint.move")];
+const SYNC_CHOICES: [&str; 4] = [
+    "first.not_now",
+    "backend.nostos",
+    "backend.self_hosted",
+    "backend.google",
+];
 
 /// The last row of the welcome screen is the action, not a value.
 const START_WRITING: usize = 3;
@@ -43,11 +53,11 @@ pub enum FirstStep {
 impl FirstStep {
     pub fn title(self) -> &'static str {
         match self {
-            Self::Welcome => "Welcome to Carrel",
-            Self::Language => "Language",
-            Self::Keyboard => "Keyboard",
-            Self::TimeZone => "Time zone",
-            Self::Sync => "Connect sync?",
+            Self::Welcome => tr("first.welcome"),
+            Self::Language => tr("first.language"),
+            Self::Keyboard => tr("first.keyboard"),
+            Self::TimeZone => tr("first.time_zone"),
+            Self::Sync => tr("first.sync"),
         }
     }
 
@@ -91,13 +101,16 @@ impl FirstRunState {
     /// The three prefilled answers and the action, in screen order.
     pub fn welcome_options(&self, settings: &Settings) -> [(&'static str, String); 4] {
         [
-            ("Language", settings.language.clone()),
+            (tr("first.language"), settings.language.clone()),
             (
-                "Keyboard",
+                tr("first.keyboard"),
                 locale::keyboard_label(&settings.keyboard).to_owned(),
             ),
-            ("Time zone", settings.time_zone.clone()),
-            ("Start writing", String::new()),
+            (
+                tr("first.time_zone"),
+                locale::time_zone_label(&settings.time_zone).to_owned(),
+            ),
+            (tr("first.start"), String::new()),
         ]
     }
 
@@ -112,13 +125,13 @@ impl FirstRunState {
                 .collect(),
             FirstStep::Keyboard => locale::KEYBOARDS
                 .iter()
-                .map(|(_, label)| (*label).to_owned())
+                .map(|(code, _)| locale::keyboard_label(code).to_owned())
                 .collect(),
             FirstStep::TimeZone => locale::TIME_ZONES
                 .iter()
-                .map(|item| (*item).to_owned())
+                .map(|item| locale::time_zone_label(item).to_owned())
                 .collect(),
-            FirstStep::Sync => SYNC_CHOICES.iter().map(|item| (*item).to_owned()).collect(),
+            FirstStep::Sync => SYNC_CHOICES.iter().map(|key| tr(key).to_owned()).collect(),
         }
     }
 
@@ -258,6 +271,7 @@ impl FirstRunPage {
         if defaults_applied {
             on_change();
         }
+        i18n::set_language(&settings.borrow().language);
 
         let screen = ui::Screen::new(FirstStep::Welcome.title());
         screen.set_hints(&WELCOME_HINTS);
@@ -372,6 +386,7 @@ impl FirstRunPage {
             let effect = state.choose(&mut settings);
             (step, effect, settings.time_zone != previous_zone)
         };
+        i18n::set_language(&self.settings.borrow().language);
         if let Err(error) = self.settings.borrow().save(&self.root) {
             eprintln!("carrel: could not save first-run settings: {error}");
         }

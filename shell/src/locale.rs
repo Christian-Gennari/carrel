@@ -4,6 +4,8 @@
 //! zones: enough for the people the device is for, few enough that everything
 //! fits on one calm screen.
 
+use crate::i18n::tr;
+
 pub const LANGUAGES: &[&str] = &[
     "English",
     "Deutsch",
@@ -16,6 +18,7 @@ pub const LANGUAGES: &[&str] = &[
     "Türkçe",
 ];
 
+/// Layout code and its English name; the screens use [`keyboard_label`].
 pub const KEYBOARDS: &[(&str, &str)] = &[
     ("us", "US"),
     ("gb", "UK"),
@@ -73,12 +76,37 @@ pub fn cycle(list: &[&str], current: &str, delta: i32) -> String {
     list[next as usize].to_owned()
 }
 
+/// The layout's name in the current language; an unknown code shows itself.
 pub fn keyboard_label(code: &str) -> &str {
-    KEYBOARDS
-        .iter()
-        .find(|(candidate, _)| *candidate == code)
-        .map(|(_, label)| *label)
+    const KEYS: [&str; 13] = [
+        "keyboard.us",
+        "keyboard.gb",
+        "keyboard.de",
+        "keyboard.fr",
+        "keyboard.es",
+        "keyboard.it",
+        "keyboard.pt",
+        "keyboard.br",
+        "keyboard.se",
+        "keyboard.no",
+        "keyboard.dk",
+        "keyboard.pl",
+        "keyboard.tr",
+    ];
+    KEYS.into_iter()
+        .find(|key| key.strip_prefix("keyboard.") == Some(code))
+        .map(tr)
         .unwrap_or(code)
+}
+
+/// A time zone as the screens write it. Zone names stay as they are; only
+/// "Local time" is a word.
+pub fn time_zone_label(zone: &str) -> &str {
+    if zone == "Local time" {
+        tr("timezone.local")
+    } else {
+        zone
+    }
 }
 
 pub fn keyboard_cycle(current: &str, delta: i32) -> String {

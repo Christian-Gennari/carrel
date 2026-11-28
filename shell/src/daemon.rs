@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::i18n::{tr, trf};
 use futures_util::StreamExt;
 use gtk::glib;
 use serde::{Deserialize, Serialize};
@@ -128,9 +129,9 @@ impl LibraryHit {
     /// What the palette calls the kind, with an empty field for an unknown one.
     pub fn kind_label(&self) -> &str {
         match self.kind.as_str() {
-            "highlight" => "Highlight",
-            "note" => "Note",
-            "passage" => "Passage",
+            "highlight" => tr("quotes.highlight"),
+            "note" => tr("quotes.note"),
+            "passage" => tr("quotes.passage"),
             _ => "",
         }
     }
@@ -185,9 +186,9 @@ impl Backend {
     /// What the screen calls it.
     pub fn label(self) -> &'static str {
         match self {
-            Self::Nostos => "Nostos",
-            Self::SelfHosted => "Self-hosted server",
-            Self::GoogleDrive => "Google Drive",
+            Self::Nostos => tr("backend.nostos"),
+            Self::SelfHosted => tr("backend.self_hosted"),
+            Self::GoogleDrive => tr("backend.google"),
         }
     }
 
@@ -634,9 +635,7 @@ impl DaemonClient for ZbusDaemon {
     }
 
     fn list_drives(&self) -> Result<Vec<Drive>, DaemonError> {
-        Err(DaemonError::unsupported(
-            "USB drives arrive with the export service (WP6).",
-        ))
+        Err(DaemonError::unsupported(tr("daemon.no_drives")))
     }
 
     fn export(
@@ -788,7 +787,7 @@ fn map_zbus(error: impl fmt::Display) -> DaemonError {
         || message.contains("Connection refused")
         || message.contains("does not exist")
     {
-        DaemonError::unavailable(format!("carreld is not running. {message}"))
+        DaemonError::unavailable(trf("daemon.not_running", &[("message", &message)]))
     } else {
         DaemonError::failed(message)
     }

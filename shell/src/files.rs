@@ -16,6 +16,7 @@ use gtk::{gdk, glib, pango};
 
 use crate::editor::EditorPage;
 use crate::files_conflict::{self, ConflictCopy};
+use crate::i18n::{tr, trf};
 use crate::store::{display_name, is_document_name, Entry, Store};
 use crate::ui;
 
@@ -38,16 +39,19 @@ enum Target {
 
 /// The five hints spec/03-ui.md asks for, most useful first. Esc is implied.
 const HINTS: [(&str, &str); 5] = [
-    ("Enter", "Open"),
-    ("Type", "Search"),
-    ("F2", "Rename"),
-    ("Shift+M", "Move"),
-    ("Del", "Delete"),
+    ("Enter", "hint.open"),
+    ("Type", "hint.search"),
+    ("F2", "hint.rename"),
+    ("Shift+M", "hint.move_doc"),
+    ("Del", "hint.delete"),
 ];
-const MOVE_HINTS: [(&str, &str); 3] =
-    [("Enter", "Move here"), ("↑ ↓", "Choose"), ("Esc", "Cancel")];
-const RENAME_HINTS: [(&str, &str); 2] = [("Enter", "Save"), ("Esc", "Cancel")];
-const FOLDER_HINTS: [(&str, &str); 2] = [("Enter", "Create"), ("Esc", "Cancel")];
+const MOVE_HINTS: [(&str, &str); 3] = [
+    ("Enter", "hint.move_here"),
+    ("↑ ↓", "hint.choose"),
+    ("Esc", "hint.cancel"),
+];
+const RENAME_HINTS: [(&str, &str); 2] = [("Enter", "hint.save"), ("Esc", "hint.cancel")];
+const FOLDER_HINTS: [(&str, &str); 2] = [("Enter", "hint.create"), ("Esc", "hint.cancel")];
 
 pub struct FilesPage {
     pub widget: gtk::Overlay,
@@ -81,7 +85,7 @@ pub struct FilesPage {
 
 impl FilesPage {
     pub fn new(store: Store, editor: Rc<EditorPage>, stack: gtk::Stack) -> Rc<Self> {
-        let screen = ui::Screen::new("Files");
+        let screen = ui::Screen::new(tr("files.title"));
         screen.set_hints(&HINTS);
 
         let list = ui::list();
@@ -451,10 +455,14 @@ impl FilesPage {
         match self.store.list(&dir) {
             Ok(entries) => {
                 self.entries.replace(entries);
+                self.screen.set_title(tr("files.title"));
+                self.sync_hints();
                 self.update_status();
                 self.rebuild(keep);
             }
-            Err(error) => self.flash_error(format!("Cannot list folder: {error}")),
+            Err(error) => {
+                self.flash_error(trf("files.cannot_list", &[("error", &error.to_string())]))
+            }
         }
     }
 
@@ -467,12 +475,15 @@ impl FilesPage {
                 .map(|name| display_name(&name.to_string_lossy()))
                 .unwrap_or_default();
             if self.mode.get() == EntryMode::NewFolder {
-                self.screen.set_status(&format!("New folder for “{name}”"));
+                self.screen
+                    .set_status(&trf("files.new_folder_for", &[("name", &name)]));
             } else {
-                self.screen.set_status(&format!("Move “{name}” to…"));
+                self.screen
+                    .set_status(&trf("files.move_to", &[("name", &name)]));
             }
         } else if !query.is_empty() {
-            self.screen.set_status(&format!("Search “{query}”"));
+            self.screen
+                .set_status(&trf("files.search", &[("query", &query)]));
         } else {
             self.screen
                 .set_status(&display_path(&self.current_dir.borrow()));
@@ -508,7 +519,7 @@ impl FilesPage {
         if mode == EntryMode::NewFolder {
             let row = self.row_shell();
             row.set_can_focus(true);
-            let field = self.make_entry("", Some("Folder name"));
+            let field = self.make_entry("", Some(tr("files.folder_name")));
             row.set_child(Some(&field));
             self.push_row(row, Some(Target::NewFolder));
             *self.entry.borrow_mut() = Some(field);
@@ -592,7 +603,7 @@ impl FilesPage {
     fn build_normal_rows(self: &Rc<Self>, entries: &[Entry]) {
         let recent = self.store.recent_files();
         if !recent.is_empty() {
-            self.push_header("Recent");
+            self.push_header(tr("files.recent"));
             for rel in &recent {
                 self.push_document(rel, true);
             }
@@ -611,7 +622,7 @@ impl FilesPage {
             }
         }
         if entries.is_empty() {
-            self.push_state("No files in this folder yet", "Ctrl+N starts one here.");
+            self.push_state(tr("files.empty"), tr("files.empty_detail"));
         }
     }
 
@@ -638,8 +649,8 @@ impl FilesPage {
         });
         if hits.is_empty() {
             self.push_state(
-                &format!("No documents match “{query}”"),
-                "Esc clears the search.",
+                &trf("files.no_match", &[("query", query)]),
+                tr("files.clear_search"),
             );
             return;
         }
@@ -658,7 +669,7 @@ impl FilesPage {
             return;
         }
         let row = self.row_shell();
-        let label = gtk::Label::new(Some("New folder…"));
+        let label = gtk::Label::new(Some(tr("files.new_folder")));
         label.set_xalign(0.0);
         label.add_css_class("file-name");
         label.set_hexpand(true);
@@ -778,7 +789,7 @@ impl FilesPage {
             line.append(&spacer);
         }
         if copy.is_some() {
-            let tag = gtk::Label::new(Some("Conflict"));
+            let tag = gtk::Label::new(Some(tr("files.conflict")));
             tag.set_valign(gtk::Align::Center);
             tag.add_css_class("conflict-tag");
             line.append(&tag);
@@ -816,7 +827,7 @@ impl FilesPage {
         let row = self.row_shell();
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         let name = if dir.as_os_str().is_empty() {
-            "Writing".to_owned()
+            tr("files.writing").to_owned()
         } else {
             format!(
                 "{}/",
@@ -832,7 +843,7 @@ impl FilesPage {
         line.append(&label);
         let note_text = match dir.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => folder_label(parent),
-            _ if dir.as_os_str().is_empty() => "top level".to_owned(),
+            _ if dir.as_os_str().is_empty() => tr("files.top_level").to_owned(),
             _ => String::new(),
         };
         let note = gtk::Label::new(Some(&note_text));
@@ -998,7 +1009,7 @@ impl FilesPage {
         let name = match validate_entry_name(&field.text()) {
             Ok(name) => name,
             Err(message) => {
-                self.flash_error(message);
+                self.flash_error(tr(message));
                 return;
             }
         };
@@ -1024,7 +1035,10 @@ impl FilesPage {
                             self.select_rel(&rel);
                         }
                     }
-                    Err(error) => self.flash_error(format!("Cannot create folder: {error}")),
+                    Err(error) => self.flash_error(trf(
+                        "files.cannot_create_folder",
+                        &[("error", &error.to_string())],
+                    )),
                 }
             }
             EntryMode::Rename => {
@@ -1061,7 +1075,10 @@ impl FilesPage {
                         if let Some(old) = reopen {
                             let _ = self.editor.open_rel(&old);
                         }
-                        self.flash_error(format!("Cannot rename: {error}"));
+                        self.flash_error(trf(
+                            "files.cannot_rename",
+                            &[("error", &error.to_string())],
+                        ));
                     }
                 }
             }
@@ -1089,22 +1106,23 @@ impl FilesPage {
             .unwrap_or_default();
         let conflict = files_conflict::parse(&name);
         let title = match &conflict {
-            Some(copy) => format!("Delete the conflict copy of “{}”?", copy.base),
-            None => format!("Delete “{}”?", display_name(&name)),
+            Some(copy) => trf("files.delete_copy", &[("name", &copy.base)]),
+            None => trf("files.delete_named", &[("name", &display_name(&name))]),
         };
         let sentence = if is_dir {
-            "The folder and its files move to the device's trash, so nothing is erased."
+            tr("files.delete_folder_text")
         } else if conflict.is_some() {
-            "It moves to the device's trash; the other version stays where it is."
+            tr("files.delete_copy_text")
         } else {
-            "It moves to the device's trash, so nothing is erased."
+            tr("files.delete_text")
         };
         let weak = Rc::downgrade(self);
-        self.screen.ask(&title, sentence, "Delete", move || {
-            if let Some(page) = weak.upgrade() {
-                page.delete_rel(&rel);
-            }
-        });
+        self.screen
+            .ask(&title, sentence, tr("button.delete"), move || {
+                if let Some(page) = weak.upgrade() {
+                    page.delete_rel(&rel);
+                }
+            });
     }
 
     fn delete_rel(self: &Rc<Self>, rel: &Path) {
@@ -1122,7 +1140,9 @@ impl FilesPage {
                     }
                 }
             }
-            Err(error) => self.flash_error(format!("Cannot delete: {error}")),
+            Err(error) => {
+                self.flash_error(trf("files.cannot_delete", &[("error", &error.to_string())]))
+            }
         }
     }
 
@@ -1144,7 +1164,7 @@ impl FilesPage {
     /// choice worth a row.
     fn start_move(self: &Rc<Self>) {
         let Some(Target::Document(source)) = self.selected_target() else {
-            self.flash_message("Choose a document to move.");
+            self.flash_message(tr("files.choose_to_move"));
             return;
         };
         let parent = source
@@ -1217,7 +1237,7 @@ impl FilesPage {
                 if let Some(old) = reopen {
                     let _ = self.editor.open_rel(&old);
                 }
-                self.flash_error(format!("Cannot move: {error}"));
+                self.flash_error(trf("files.cannot_move", &[("error", &error.to_string())]));
                 false
             }
         }
@@ -1237,19 +1257,22 @@ impl FilesPage {
             return;
         };
         let source = if copy.source.trim().is_empty() {
-            "another device".to_owned()
+            tr("files.another_device").to_owned()
         } else {
             copy.source.clone()
         };
-        let title = format!("Two versions of “{}”", copy.base);
-        let sentence =
-            format!("The version from {source} and yours both changed. Keep one, or keep both.");
+        let title = trf("files.two_versions", &[("name", &copy.base)]);
+        let sentence = trf("files.two_versions_text", &[("source", &source)]);
         let weak = Rc::downgrade(self);
         let rel = rel.to_path_buf();
         self.screen.ask_choices(
             &title,
             &sentence,
-            &["Keep mine", "Keep theirs", "Keep both"],
+            &[
+                tr("button.keep_mine"),
+                tr("button.keep_theirs"),
+                tr("button.keep_both"),
+            ],
             2,
             move |choice| {
                 if let Some(page) = weak.upgrade() {
@@ -1279,7 +1302,10 @@ impl FilesPage {
                             }
                         }
                     }
-                    Err(error) => self.flash_error(format!("Cannot delete the copy: {error}")),
+                    Err(error) => self.flash_error(trf(
+                        "files.cannot_delete_copy",
+                        &[("error", &error.to_string())],
+                    )),
                 }
             }
             // Keep theirs: the other side's copy becomes the document.
@@ -1308,7 +1334,10 @@ impl FilesPage {
                         if affected {
                             let _ = self.editor.open_last_or_new();
                         }
-                        self.flash_error(format!("Cannot keep the other version: {error}"));
+                        self.flash_error(trf(
+                            "files.cannot_keep_theirs",
+                            &[("error", &error.to_string())],
+                        ));
                     }
                 }
             }
@@ -1323,7 +1352,10 @@ impl FilesPage {
                 let target = match target {
                     Ok(target) => target,
                     Err(error) => {
-                        self.flash_error(format!("Cannot keep both: {error}"));
+                        self.flash_error(trf(
+                            "files.cannot_keep_both",
+                            &[("error", &error.to_string())],
+                        ));
                         return;
                     }
                 };
@@ -1342,7 +1374,10 @@ impl FilesPage {
                         if affected {
                             let _ = self.editor.open_last_or_new();
                         }
-                        self.flash_error(format!("Cannot keep both: {error}"));
+                        self.flash_error(trf(
+                            "files.cannot_keep_both",
+                            &[("error", &error.to_string())],
+                        ));
                     }
                 }
             }
@@ -1477,9 +1512,9 @@ fn typed_character(keyval: gdk::Key, state: gdk::ModifierType) -> Option<char> {
 
 fn display_path(dir: &Path) -> String {
     if dir.as_os_str().is_empty() {
-        "Writing".to_owned()
+        tr("files.writing").to_owned()
     } else {
-        format!("Writing / {}", dir.display())
+        format!("{} / {}", tr("files.writing"), dir.display())
     }
 }
 
@@ -1487,14 +1522,14 @@ fn folder_section_header(dir: &Path) -> String {
     dir.file_name()
         .map(|name| name.to_string_lossy().into_owned())
         .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "All files".to_owned())
+        .unwrap_or_else(|| tr("files.all").to_owned())
 }
 
 /// Reject empty names, path separators, and hidden names.
 pub(crate) fn validate_entry_name(name: &str) -> Result<String, &'static str> {
     let name = name.trim().to_owned();
     if name.is_empty() || name.contains('/') || name.contains('\\') || name.starts_with('.') {
-        return Err("Choose a name without / or a leading dot.");
+        return Err("files.bad_name");
     }
     Ok(name)
 }

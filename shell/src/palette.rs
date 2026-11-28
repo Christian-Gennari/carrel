@@ -20,6 +20,7 @@ use gtk::{gdk, glib, pango};
 
 use crate::daemon::Client;
 use crate::editor::EditorPage;
+use crate::i18n::{tr, trf};
 use crate::nav::Navigator;
 use crate::quotes::QuotePalette;
 use crate::settings::{FontChoice, GoalDisplay, Settings, ThemeChoice};
@@ -39,7 +40,11 @@ const LIST_MAX_HEIGHT: i32 = 442;
 const FILE_LIMIT: usize = 20;
 
 /// The key hints under the list, in the same key-cap bar as every screen.
-const PALETTE_HINTS: [(&str, &str); 3] = [("Enter", "Run"), ("↑ ↓", "Move"), ("Esc", "Close")];
+const PALETTE_HINTS: [(&str, &str); 3] = [
+    ("Enter", "hint.run"),
+    ("↑ ↓", "hint.move"),
+    ("Esc", "hint.close"),
+];
 
 /// What running a row does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -91,44 +96,48 @@ pub fn actions(settings: &Settings, update: Option<&str>) -> Vec<PaletteRow> {
     };
 
     // The ten a writer reaches for most, in this order.
-    add("New file", "Ctrl+N", Action::NewFile);
-    add("Open file…", "Ctrl+O", Action::OpenFiles);
-    add("Insert quote", "Ctrl+'", Action::InsertQuote);
-    add("Sync now", "Ctrl+Shift+S", Action::SyncNow);
-    add("Export…", "Ctrl+E", Action::Export);
-    add("History", "Ctrl+H", Action::History);
+    add(tr("palette.new_file"), "Ctrl+N", Action::NewFile);
+    add(tr("palette.open_file"), "Ctrl+O", Action::OpenFiles);
+    add(tr("palette.insert_quote"), "Ctrl+'", Action::InsertQuote);
+    add(tr("palette.sync_now"), "Ctrl+Shift+S", Action::SyncNow);
+    add(tr("palette.export"), "Ctrl+E", Action::Export);
+    add(tr("palette.history"), "Ctrl+H", Action::History);
     add(
         if settings.focus_mode {
-            "Turn focus mode off"
+            tr("palette.focus_off")
         } else {
-            "Turn focus mode on"
+            tr("palette.focus_on")
         },
         "F2",
         Action::ToggleFocus,
     );
-    add("Theme…", "", Action::OpenTheme);
-    add("Settings", "Ctrl+,", Action::Settings);
-    add("Keyboard shortcuts", "Ctrl+/", Action::KeySheet);
+    add(tr("palette.theme"), "", Action::OpenTheme);
+    add(tr("palette.settings"), "Ctrl+,", Action::Settings);
+    add(tr("palette.shortcuts"), "Ctrl+/", Action::KeySheet);
 
     // The rest of the keys table, then the direct values.
-    add("Rename current file…", "Ctrl+Shift+R", Action::RenameFile);
-    add("Larger text", "Ctrl+=", Action::LargerFont);
-    add("Smaller text", "Ctrl+-", Action::SmallerFont);
-    add("Back to the editor", "Esc", Action::BackToEditor);
+    add(
+        tr("palette.rename_current"),
+        "Ctrl+Shift+R",
+        Action::RenameFile,
+    );
+    add(tr("palette.larger"), "Ctrl+=", Action::LargerFont);
+    add(tr("palette.smaller"), "Ctrl+-", Action::SmallerFont);
+    add(tr("palette.back"), "Esc", Action::BackToEditor);
     add(
         if settings.show_bottom_line {
-            "Hide bottom line"
+            tr("palette.hide_bottom")
         } else {
-            "Show bottom line"
+            tr("palette.show_bottom")
         },
         "F1",
         Action::ToggleBottomLine,
     );
     add(
         if settings.goal_display == GoalDisplay::Hairline {
-            "Use word count goal"
+            tr("palette.goal_words")
         } else {
-            "Use hairline goal"
+            tr("palette.goal_hairline")
         },
         "",
         Action::SetGoal(if settings.goal_display == GoalDisplay::Hairline {
@@ -139,31 +148,35 @@ pub fn actions(settings: &Settings, update: Option<&str>) -> Vec<PaletteRow> {
     );
     add(
         if settings.typewriter_mode {
-            "Turn typewriter mode off"
+            tr("palette.typewriter_off")
         } else {
-            "Turn typewriter mode on"
+            tr("palette.typewriter_on")
         },
         "",
         Action::ToggleTypewriter,
     );
     for choice in ThemeChoice::ALL {
         add(
-            &format!("Theme: {}", choice.label()),
+            &trf("palette.theme_named", &[("name", choice.label())]),
             "",
             Action::Theme(choice),
         );
     }
     for font in [FontChoice::Serif, FontChoice::Sans, FontChoice::Mono] {
-        add(&format!("Font: {}", font.label()), "", Action::Font(font));
+        add(
+            &trf("palette.font_named", &[("name", font.label())]),
+            "",
+            Action::Font(font),
+        );
     }
-    add("Wi-Fi…", "", Action::Wifi);
-    add("Pair…", "", Action::Pair);
+    add(tr("palette.wifi"), "", Action::Wifi);
+    add(tr("palette.pair"), "", Action::Pair);
     if let Some(version) = update {
         let version = version.trim();
         let label = if version.is_empty() {
-            "Install update".to_owned()
+            tr("palette.install_update").to_owned()
         } else {
-            format!("Install update {version}")
+            trf("palette.install_version", &[("version", version)])
         };
         add(&label, "", Action::Update);
     }
@@ -202,7 +215,7 @@ pub fn rows_for(
                     score,
                     shown.clone(),
                     PaletteRow {
-                        label: format!("Open: {shown}"),
+                        label: trf("palette.open_named", &[("name", &shown)]),
                         keys: "",
                         action: Action::Open(path.clone()),
                     },
@@ -370,7 +383,7 @@ impl CommandPalette {
 
         let hint = ui::card_hint_bar(&PALETTE_HINTS);
         // With nothing to run or move to, the footer offers only the way out.
-        let empty_hint = ui::card_hint_bar(&[("Esc", "Close")]);
+        let empty_hint = ui::card_hint_bar(&[("Esc", "hint.close")]);
         empty_hint.set_visible(false);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -575,9 +588,9 @@ impl CommandPalette {
                 let on = self.settings.borrow().focus_mode;
                 self.editor.flash_note(
                     if on {
-                        "Focus mode on"
+                        tr("flash.focus_on")
                     } else {
-                        "Focus mode off"
+                        tr("flash.focus_off")
                     },
                     2,
                 );
@@ -599,9 +612,9 @@ impl CommandPalette {
                 let shown = self.settings.borrow().show_bottom_line;
                 self.editor.flash_note(
                     if shown {
-                        "Bottom line shown"
+                        tr("flash.bottom_shown")
                     } else {
-                        "Bottom line hidden"
+                        tr("flash.bottom_hidden")
                     },
                     2,
                 );
@@ -611,7 +624,7 @@ impl CommandPalette {
                 self.save_settings();
                 (self.restyle)();
                 self.editor
-                    .flash_note(&format!("Goal progress: {}", goal.label()), 2);
+                    .flash_note(&trf("flash.goal", &[("name", goal.label())]), 2);
             }
             Action::ToggleTypewriter => {
                 let on = {
@@ -623,9 +636,9 @@ impl CommandPalette {
                 (self.restyle)();
                 self.editor.flash_note(
                     if on {
-                        "Typewriter mode on"
+                        tr("flash.typewriter_on")
                     } else {
-                        "Typewriter mode off"
+                        tr("flash.typewriter_off")
                     },
                     2,
                 );
@@ -635,14 +648,14 @@ impl CommandPalette {
                 self.save_settings();
                 (self.restyle)();
                 self.editor
-                    .flash_note(&format!("Theme: {}", choice.label()), 2);
+                    .flash_note(&trf("palette.theme_named", &[("name", choice.label())]), 2);
             }
             Action::Font(font) => {
                 self.settings.borrow_mut().font = font;
                 self.save_settings();
                 (self.restyle)();
                 self.editor
-                    .flash_note(&format!("Font: {}", font.label()), 2);
+                    .flash_note(&trf("palette.font_named", &[("name", font.label())]), 2);
             }
             Action::Wifi => self.nav.show("wifi"),
             Action::Pair => self.nav.show("sync"),
@@ -706,7 +719,7 @@ impl CommandPalette {
     fn render_query(self: &Rc<Self>) {
         let query = self.query.borrow().clone();
         if query.is_empty() {
-            self.query_label.set_text("Type to find an action");
+            self.query_label.set_text(tr("palette.placeholder"));
             self.query_label.add_css_class("command-placeholder");
             self.query_caret.remove_css_class("command-caret-after");
             if let Some(row) = self.query_caret.parent().and_downcast::<gtk::Box>() {
@@ -740,9 +753,9 @@ impl CommandPalette {
         self.hint.set_visible(!empty);
         self.empty_hint.set_visible(empty);
         if empty {
-            self.message.set_text(&format!(
-                "No actions or files match “{}”.",
-                self.query.borrow().trim()
+            self.message.set_text(&trf(
+                "palette.no_match",
+                &[("query", self.query.borrow().trim())],
             ));
             return;
         }
@@ -760,12 +773,15 @@ fn row_widget(row: &PaletteRow) -> gtk::ListBoxRow {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 14);
     // A document reads as it does on the Files screen: its name, then its
     // folder in the quieter ink, so "Open:" never crowds the title.
-    let (title, folder) = match row.label.strip_prefix("Open: ") {
-        Some(path) => match path.rsplit_once('/') {
-            Some((folder, name)) => (name.to_string(), Some(format!("{folder}/"))),
-            None => (path.to_string(), None),
-        },
-        None => (row.label.clone(), None),
+    let (title, folder) = match &row.action {
+        Action::Open(path) => {
+            let path = display_path(path);
+            match path.rsplit_once('/') {
+                Some((folder, name)) => (name.to_string(), Some(format!("{folder}/"))),
+                None => (path.clone(), None),
+            }
+        }
+        _ => (row.label.clone(), None),
     };
     let name = gtk::Label::new(Some(&title));
     name.set_xalign(0.0);
@@ -783,7 +799,7 @@ fn row_widget(row: &PaletteRow) -> gtk::ListBoxRow {
         name.set_hexpand(true);
     }
     if matches!(row.action, Action::Open(_)) {
-        let kind = gtk::Label::new(Some("Document"));
+        let kind = gtk::Label::new(Some(tr("palette.document")));
         kind.add_css_class("row-note");
         kind.set_valign(gtk::Align::Center);
         line.append(&kind);
@@ -803,42 +819,45 @@ fn row_widget(row: &PaletteRow) -> gtk::ListBoxRow {
 // ---------------------------------------------------------------------------
 
 const WRITING: &[(&str, &str)] = &[
-    ("Ctrl+K", "Everything"),
-    ("Ctrl+'", "Quote"),
-    ("F1", "Bottom line"),
-    ("F2", "Focus mode"),
-    ("Ctrl+=", "Larger text"),
-    ("Ctrl+-", "Smaller text"),
-    ("Ctrl+/", "This card"),
+    ("Ctrl+K", "sheet.everything"),
+    ("Ctrl+'", "sheet.quote"),
+    ("F1", "sheet.bottom_line"),
+    ("F2", "sheet.focus_mode"),
+    ("Ctrl+=", "sheet.larger"),
+    ("Ctrl+-", "sheet.smaller"),
+    ("Ctrl+/", "sheet.this_card"),
 ];
 
 const FILES: &[(&str, &str)] = &[
-    ("Ctrl+O", "Files"),
-    ("Ctrl+N", "New file"),
-    ("Ctrl+Shift+R", "Rename current file"),
-    ("Enter", "Open"),
-    ("F2", "Rename"),
-    ("Del", "Delete"),
+    ("Ctrl+O", "sheet.files_screen"),
+    ("Ctrl+N", "sheet.new_file"),
+    ("Ctrl+Shift+R", "sheet.rename_current"),
+    ("Enter", "sheet.open"),
+    ("F2", "sheet.rename"),
+    ("Del", "sheet.delete"),
 ];
 
-const SYNC_AND_EXPORT: &[(&str, &str)] = &[("Ctrl+Shift+S", "Sync now"), ("Ctrl+E", "Export")];
+const SYNC_AND_EXPORT: &[(&str, &str)] = &[
+    ("Ctrl+Shift+S", "sheet.sync_now"),
+    ("Ctrl+E", "sheet.export"),
+];
 
 const SCREENS: &[(&str, &str)] = &[
-    ("Ctrl+H", "History"),
-    ("Ctrl+,", "Settings"),
-    ("Esc", "Back to the editor"),
+    ("Ctrl+H", "sheet.history"),
+    ("Ctrl+,", "sheet.settings"),
+    ("Esc", "sheet.back"),
 ];
 
 /// The groups, two per column: Writing and Files on the left, Sync and export
 /// and Screens on the right.
 const GROUPS: [(&str, &[(&str, &str)]); 4] = [
-    ("Writing", WRITING),
-    ("Files", FILES),
-    ("Sync and export", SYNC_AND_EXPORT),
-    ("Screens", SCREENS),
+    ("sheet.writing", WRITING),
+    ("sheet.files", FILES),
+    ("sheet.sync_export", SYNC_AND_EXPORT),
+    ("sheet.screens", SCREENS),
 ];
 
-const RENAME_HINTS: [(&str, &str); 2] = [("Enter", "Save"), ("Esc", "Cancel")];
+const RENAME_HINTS: [(&str, &str); 2] = [("Enter", "hint.save"), ("Esc", "hint.cancel")];
 
 /// A calm card over the editor to rename the currently open document without
 /// leaving the page or disturbing the cursor.
@@ -861,7 +880,7 @@ impl RenameSheet {
         nav: Rc<Navigator>,
         dim: gtk::Box,
     ) -> Rc<Self> {
-        let title = gtk::Label::new(Some("Rename file"));
+        let title = ui::tr_label("rename.title");
         title.set_xalign(0.0);
         title.add_css_class("key-sheet-title");
 
@@ -951,7 +970,7 @@ impl RenameSheet {
             return;
         }
         let Some(current) = self.editor.current_rel() else {
-            self.editor.flash_note("No file is open.", 3);
+            self.editor.flash_note(tr("editor.no_file"), 3);
             return;
         };
         self.quotes.close_from_outside();
@@ -959,8 +978,10 @@ impl RenameSheet {
 
         let name = crate::files::editable_name(&current);
         if let Some(parent) = current.parent().filter(|path| !path.as_os_str().is_empty()) {
-            self.folder_label
-                .set_text(&format!("In {}/", parent.display()));
+            self.folder_label.set_text(&trf(
+                "rename.in_folder",
+                &[("folder", &parent.display().to_string())],
+            ));
             self.folder_label.set_visible(true);
         } else {
             self.folder_label.set_text("");
@@ -1046,7 +1067,7 @@ pub struct KeySheet {
 
 impl KeySheet {
     pub fn new(dim: gtk::Box) -> Rc<Self> {
-        let title = gtk::Label::new(Some("Keyboard shortcuts"));
+        let title = ui::tr_label("palette.shortcuts");
         title.set_xalign(0.0);
         title.add_css_class("key-sheet-title");
 
@@ -1065,7 +1086,7 @@ impl KeySheet {
         columns.attach(&group(&GROUPS[2], &left), 0, 1, 1, 1);
         columns.attach(&group(&GROUPS[3], &right), 1, 1, 1, 1);
 
-        let hint = ui::card_hint_bar(&[("Esc", "Close")]);
+        let hint = ui::card_hint_bar(&[("Esc", "hint.close")]);
         hint.set_margin_top(18);
 
         let widget = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1118,9 +1139,12 @@ impl KeySheet {
 /// One group: its heading, then a cap and its meaning per row. `caps` keeps
 /// the cap cells of one card column the same width; each cap inside its cell
 /// keeps its own natural width, so short keys do not float in wide boxes.
-fn group((name, rows): &(&str, &[(&str, &str)]), caps: &gtk::SizeGroup) -> gtk::Box {
+fn group(
+    (name, rows): &(&'static str, &[(&str, &'static str)]),
+    caps: &gtk::SizeGroup,
+) -> gtk::Box {
     let column = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    let heading = gtk::Label::new(Some(name));
+    let heading = ui::tr_label(name);
     heading.set_xalign(0.0);
     heading.add_css_class("key-group");
     column.append(&heading);
@@ -1136,7 +1160,7 @@ fn group((name, rows): &(&str, &[(&str, &str)]), caps: &gtk::SizeGroup) -> gtk::
         let cell = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         cell.append(&cap);
         caps.add_widget(&cell);
-        let word = gtk::Label::new(Some(word));
+        let word = ui::tr_label(word);
         word.set_xalign(0.0);
         word.set_hexpand(true);
         word.add_css_class("key-word");

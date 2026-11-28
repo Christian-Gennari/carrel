@@ -7,6 +7,7 @@ use std::rc::Rc;
 use gtk::prelude::*;
 use gtk::{gdk, glib, pango};
 
+use crate::i18n::{tr, trf};
 use crate::settings::Theme;
 use crate::theme::{self, Palette};
 
@@ -73,6 +74,21 @@ pub fn column(width: i32) -> gtk::Box {
     column.set_margin_top(56);
     column.set_margin_bottom(24);
     column
+}
+
+/// Keep a widget's words in the writer's language: `apply` runs now and again
+/// every time the widget is shown, so a change in Settings reaches text that
+/// was built once.
+pub fn localize<W: IsA<gtk::Widget>>(widget: &W, apply: impl Fn(&W) + 'static) {
+    apply(widget);
+    widget.connect_map(move |widget| apply(widget));
+}
+
+/// A label whose words are `key`'s, in whatever language is current.
+pub fn tr_label(key: &'static str) -> gtk::Label {
+    let label = gtk::Label::new(None);
+    localize(&label, move |label| label.set_text(tr(key)));
+    label
 }
 
 pub fn title(text: &str) -> gtk::Label {
@@ -172,10 +188,11 @@ impl Screen {
         dialog_text.set_max_width_chars(44);
         dialog_text.add_css_class("dialog-text");
 
-        let cancel = gtk::Button::with_label("Cancel");
+        let cancel = gtk::Button::new();
+        localize(&cancel, |button| button.set_label(tr("button.cancel")));
         cancel.add_css_class("dialog-button");
         cancel.set_size_request(104, -1);
-        let accept = gtk::Button::with_label("Delete");
+        let accept = gtk::Button::with_label(tr("button.delete"));
         accept.add_css_class("dialog-button");
         accept.add_css_class("dialog-accept");
         accept.set_size_request(104, -1);
@@ -357,11 +374,11 @@ impl Screen {
 
     /// Replace the bottom hint bar. At most five hints; callers put the most
     /// useful first. A key cap is a small rounded box with the key on it.
-    pub fn set_hints(&self, hints: &[(&str, &str)]) {
+    pub fn set_hints(&self, hints: &[(&'static str, &'static str)]) {
         let key = hints
             .iter()
             .take(5)
-            .map(|(keys, word)| format!("{keys}\u{1f}{word}"))
+            .map(|(keys, word)| format!("{keys}\u{1f}{}", tr(word)))
             .collect::<Vec<_>>()
             .join("\u{1e}");
         if *self.hint_key.borrow() == key {
@@ -545,7 +562,7 @@ pub fn mark(height: i32) -> gtk::DrawingArea {
     area.set_can_focus(false);
     area.set_focusable(false);
     area.set_accessible_role(gtk::AccessibleRole::Img);
-    area.update_property(&[gtk::accessible::Property::Label("Carrel mark")]);
+    area.update_property(&[gtk::accessible::Property::Label(tr("access.mark"))]);
     area.set_draw_func(|area, context, width, height| {
         let color = area.color();
         context.set_source_rgba(
@@ -606,7 +623,8 @@ fn draw_mark(context: &gtk::cairo::Context, width: f64, height: f64) {
 
 /// A one-line hint with real key caps, e.g. `[Enter] Open  [Esc] Back`. Every
 /// screen and the Quotes palette footer use this same bar.
-pub fn hint_bar(hints: &[(&str, &str)]) -> gtk::Box {
+/// Each hint is a key cap and the i18n key of its word.
+pub fn hint_bar(hints: &[(&'static str, &'static str)]) -> gtk::Box {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 18);
     bar.add_css_class("hint-bar");
     bar.set_halign(gtk::Align::Start);
@@ -615,10 +633,15 @@ pub fn hint_bar(hints: &[(&str, &str)]) -> gtk::Box {
         let item = gtk::Box::new(gtk::Orientation::Horizontal, 7);
         item.add_css_class("hint-item");
         item.set_valign(gtk::Align::Center);
-        let cap = gtk::Label::new(Some(keys));
+        // "Type" is a word on a cap, not the name of a key.
+        let cap = if *keys == "Type" {
+            tr_label("key.type")
+        } else {
+            gtk::Label::new(Some(keys))
+        };
         cap.add_css_class("key-cap");
         cap.set_valign(gtk::Align::Center);
-        let word = gtk::Label::new(Some(word));
+        let word = tr_label(word);
         word.add_css_class("hint-word");
         word.set_valign(gtk::Align::Center);
         item.append(&cap);
@@ -630,7 +653,7 @@ pub fn hint_bar(hints: &[(&str, &str)]) -> gtk::Box {
 
 /// The hint bar that ends a floating card (palette, Quotes, key sheet): the
 /// same keys, padded inside the card and with its rule across the full width.
-pub fn card_hint_bar(hints: &[(&str, &str)]) -> gtk::Box {
+pub fn card_hint_bar(hints: &[(&'static str, &'static str)]) -> gtk::Box {
     let bar = hint_bar(hints);
     bar.add_css_class("card-hint-bar");
     bar.set_halign(gtk::Align::Fill);
@@ -791,7 +814,7 @@ fn swatch(theme: Theme, night: Option<Theme>) -> gtk::DrawingArea {
     area.set_can_focus(false);
     area.set_focusable(false);
     area.set_accessible_role(gtk::AccessibleRole::Img);
-    area.update_property(&[gtk::accessible::Property::Label("Theme swatch")]);
+    area.update_property(&[gtk::accessible::Property::Label(tr("access.swatch"))]);
     area.set_draw_func(move |_, context, width, height| {
         let width = f64::from(width);
         let height = f64::from(height);
@@ -1114,15 +1137,7 @@ pub fn format_moment(unix: i64) -> String {
     let Some((date, today, yesterday)) = moment(unix) else {
         return never(unix);
     };
-    let time = format_of(&date, "%H:%M");
-    if today {
-        format!("Today, {time}")
-    } else if yesterday {
-        format!("Yesterday, {time}")
-    } else {
-        let text = format_of(&date, "%d %b %Y, %H:%M");
-        text.strip_prefix('0').unwrap_or(&text).to_owned()
-    }
+    worded(&date, today, yesterday, "date.full")
 }
 
 /// The compact form the History list uses: `Today, 15:13`, `11 Nov, 16:07`.
@@ -1132,22 +1147,40 @@ pub fn format_moment_short(unix: i64) -> String {
     let Some((date, today, yesterday)) = moment(unix) else {
         return never(unix);
     };
-    let time = format_of(&date, "%H:%M");
+    worded(&date, today, yesterday, "date.short")
+}
+
+/// The moment in the writer's words; `older` is the form for a day before
+/// yesterday.
+fn worded(date: &glib::DateTime, today: bool, yesterday: bool, older: &'static str) -> String {
+    let time = format_of(date, "%H:%M");
     if today {
-        format!("Today, {time}")
-    } else if yesterday {
-        format!("Yesterday, {time}")
-    } else {
-        let text = format_of(&date, "%d %b, %H:%M");
-        text.strip_prefix('0').unwrap_or(&text).to_owned()
+        return trf("date.today", &[("time", &time)]);
     }
+    if yesterday {
+        return trf("date.yesterday", &[("time", &time)]);
+    }
+    const MONTHS: [&str; 12] = [
+        "month.1", "month.2", "month.3", "month.4", "month.5", "month.6", "month.7", "month.8",
+        "month.9", "month.10", "month.11", "month.12",
+    ];
+    let month = MONTHS[(date.month().clamp(1, 12) - 1) as usize];
+    trf(
+        older,
+        &[
+            ("day", &date.day_of_month().to_string()),
+            ("month", tr(month)),
+            ("year", &date.year().to_string()),
+            ("time", &time),
+        ],
+    )
 }
 
 fn never(unix: i64) -> String {
     if unix <= 0 {
-        "Never".to_owned()
+        tr("date.never").to_owned()
     } else {
-        "Unknown time".to_owned()
+        tr("date.unknown").to_owned()
     }
 }
 

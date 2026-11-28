@@ -18,21 +18,25 @@ use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Backend, Client, PairingInfo, SyncInfo};
 use crate::handoff::{HandoffAction, WifiHandoff};
+use crate::i18n::{self, tr, trf};
 use crate::nav::Navigator;
 use crate::ui;
 
-const OVERVIEW_HINTS: [(&str, &str); 3] = [("Enter", "Choose"), ("↑ ↓", "Move"), ("Esc", "Back")];
-const URL_HINTS: [(&str, &str); 2] = [("Enter", "Pair"), ("Esc", "Back")];
-const PAIRING_HINTS: [(&str, &str); 1] = [("Esc", "Cancel")];
+const OVERVIEW_HINTS: [(&str, &str); 3] = [
+    ("Enter", "hint.choose"),
+    ("↑ ↓", "hint.move"),
+    ("Esc", "hint.back"),
+];
+const URL_HINTS: [(&str, &str); 2] = [("Enter", "hint.pair"), ("Esc", "hint.back")];
+const PAIRING_HINTS: [(&str, &str); 1] = [("Esc", "hint.cancel")];
 
 /// The beat between "Paired." and the Sync overview: long enough to read the
 /// word, short enough not to hold the writer. A pause, not an animation.
 const PAIRED_BEAT: std::time::Duration = std::time::Duration::from_millis(2_000);
 
-/// The sentence under the one action an error offers.
-const REMEDY_NOTE: &str = "Your writing stays here. Carrel syncs when you are back online.";
-const PAIR_REMEDY_NOTE: &str =
-    "Your writing stays here. Pairing continues once Wi-Fi is connected.";
+/// The sentence under the one action an error offers (i18n keys).
+const REMEDY_NOTE: &str = "sync.remedy_note";
+const PAIR_REMEDY_NOTE: &str = "sync.pair_remedy_note";
 
 /// The one line an error leaves the writer with. It is derived from the
 /// daemon's message, which is a sentence, not a code.
@@ -178,19 +182,19 @@ impl SyncState {
         if self.error.is_none() && self.info.state == "syncing" {
             let message = self.info.message.trim();
             return if message.is_empty() {
-                "Syncing…".to_owned()
+                tr("sync.syncing").to_owned()
             } else {
-                single_line(message)
+                i18n::daemon_message(&single_line(message))
             };
         }
         match self.remedy() {
             Some(Remedy::Wifi) => {
                 if self.error.is_some() || !self.is_paired() {
-                    "Connect to Wi-Fi first".to_owned()
+                    tr("sync.wifi_first").to_owned()
                 } else {
                     match self.service_name() {
-                        Some(name) => format!("Could not reach {name}"),
-                        None => "Could not sync".to_owned(),
+                        Some(name) => trf("sync.cannot_reach", &[("name", name)]),
+                        None => tr("sync.cannot_sync").to_owned(),
                     }
                 }
             }
@@ -198,32 +202,35 @@ impl SyncState {
                 if self.error.is_some() {
                     match self.backend {
                         Some(backend) => {
-                            format!("Could not pair with {}", backend.connected_label())
+                            trf("sync.cannot_pair", &[("name", backend.connected_label())])
                         }
-                        None => "Could not sync".to_owned(),
+                        None => tr("sync.cannot_sync").to_owned(),
                     }
                 } else {
                     match self.service_name() {
-                        Some(name) => format!("Could not reach {name}"),
-                        None => "Could not sync".to_owned(),
+                        Some(name) => trf("sync.cannot_reach", &[("name", name)]),
+                        None => tr("sync.cannot_sync").to_owned(),
                     }
                 }
             }
-            Some(Remedy::Pair) => "Not connected yet".to_owned(),
-            None if !self.is_paired() => "Not connected yet".to_owned(),
-            None if self.info.last_sync > 0 => "Up to date".to_owned(),
-            None => "Ready for your first sync".to_owned(),
+            Some(Remedy::Pair) => tr("sync.not_connected").to_owned(),
+            None if !self.is_paired() => tr("sync.not_connected").to_owned(),
+            None if self.info.last_sync > 0 => tr("sync.up_to_date").to_owned(),
+            None => tr("sync.ready_first").to_owned(),
         }
     }
 
     /// The last sync time, or the reassurance that nothing has left the device.
     pub fn last_sync_line(&self) -> String {
         if self.info.last_sync > 0 {
-            format!("Last sync: {}", ui::format_moment(self.info.last_sync))
+            trf(
+                "sync.last",
+                &[("when", &ui::format_moment(self.info.last_sync))],
+            )
         } else if self.is_paired() {
-            "Not synced yet. Everything is on this device.".to_owned()
+            tr("sync.not_synced").to_owned()
         } else {
-            "Never synced. Everything is on this device.".to_owned()
+            tr("sync.never").to_owned()
         }
     }
 
@@ -231,17 +238,21 @@ impl SyncState {
     pub fn connected_line(&self) -> String {
         match self.paired_services.as_slice() {
             [] => String::new(),
-            [one] => format!("Connected to {}", one.connected_label()),
-            [first, second] => format!(
-                "Connected to {} and {}",
-                first.connected_label(),
-                second.connected_label()
+            [one] => trf("sync.connected_one", &[("a", one.connected_label())]),
+            [first, second] => trf(
+                "sync.connected_two",
+                &[
+                    ("a", first.connected_label()),
+                    ("b", second.connected_label()),
+                ],
             ),
-            _ => format!(
-                "Connected to {}, {} and {}",
-                self.paired_services[0].connected_label(),
-                self.paired_services[1].connected_label(),
-                self.paired_services[2].connected_label()
+            _ => trf(
+                "sync.connected_three",
+                &[
+                    ("a", self.paired_services[0].connected_label()),
+                    ("b", self.paired_services[1].connected_label()),
+                    ("c", self.paired_services[2].connected_label()),
+                ],
             ),
         }
     }
@@ -251,14 +262,12 @@ impl SyncState {
     pub fn detail(&self) -> String {
         match self.remedy() {
             Some(Remedy::Wifi) if self.error.is_some() => match self.backend {
-                Some(backend) => {
-                    format!("Set up Wi-Fi to pair with {}.", backend.connected_label())
-                }
-                None => "Set up Wi-Fi before continuing.".to_owned(),
+                Some(backend) => trf("sync.wifi_to_pair", &[("name", backend.connected_label())]),
+                None => tr("sync.wifi_first_detail").to_owned(),
             },
             Some(Remedy::Retry) => {
                 let message = self.error.as_deref().unwrap_or(&self.info.message);
-                single_line(message)
+                i18n::daemon_message(&single_line(message))
             }
             _ => String::new(),
         }
@@ -329,9 +338,13 @@ impl SyncState {
 
     pub fn row_label(&self, row: Row) -> String {
         match row {
-            Row::SyncNow => "Sync now".to_owned(),
-            Row::ChooseNetwork => "No Wi-Fi. Choose a network".to_owned(),
-            Row::Pair(backend) if self.is_paired() => format!("Pair with {}", backend.pair_label()),
+            Row::SyncNow => tr("sync.now").to_owned(),
+            Row::ChooseNetwork => {
+                format!("{} {}", tr("sync.no_wifi"), tr("sync.choose_network"))
+            }
+            Row::Pair(backend) if self.is_paired() => {
+                trf("sync.pair_with", &[("name", backend.pair_label())])
+            }
             Row::Pair(backend) => backend.label().to_owned(),
             Row::Unpair => self.unpair_label(),
         }
@@ -346,9 +359,9 @@ impl SyncState {
 
     fn unpair_label(&self) -> String {
         match self.paired_services.as_slice() {
-            [] => "Unpair".to_owned(),
-            [one] => format!("Unpair {}", one.connected_label()),
-            _ => "Unpair all services".to_owned(),
+            [] => tr("sync.unpair").to_owned(),
+            [one] => trf("sync.unpair_named", &[("name", one.connected_label())]),
+            _ => tr("sync.unpair_all").to_owned(),
         }
     }
 
@@ -390,10 +403,10 @@ impl SyncState {
     pub fn submit_server_url(&mut self, url: &str) -> Result<SyncEffect, String> {
         let url = url.trim();
         if url.is_empty() {
-            return Err("Type the address of your Carrel server.".to_owned());
+            return Err(tr("sync.need_url").to_owned());
         }
         if !(url.starts_with("https://") || url.starts_with("http://")) {
-            return Err("The address must start with https:// or http://.".to_owned());
+            return Err(tr("sync.bad_url").to_owned());
         }
         self.begin_pairing_with_url(Backend::SelfHosted, url.to_owned());
         Ok(SyncEffect::Pair {
@@ -470,7 +483,7 @@ impl SyncState {
         // just replaced.
         self.info = SyncInfo::default();
         self.paired = true;
-        self.notice = message;
+        self.notice = i18n::daemon_message(&message);
         self.error = None;
         self.failed_pair = None;
         self.pairing_url.clear();
@@ -526,23 +539,13 @@ impl SyncState {
     /// to do on the phone.
     pub fn pairing_sentence(&self) -> String {
         if self.approval_url.is_empty() {
-            return "Starting pairing…".to_owned();
+            return tr("sync.starting").to_owned();
         }
         match self.backend {
-            Some(Backend::Nostos) => {
-                "On your phone, scan the code or open app.nostos.page/pair and enter the code."
-                    .to_owned()
-            }
-            Some(Backend::SelfHosted) => format!(
-                "On your phone, scan the code or open {} and enter the code.",
-                self.approval_url
-            ),
-            Some(Backend::GoogleDrive) => {
-                "On your phone, open google.com/device and enter the code.".to_owned()
-            }
-            None => {
-                "On your phone, scan the code or open the address and enter the code.".to_owned()
-            }
+            Some(Backend::Nostos) => tr("sync.phone_nostos").to_owned(),
+            Some(Backend::SelfHosted) => trf("sync.phone_url", &[("url", &self.approval_url)]),
+            Some(Backend::GoogleDrive) => tr("sync.phone_google").to_owned(),
+            None => tr("sync.phone_address").to_owned(),
         }
     }
 
@@ -553,9 +556,9 @@ impl SyncState {
     /// What the live line says under the code.
     pub fn pairing_live(&self) -> &'static str {
         if self.paired {
-            "Paired."
+            tr("sync.paired")
         } else {
-            "Waiting for approval…"
+            tr("sync.waiting")
         }
     }
 }
@@ -566,7 +569,7 @@ impl Backend {
     fn pair_label(self) -> &'static str {
         match self {
             Self::Nostos => "Nostos",
-            Self::SelfHosted => "a self-hosted server",
+            Self::SelfHosted => tr("sync.a_self_hosted"),
             Self::GoogleDrive => "Google Drive",
         }
     }
@@ -575,7 +578,7 @@ impl Backend {
     fn connected_label(self) -> &'static str {
         match self {
             Self::Nostos => "Nostos",
-            Self::SelfHosted => "your server",
+            Self::SelfHosted => tr("sync.your_server"),
             Self::GoogleDrive => "Google Drive",
         }
     }
@@ -584,9 +587,9 @@ impl Backend {
     /// screen both use it.
     fn promise(self) -> &'static str {
         match self {
-            Self::Nostos => "Your files go to your Nostos Writing Studio drafts.",
-            Self::SelfHosted => "Your files stay on your own server. Nothing is kept in the cloud.",
-            Self::GoogleDrive => "A one-way copy in your Drive. Edits made there do not come back.",
+            Self::Nostos => tr("sync.promise_nostos"),
+            Self::SelfHosted => tr("sync.promise_self"),
+            Self::GoogleDrive => tr("sync.promise_google"),
         }
     }
 }
@@ -676,7 +679,7 @@ impl SyncPage {
         handoff: WifiHandoff,
         root: PathBuf,
     ) -> Rc<Self> {
-        let screen = ui::Screen::new("Sync");
+        let screen = ui::Screen::new(tr("sync.title"));
         screen.set_hints(&OVERVIEW_HINTS);
 
         let hero = gtk::Label::new(None);
@@ -728,9 +731,7 @@ impl SyncPage {
         url_error.set_xalign(0.0);
         url_error.set_wrap(true);
         url_error.add_css_class("error-text");
-        let url_hint = gtk::Label::new(Some(
-            "The server prints its address when it starts. A LAN name or a Tailscale name both work.",
-        ));
+        let url_hint = ui::tr_label("sync.url_hint");
         url_hint.set_xalign(0.0);
         url_hint.set_wrap(true);
         url_hint.add_css_class("row-note");
@@ -1128,15 +1129,15 @@ impl SyncPage {
 
     fn confirm_unpair(self: &Rc<Self>) {
         let title = match self.state.borrow().paired_services.as_slice() {
-            [] => "Unpair?".to_owned(),
-            [one] => format!("Unpair {}?", one.connected_label()),
-            _ => "Unpair every service?".to_owned(),
+            [] => tr("sync.unpair_ask").to_owned(),
+            [one] => trf("sync.unpair_ask_named", &[("name", one.connected_label())]),
+            _ => tr("sync.unpair_ask_all").to_owned(),
         };
         let weak = Rc::downgrade(self);
         self.screen.ask(
             &title,
-            "Carrel forgets the service on this device. Your files stay here and in your account.",
-            "Unpair",
+            tr("sync.unpair_text"),
+            tr("button.unpair"),
             move || {
                 if let Some(page) = weak.upgrade() {
                     page.unpair();
@@ -1160,8 +1161,7 @@ impl SyncPage {
                             state.paired_services.clear();
                             state.paired = false;
                             state.selected = 0;
-                            state.notice =
-                                "Unpaired. The files on this device are untouched.".to_owned();
+                            state.notice = tr("sync.unpaired").to_owned();
                             state.error = None;
                         }
                         page.remember();
@@ -1243,13 +1243,13 @@ impl SyncPage {
         let state = self.state.borrow();
         let view = state.view;
         self.screen.set_title(match view {
-            SyncView::Overview => "Sync",
-            SyncView::SelfHostedUrl => "Pair with your server",
+            SyncView::Overview => tr("sync.title"),
+            SyncView::SelfHostedUrl => tr("sync.pair_server_title"),
             SyncView::Pairing => match state.backend {
-                Some(Backend::Nostos) => "Pair with Nostos",
-                Some(Backend::SelfHosted) => "Pair with your server",
-                Some(Backend::GoogleDrive) => "Pair with Google Drive",
-                None => "Pair",
+                Some(Backend::Nostos) => tr("sync.pair_nostos_title"),
+                Some(Backend::SelfHosted) => tr("sync.pair_server_title"),
+                Some(Backend::GoogleDrive) => tr("sync.pair_google_title"),
+                None => tr("sync.pair_title"),
             },
         });
         match view {
@@ -1261,8 +1261,7 @@ impl SyncPage {
             }
             SyncView::SelfHostedUrl => {
                 self.stack.set_visible_child_name("url");
-                self.screen
-                    .set_status("Type the address your Carrel server printed.");
+                self.screen.set_status(tr("sync.type_address"));
                 self.screen.set_hints(&URL_HINTS);
             }
             SyncView::Pairing => {
@@ -1309,20 +1308,20 @@ impl SyncPage {
         let mut selected_row = None;
         for (index, row) in rows.iter().enumerate() {
             if Some(index) == connections {
-                self.list.append(&group_row("Connections"));
+                self.list.append(&group_row(tr("sync.connections")));
             }
             let widget = match row {
                 // "Sync now" is the one prominent action whenever nothing
                 // else needs the writer first: no error, or an error the
                 // retry itself fixes.
-                Row::SyncNow => primary_row("Sync now", state.remedy() == Some(Remedy::Wifi)),
+                Row::SyncNow => primary_row(tr("sync.now"), state.remedy() == Some(Remedy::Wifi)),
                 Row::ChooseNetwork => {
                     let note = if state.failed_pair.is_some() {
                         PAIR_REMEDY_NOTE
                     } else {
                         REMEDY_NOTE
                     };
-                    remedy_row(&state.row_label(Row::ChooseNetwork), note)
+                    remedy_row(&state.row_label(Row::ChooseNetwork), tr(note))
                 }
                 _ => action_row(&state.row_label(*row), state.row_note(*row)),
             };
@@ -1345,7 +1344,7 @@ impl SyncPage {
             } else {
                 self.notice.add_css_class("error-text");
                 self.notice.remove_css_class("notice-ok");
-                self.notice.set_text(error);
+                self.notice.set_text(&i18n::daemon_message(error));
                 self.notice.set_visible(true);
             }
         } else if !state.notice.is_empty() {
@@ -1418,8 +1417,9 @@ fn remedy_row(label: &str, note: &str) -> gtk::ListBoxRow {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     line.set_valign(gtk::Align::Center);
 
-    let (lead, verb) = match label.split_once("Choose a network") {
-        Some((lead, _)) => (lead.trim_end().to_owned(), "Choose a network".to_owned()),
+    let choose = tr("sync.choose_network");
+    let (lead, verb) = match label.split_once(choose) {
+        Some((lead, _)) => (lead.trim_end().to_owned(), choose.to_owned()),
         None => (label.to_owned(), String::new()),
     };
     let lead = gtk::Label::new(Some(&lead));
