@@ -141,6 +141,9 @@ Note: new documents can appear duplicated between Recent and the folder tree (`i
 | `Wi-Fi…` | — | `palette.rs:159,649` | Switch to Wi-Fi screen. | `na` | `ok` |
 | `Pair…` | — | `palette.rs:160,650` | Switch to Sync screen. | `na` | `ok` |
 | `Install update [<ver>]` | — | `palette.rs:161,651` | Shown only when an update is ready; opens Settings Update row and triggers apply/reboot. | `y` | `ok` |
+| `Shut down` | — | `palette.rs` | Save the open document; carreld commits history and asks logind to power off (Sync at shutdown runs first when on). | `y` | `ok` |
+| `Restart` | — | `palette.rs` | Same as Shut down, but logind reboots. | `y` | `ok` |
+| `Suspend` | — | `palette.rs` | Save the open document; carreld asks logind to suspend, as closing the lid does (history commit on `PrepareForSleep`). | `y` | `ok` |
 | `Open: <doc>` (dynamic) | — | `palette.rs:196,655` | Shown when query is non-empty and matches documents; opens document in editor. | `y` (`last_file`) | `ok` |
 
 ---
@@ -223,7 +226,7 @@ Entries displayed on the Key Sheet (`palette.rs:807-832`):
 | Writing | `Clock` | `settings_page.rs:298,884` | Toggle `Off` / `On`; shows/hides time on the editor bottom line. | `y` | `ok` (`issue #66` for non-UTC timezone) |
 | Connections | `Wi-Fi networks` | `settings_page.rs:341,885` | `Enter` opens the Wi-Fi screen. | `na` | `ok` |
 | Connections | `Sync` | `settings_page.rs:342,886` | `Enter` opens the Sync screen. | `na` | `ok` |
-| Connections | `Sync at shutdown` | `settings_page.rs:302,887` | Toggle `Off` / `On` and save JSON; intended to run a final sync before poweroff. | `y` (JSON only) | `issue #67` (never read at shutdown; no effect) |
+| Connections | `Sync at shutdown` | `settings_page.rs:302,887` | Toggle `Off` / `On` and save JSON; intended to run a final sync before shutting down. | `y` (JSON only) | `issue #67` (never read at shutdown; no effect) |
 | Device | `Keyboard layout` | `settings_page.rs:306,888` | Cycle XKB layout (`us`, `gb`, `de`, `fr`, `es`, `it`, `pt`, `br`, `pl`, `tr`, `se`, `no`, `dk`) and save JSON. | `y` (JSON only) | `issue #49` (never applied to compositor/session) |
 | Device | `Language` | `settings_page.rs:312,889` | Cycle UI language (`English`, `Deutsch`, `Français`, …), save JSON and switch the Spellcheck dictionary. | `y` (JSON only) | `issue #65` (UI text is hardcoded English; only Spellcheck follows it) |
 | Device | `Time zone` | `settings_page.rs:321,890` | Cycle IANA time zone (`Local time`, `UTC`, `Europe/Stockholm`, …) and save JSON. | `y` (JSON only) | `issue #66` (clock & Automatic theme ignore it) |
@@ -309,7 +312,7 @@ Booted via `Carrel recovery` (`systemd.unit=carrel-recovery.target`); `whiptail`
 | `previous` — `Boot previous system` | `recovery:22,129` | Confirm and switch `loader.conf` / `grubenv` to inactive slot (`a`/`b`), then reboot. | `y` | `ok` |
 | `copy` — `Copy all writing to USB drive` | `recovery:55,130` | List removable/USB drives, mount first partition (ext4, FAT or exFAT), copy `/data/writing/` into timestamped folder (on FAT/exFAT, characters those drives reject become `-` and colliding names get ` (2)`), sync & unmount. | `y` | `ok` (fixed in this PR: previously hardcoded `-t ext4` and `cp -a`, breaking FAT drives) |
 | `reset` — `Reset settings (keeps writing)` | `recovery:111,131` | Confirm and remove `/data/writing/.carrel/settings.json` and `stats.json`, keeping writing & history. | `y` | `ok` (fixed in this PR: previously deleted `/data/.carrel/settings.json` instead of `/data/writing/.carrel/settings.json`) |
-| `poweroff` — `Power off` (or `Esc`/Cancel) | `recovery:132,139` | Power off the computer (`systemctl poweroff`). | `na` | `ok` |
+| `poweroff` — `Shut down` (or `Esc`/Cancel) | `recovery:132,139` | Shut the computer down (`systemctl poweroff`). | `na` | `ok` |
 
 ---
 
@@ -321,7 +324,7 @@ Runs on USB boot (`removable=1` or `TRAN=usb`) before the graphical session.
 |---|---|---|---|---|
 | `try` — `Try Carrel (nothing is changed)` | `installer:95,125` | Exit installer and continue booting into the graphical Carrel session on the USB drive. | `na` | `issue #46` (boot menu wording clarity) |
 | `install` — `Install to this computer` | `installer:96,130` | Choose internal disk (>= 8 GB), require typing `ERASE`, `dd` USB image to disk, grow `/data`, register UEFI `Carrel` boot entry, prompt to remove USB & reboot. | `y` | `issue #46` |
-| Cancel / `Esc` on main menu | `installer:124` | Power off the computer (`systemctl poweroff`). | `na` | `ok` |
+| Cancel / `Esc` on main menu | `installer:124` | Shut the computer down (`systemctl poweroff`). | `na` | `ok` |
 
 ---
 
