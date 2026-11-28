@@ -228,6 +228,8 @@ pub struct FirstRunPage {
     root: PathBuf,
     nav: Rc<Navigator>,
     sync: Rc<SyncPage>,
+    session_keyboard: Option<String>,
+    on_restart_session: Rc<dyn Fn()>,
     on_change: Rc<dyn Fn()>,
 }
 
@@ -237,6 +239,8 @@ impl FirstRunPage {
         root: PathBuf,
         nav: Rc<Navigator>,
         sync: Rc<SyncPage>,
+        session_keyboard: Option<String>,
+        on_restart_session: Rc<dyn Fn()>,
         on_change: Rc<dyn Fn()>,
     ) -> Rc<Self> {
         // A brand-new device has no settings file yet, so the image's own
@@ -272,10 +276,19 @@ impl FirstRunPage {
             root,
             nav,
             sync,
+            session_keyboard,
+            on_restart_session,
             on_change,
         });
         page.install();
         page
+    }
+
+    fn keyboard_restart_needed(&self) -> bool {
+        let settings = self.settings.borrow();
+        self.session_keyboard
+            .as_deref()
+            .is_some_and(|active| !active.eq_ignore_ascii_case(settings.keyboard.trim()))
     }
 
     fn install(self: &Rc<Self>) {
@@ -349,20 +362,28 @@ impl FirstRunPage {
     }
 
     fn choose(self: &Rc<Self>) {
-        let (effect, zone_changed) = {
+        let (step_before, effect, zone_changed) = {
             let mut settings = self.settings.borrow_mut();
             let previous_zone = settings.time_zone.clone();
             let max = self.state.borrow().choice_count().saturating_sub(1);
             let mut state = self.state.borrow_mut();
             state.selected = state.selected.min(max);
+            let step = state.step();
             let effect = state.choose(&mut settings);
-            (effect, settings.time_zone != previous_zone)
+            (step, effect, settings.time_zone != previous_zone)
         };
         if let Err(error) = self.settings.borrow().save(&self.root) {
             eprintln!("carrel: could not save first-run settings: {error}");
         }
         if zone_changed {
             (self.on_change)();
+        }
+        // Apply a newly chosen keyboard layout right away so any Wi-Fi password
+        // or server URL typed in the sync step (and the editor after it) uses
+        // the chosen keys.
+        if step_before == FirstStep::Keyboard && self.keyboard_restart_needed() {
+            (self.on_restart_session)();
+            return;
         }
         match effect {
             FirstEffect::Redraw => self.refresh(),
@@ -377,6 +398,10 @@ impl FirstRunPage {
         self.settings.borrow_mut().first_run_complete = true;
         if let Err(error) = self.settings.borrow().save(&self.root) {
             eprintln!("carrel: could not save first-run settings: {error}");
+        }
+        if self.keyboard_restart_needed() {
+            (self.on_restart_session)();
+            return;
         }
         self.nav.show_editor();
     }

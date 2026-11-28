@@ -20,6 +20,7 @@ use crate::first_run::FirstRunPage;
 use crate::handoff::WifiHandoff;
 use crate::history::HistoryPage;
 use crate::keys::Keys;
+use crate::locale;
 use crate::nav::Navigator;
 use crate::palette::{CommandPalette, KeySheet, RenameSheet};
 use crate::quotes::QuotePalette;
@@ -158,12 +159,37 @@ pub fn run(application: &gtk::Application) {
         });
     }
 
+    let in_carrel_session = std::env::var("CARREL_SESSION").as_deref() == Ok("1");
+    let session_keyboard = if in_carrel_session {
+        Some(
+            locale::session_keyboard_from_env()
+                .unwrap_or_else(|| settings.borrow().keyboard.clone()),
+        )
+    } else {
+        None
+    };
+    let restart_session: Rc<dyn Fn()> = {
+        let editor = Rc::clone(&editor);
+        let window = window.clone();
+        let application = application.clone();
+        Rc::new(move || {
+            editor.maybe_name_untitled(true);
+            editor.flush();
+            if in_carrel_session {
+                window.close();
+                application.quit();
+            }
+        })
+    };
+
     let settings_page = SettingsPage::new(
         client.clone(),
         Rc::clone(&nav),
         Rc::clone(&settings),
         root.clone(),
         Rc::clone(&restyle),
+        session_keyboard.clone(),
+        Rc::clone(&restart_session),
     );
     let export = ExportPage::new(
         client.clone(),
@@ -176,6 +202,8 @@ pub fn run(application: &gtk::Application) {
         root.clone(),
         Rc::clone(&nav),
         Rc::clone(&sync),
+        session_keyboard,
+        restart_session,
         Rc::clone(&restyle),
     );
     // A paper layer at 60 % draws the page behind the palette and the key
@@ -287,7 +315,9 @@ pub fn run(application: &gtk::Application) {
     key.set_propagation_phase(gtk::PropagationPhase::Capture);
     {
         let keys = Rc::clone(&keys);
-        key.connect_key_pressed(move |_, keyval, _, state| keys.handle(keyval, state));
+        key.connect_key_pressed(move |_, keyval, keycode, state| {
+            keys.handle_keycode(keyval, keycode, state)
+        });
     }
     window.add_controller(key);
 

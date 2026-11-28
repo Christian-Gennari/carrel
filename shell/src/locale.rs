@@ -94,6 +94,25 @@ pub fn keyboard_cycle(current: &str, delta: i32) -> String {
     KEYBOARDS[next as usize].0.to_owned()
 }
 
+/// Parse the active XKB layout code from an `XKB_DEFAULT_LAYOUT` value
+/// (`"se"`, `"de,us"` -> `"de"`, `"de(nodeadkeys)"` -> `"de"`).
+pub fn parse_xkb_layout(raw: &str) -> Option<String> {
+    let first = raw.split(',').next()?.trim();
+    let layout = first.split('(').next()?.trim().to_ascii_lowercase();
+    if layout.is_empty() {
+        None
+    } else {
+        Some(layout)
+    }
+}
+
+/// The keyboard layout the running compositor started with, if set via
+/// `XKB_DEFAULT_LAYOUT` by `/usr/lib/carrel/session-env`.
+pub fn session_keyboard_from_env() -> Option<String> {
+    let raw = std::env::var("XKB_DEFAULT_LAYOUT").ok()?;
+    parse_xkb_layout(&raw)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,5 +140,14 @@ mod tests {
         assert_eq!(keyboard_cycle("us", -1), "tr");
         assert_eq!(keyboard_label("de"), "German");
         assert_eq!(keyboard_label("xx"), "xx");
+    }
+
+    #[test]
+    fn parses_xkb_default_layout_values() {
+        assert_eq!(parse_xkb_layout("se").as_deref(), Some("se"));
+        assert_eq!(parse_xkb_layout(" SE , us ").as_deref(), Some("se"));
+        assert_eq!(parse_xkb_layout("de(nodeadkeys)").as_deref(), Some("de"));
+        assert_eq!(parse_xkb_layout(""), None);
+        assert_eq!(parse_xkb_layout("  "), None);
     }
 }

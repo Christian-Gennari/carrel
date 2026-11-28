@@ -12,6 +12,10 @@ log() {
     echo "CARREL-RECOVERY: $*" >>/dev/ttyS0 2>/dev/null || true
 }
 
+if [ -x /usr/lib/carrel/keyboard-layout ]; then
+    /usr/lib/carrel/keyboard-layout --apply-vconsole 2>/dev/null || true
+fi
+
 slot="$(sed -n 's/.*carrel\.slot=\([ab]\).*/\1/p' /proc/cmdline)"
 case "$slot" in
     a) other=b ;;
@@ -80,7 +84,14 @@ copy_writing() {
     # -n: the recovery root is read-only and /etc/mtab is a /proc symlink;
     # skipping the mtab update keeps util-linux from mounting and immediately
     # undoing it when the update fails.
-    if ! mount_output="$(timeout 60 mount -n -t ext4 -o rw "/dev/$part" /run/carrel-usb 2>&1)"; then
+    local mounted=0 mount_output="" fs
+    for fs in ext4 vfat exfat; do
+        if mount_output="$(timeout 60 mount -n -t "$fs" -o rw "/dev/$part" /run/carrel-usb 2>&1)"; then
+            mounted=1
+            break
+        fi
+    done
+    if [ "$mounted" -ne 1 ]; then
         log "could not mount /dev/$part: $mount_output"
         whiptail --title "Copy writing" --msgbox \
             "Could not mount /dev/$part. Use a FAT or ext4 partition." 9 70
@@ -93,7 +104,8 @@ copy_writing() {
     log "copying /data/writing to $dest"
     whiptail --title "Copy writing" --infobox \
         "Copying /data/writing to $dest. Do not unplug the drive." 8 70
-    if timeout 300 cp -a /data/writing/. "$dest"/; then
+    # FAT partitions reject POSIX ownership/mode preservation from `cp -a`.
+    if timeout 300 cp -r --no-preserve=ownership,mode /data/writing/. "$dest"/; then
         log "copy finished"
         sync
         umount -n /run/carrel-usb
@@ -114,7 +126,11 @@ reset_settings() {
         10 70; then
         return
     fi
-    rm -f /data/.carrel/settings.json /data/.carrel/stats.json
+    rm -f \
+        /data/writing/.carrel/settings.json \
+        /data/writing/.carrel/stats.json \
+        /data/.carrel/settings.json \
+        /data/.carrel/stats.json
     whiptail --title "Reset settings" --msgbox "Settings were reset." 8 60
 }
 

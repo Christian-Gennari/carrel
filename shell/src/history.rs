@@ -30,6 +30,16 @@ const HINTS: [(&str, &str); 4] = [
     ("Esc", "Back"),
 ];
 
+const EMPTY_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
+
+fn hints_for_versions(has_versions: bool) -> &'static [(&'static str, &'static str)] {
+    if has_versions {
+        &HINTS
+    } else {
+        &EMPTY_HINTS
+    }
+}
+
 /// The pure part: which version is selected, what the preview shows, what the
 /// screen asks the daemon for next.
 #[derive(Debug, Default)]
@@ -521,6 +531,7 @@ impl HistoryPage {
     fn show_columns(&self) {
         self.message.hide();
         self.columns.set_visible(true);
+        self.screen.set_hints(hints_for_versions(true));
     }
 
     fn show_loading(&self) {
@@ -545,6 +556,7 @@ impl HistoryPage {
     fn show_message_state(&self, headline: &str, detail: &str, error: bool) {
         self.message.set(headline, &[detail], error);
         self.columns.set_visible(false);
+        self.screen.set_hints(hints_for_versions(false));
     }
 
     fn show_message(self: &Rc<Self>, message: &str, error: bool) {
@@ -1247,5 +1259,13 @@ mod tests {
         assert!(runs.iter().any(|run| run.kind == DiffKind::Added));
         assert_eq!(same_text(&runs), current);
         assert_eq!(old_text(&runs), old);
+    }
+
+    #[test]
+    fn empty_state_only_hints_back() {
+        assert_eq!(hints_for_versions(false), &[("Esc", "Back")]);
+        assert!(hints_for_versions(true)
+            .iter()
+            .any(|(key, word)| *key == "Enter" && *word == "Restore"));
     }
 }

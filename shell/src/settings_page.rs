@@ -116,6 +116,7 @@ pub enum SettingsEffect {
     OpenWifi,
     OpenSync,
     ApplyUpdate,
+    RestartSession,
 }
 
 /// The `UpdateStatus()` string, interpreted for the screen.
@@ -184,9 +185,20 @@ pub struct SettingsState {
     /// False until the daemon has answered once: the first answer may put the
     /// update row at the top without moving the writer's cursor.
     update_known: bool,
+    /// The keyboard layout the running compositor started with, when running
+    /// under `carrel-session.service`.
+    pub session_keyboard: Option<String>,
 }
 
 impl SettingsState {
+    /// True when the saved keyboard layout differs from the running compositor's
+    /// layout, so leaving Settings (or pressing Enter) should reload the session.
+    pub fn keyboard_restart_needed(&self, settings: &Settings) -> bool {
+        self.session_keyboard
+            .as_deref()
+            .is_some_and(|active| !active.eq_ignore_ascii_case(settings.keyboard.trim()))
+    }
+
     pub fn row(&self, settings: &Settings) -> SettingRow {
         let rows = rows(settings, self.update.has_top_row());
         rows[self.selected.min(rows.len() - 1)]
@@ -341,6 +353,9 @@ impl SettingsState {
             SettingRow::Wifi => SettingsEffect::OpenWifi,
             SettingRow::SyncBackends => SettingsEffect::OpenSync,
             SettingRow::Update if self.update.ready() => SettingsEffect::ApplyUpdate,
+            SettingRow::Keyboard if self.keyboard_restart_needed(settings) => {
+                SettingsEffect::RestartSession
+            }
             _ => SettingsEffect::None,
         }
     }
@@ -407,6 +422,10 @@ impl SettingsState {
             SettingRow::SyncAtShutdown => {
                 "One last sync before Carrel powers off, when a server is set up.".to_owned()
             }
+            SettingRow::Keyboard if self.keyboard_restart_needed(settings) => {
+                "Carrel reloads briefly to switch the keyboard layout. Press Enter or Esc to apply."
+                    .to_owned()
+            }
             SettingRow::Keyboard => {
                 "The keys you type on, including an external keyboard.".to_owned()
             }
@@ -452,6 +471,17 @@ fn hints_for(state: &SettingsState, settings: &Settings) -> Vec<(&'static str, &
         SettingRow::Update if state.update.ready() => {
             vec![("Enter", "Update"), ("↑ ↓", "Move"), ("Esc", "Back")]
         }
+        SettingRow::Keyboard if state.keyboard_restart_needed(settings) => {
+            vec![
+                ("Enter", "Apply"),
+                ("← →", "Change"),
+                ("↑ ↓", "Move"),
+                ("Esc", "Back"),
+            ]
+        }
+        SettingRow::Update | SettingRow::About => {
+            vec![("↑ ↓", "Move"), ("Esc", "Back")]
+        }
         _ => vec![("← →", "Change"), ("↑ ↓", "Move"), ("Esc", "Back")],
     }
 }
@@ -477,6 +507,7 @@ pub struct SettingsPage {
     client: Client,
     nav: Rc<Navigator>,
     on_change: Rc<dyn Fn()>,
+    on_restart_session: Rc<dyn Fn()>,
 }
 
 impl SettingsPage {
@@ -486,6 +517,8 @@ impl SettingsPage {
         settings: Rc<RefCell<Settings>>,
         root: PathBuf,
         on_change: Rc<dyn Fn()>,
+        session_keyboard: Option<String>,
+        on_restart_session: Rc<dyn Fn()>,
     ) -> Rc<Self> {
         let screen = ui::Screen::new("Settings");
         screen.set_hints(&[("← →", "Change"), ("↑ ↓", "Move"), ("Esc", "Back")]);
@@ -500,12 +533,17 @@ impl SettingsPage {
             .ok()
             .and_then(|value| value.parse::<usize>().ok());
 
+        let state = SettingsState {
+            session_keyboard,
+            ..SettingsState::default()
+        };
+
         let page = Rc::new(Self {
             widget: screen.root.clone(),
             screen,
             list,
             scroller,
-            state: RefCell::new(SettingsState::default()),
+            state: RefCell::new(state),
             index_map: RefCell::new(Vec::new()),
             status_generation: Cell::new(0),
             initial_select: Cell::new(initial_select),
@@ -514,6 +552,7 @@ impl SettingsPage {
             client,
             nav,
             on_change,
+            on_restart_session,
         });
         page.install();
         page
@@ -577,7 +616,15 @@ impl SettingsPage {
         }
         match keyval {
             gdk::Key::Escape => {
-                self.nav.show_editor();
+                let restart = {
+                    let settings = self.settings.borrow();
+                    self.state.borrow().keyboard_restart_needed(&settings)
+                };
+                if restart {
+                    (self.on_restart_session)();
+                } else {
+                    self.nav.show_editor();
+                }
                 glib::Propagation::Stop
             }
             gdk::Key::Up => {
@@ -667,6 +714,7 @@ impl SettingsPage {
             SettingsEffect::OpenWifi => self.nav.show("wifi"),
             SettingsEffect::OpenSync => self.nav.show("sync"),
             SettingsEffect::ApplyUpdate => self.apply_update(),
+            SettingsEffect::RestartSession => (self.on_restart_session)(),
         }
     }
 
@@ -715,7 +763,7 @@ impl SettingsPage {
         });
     }
 
-    fn refresh(self: &Rc<Self>) {
+    pub(crate) fn refresh(self: &Rc<Self>) {
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
@@ -1272,6 +1320,30 @@ mod tests {
     }
 
     #[test]
+    fn the_hint_bar_omits_change_on_read_only_rows() {
+        let settings = Settings::default();
+        let mut state = SettingsState::default();
+        state.set_update(UpdateState::from_wire("none"));
+        for index in 0..rows(&settings, false).len() {
+            state.select(&settings, index);
+            let row = state.row(&settings);
+            let editable = !matches!(
+                row,
+                SettingRow::Wifi
+                    | SettingRow::SyncBackends
+                    | SettingRow::Update
+                    | SettingRow::About
+            );
+            let hints = hints_for(&state, &settings);
+            assert_eq!(
+                hints.iter().any(|(key, _)| *key == "← →"),
+                editable,
+                "{row:?}: the hint bar should name ← → only where Left/Right changes a value"
+            );
+        }
+    }
+
+    #[test]
     fn a_late_update_keeps_the_cursor_on_the_same_setting() {
         let settings = Settings::default();
         let mut state = SettingsState::default();
@@ -1283,5 +1355,36 @@ mod tests {
         assert_eq!(state.row(&settings), SettingRow::Font);
         state.set_update(UpdateState::from_wire("none"));
         assert_eq!(state.row(&settings), SettingRow::Font);
+    }
+
+    #[test]
+    fn changing_keyboard_from_session_layout_requests_reload_until_reverted() {
+        let mut settings = Settings::default();
+        let mut state = SettingsState {
+            session_keyboard: Some("us".to_owned()),
+            ..SettingsState::default()
+        };
+        select(&mut state, &settings, SettingRow::Keyboard);
+        assert!(!state.keyboard_restart_needed(&settings));
+        assert_eq!(state.activate(&settings), SettingsEffect::None);
+        assert!(!hints_for(&state, &settings)
+            .iter()
+            .any(|(key, _)| *key == "Enter"));
+
+        // Switching to another layout marks a reload needed and exposes Enter Apply.
+        state.change(&mut settings, 1);
+        assert_eq!(settings.keyboard, "gb");
+        assert!(state.keyboard_restart_needed(&settings));
+        assert_eq!(state.activate(&settings), SettingsEffect::RestartSession);
+        assert!(state.hint_for(&settings).contains("reloads briefly"));
+        assert!(hints_for(&state, &settings)
+            .iter()
+            .any(|(key, word)| *key == "Enter" && *word == "Apply"));
+
+        // Cycling back to the active layout clears the pending reload.
+        state.change(&mut settings, -1);
+        assert_eq!(settings.keyboard, "us");
+        assert!(!state.keyboard_restart_needed(&settings));
+        assert_eq!(state.activate(&settings), SettingsEffect::None);
     }
 }

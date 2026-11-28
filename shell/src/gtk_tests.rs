@@ -60,7 +60,9 @@ fn gtk_scenarios() {
     rename_current_file_via_palette_and_shortcut();
     rename_sheet_traps_tab_pauses_auto_naming_and_preserves_undo();
     files_search_finds_a_document_in_any_folder();
+    files_shift_m_types_in_search_and_moves_when_empty();
     recent_files_open_from_the_files_screen();
+    new_document_has_one_file_and_two_section_headers();
     opening_a_folder_starts_at_its_first_entry();
     new_file_from_files_lands_in_the_selected_folder();
     a_conflict_copy_offers_three_ways();
@@ -79,6 +81,10 @@ fn gtk_scenarios() {
     offline_pairing_from_sync_prompts_wifi_and_resumes_pairing();
     offline_self_hosted_pairing_preserves_url_across_wifi_handoff();
     offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing();
+    zoom_shortcuts_handle_keypad_shift_and_non_us_layouts();
+    changing_keyboard_in_settings_flushes_document_and_restarts_session();
+    changing_keyboard_in_first_run_saves_and_restarts_session();
+    modal_dialogs_block_global_shortcuts_and_ctrl_o_works_from_other_screens();
     time_zone_setting_updates_clock_and_automatic_theme();
 }
 
@@ -980,6 +986,68 @@ fn files_search_finds_a_document_in_any_folder() {
     assert_eq!(shell.visible(), "editor");
 }
 
+/// Shift+M appends "M" while a search query is active, and only enters Move
+/// mode when the query is empty. The Files hint bar names Shift+M.
+fn files_shift_m_types_in_search_and_moves_when_empty() {
+    let shell = TestShell::new(
+        &[
+            ("Novel/Chapter M.md", "# Chapter M\n"),
+            ("Alpha.md", "# Alpha\n"),
+        ],
+        "Alpha.md",
+    );
+    let none = gdk::ModifierType::empty();
+    let shift = gdk::ModifierType::SHIFT_MASK;
+
+    shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert!(
+        shell.has_label("Shift+M"),
+        "the Files hint bar should show Shift+M for Move"
+    );
+
+    // While typing a search query, Shift+M appends "M" instead of hijacking to Move mode.
+    shell.type_search("chapter ");
+    shell.press("Shift+M", gdk::Key::m, shift);
+    settle();
+    assert_eq!(shell.files.query(), "chapter M");
+    assert!(
+        !shell.files.is_move_mode(),
+        "Shift+M during search must not enter Move mode"
+    );
+    assert!(shell.has_label("Search “chapter M”"));
+
+    // Real X11/Wayland events deliver the uppercase keysym with SHIFT_MASK.
+    shell.press("BackSpace", gdk::Key::BackSpace, none);
+    shell.press("Shift+M", gdk::Key::M, shift);
+    settle();
+    assert_eq!(shell.files.query(), "chapter M");
+    assert!(!shell.files.is_move_mode());
+
+    // Clearing the query back to empty lets Shift+M enter Move mode.
+    shell.press("Esc", gdk::Key::Escape, none);
+    settle();
+    assert_eq!(shell.files.query(), "");
+    assert!(!shell.files.is_move_mode());
+
+    shell.press("Shift+M", gdk::Key::m, shift);
+    settle();
+    assert!(
+        shell.files.is_move_mode(),
+        "Shift+M with an empty query must enter Move mode"
+    );
+    assert!(shell.has_label("Move “Alpha” to…"));
+
+    // Cancel Move mode, reselect the document, and verify uppercase keysym enters Move mode too.
+    shell.press("Esc", gdk::Key::Escape, none);
+    settle();
+    assert!(!shell.files.is_move_mode());
+    shell.press("Home", gdk::Key::Home, none);
+    shell.press("Shift+M", gdk::Key::M, shift);
+    settle();
+    assert!(shell.files.is_move_mode());
+}
+
 /// The last opened document is the first row of the Files screen, so Enter
 /// reopens it without hunting through the folder tree.
 fn recent_files_open_from_the_files_screen() {
@@ -1000,6 +1068,113 @@ fn recent_files_open_from_the_files_screen() {
         shell.editor.current_rel().as_deref(),
         Some(Path::new("Novel/Chapter one.md"))
     );
+}
+
+/// A newly created document writes only one file on disk (across first save,
+/// title-based rename, and later saves), appears once in recent_files(), and
+/// Files separates Recent from the folder list with its own header ("All files"
+/// at top level, or the folder name inside a folder).
+fn new_document_has_one_file_and_two_section_headers() {
+    let visible_entries = |dir: &Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("read writing dir")
+            .filter_map(|entry| {
+                let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+                (!name.starts_with('.')).then_some(name)
+            })
+            .collect();
+        names.sort();
+        names
+    };
+
+    // Part 1: empty writing root -> start a new document, save, auto-name, save again.
+    {
+        let shell = TestShell::new(&[], "");
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md"))
+        );
+
+        // First save.
+        shell.type_text("# Morning notes\n\nFirst draft.");
+        shell.editor.flush();
+        assert_eq!(visible_entries(&shell.root), vec!["Untitled.md"]);
+
+        // Title-based rename replaces Untitled.md rather than writing a second file.
+        shell.editor.maybe_name_untitled(true);
+        settle();
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Morning notes.md"))
+        );
+        assert_eq!(visible_entries(&shell.root), vec!["Morning notes.md"]);
+        let store = Store::open(&shell.root).expect("store");
+        assert_eq!(
+            store.recent_files(),
+            vec![PathBuf::from("Morning notes.md")]
+        );
+
+        // Later save still leaves exactly one file on disk and one recent entry.
+        shell.type_text("\n\nSecond paragraph.");
+        shell.editor.flush();
+        assert_eq!(visible_entries(&shell.root), vec!["Morning notes.md"]);
+        assert_eq!(
+            store.recent_files(),
+            vec![PathBuf::from("Morning notes.md")]
+        );
+
+        // Files shows the two section headers: "Recent" and "All files".
+        shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        let page = shell.stack.visible_child().expect("files page");
+        assert_eq!(
+            files_list_rows(&page),
+            vec![
+                (true, "Recent".to_owned()),
+                (false, "Morning notes".to_owned()),
+                (true, "All files".to_owned()),
+                (false, "Morning notes".to_owned()),
+            ]
+        );
+    }
+
+    // Part 2: inside a subfolder, the folder section header uses the folder name.
+    {
+        let shell = TestShell::new(
+            &[
+                ("Novel/Chapter one.md", "# Chapter one\n"),
+                ("Alpha.md", "# Alpha\n"),
+            ],
+            "Alpha.md",
+        );
+        shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        let page = shell.stack.visible_child().expect("files page");
+        assert_eq!(
+            files_list_rows(&page),
+            vec![
+                (true, "Recent".to_owned()),
+                (false, "Alpha".to_owned()),
+                (true, "All files".to_owned()),
+                (false, "Novel/".to_owned()),
+                (false, "Alpha".to_owned()),
+            ]
+        );
+
+        // Down steps over the "All files" header to Novel/, Enter opens it.
+        shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        settle();
+        assert_eq!(
+            files_list_rows(&page),
+            vec![
+                (true, "Recent".to_owned()),
+                (false, "Alpha".to_owned()),
+                (true, "Novel".to_owned()),
+                (false, "Chapter one".to_owned()),
+            ]
+        );
+    }
 }
 
 /// Opening a folder lands on its first entry, not on the Recent group above
@@ -1657,6 +1832,7 @@ struct TestShell {
     stack: gtk::Stack,
     window: gtk::Window,
     editor: Rc<EditorPage>,
+    files: Rc<FilesPage>,
     quotes: Rc<QuotePalette>,
     palette: Rc<CommandPalette>,
     key_sheet: Rc<KeySheet>,
@@ -1670,6 +1846,7 @@ struct TestShell {
     first_run: Rc<FirstRunPage>,
     settings: Rc<RefCell<Settings>>,
     daemon: Arc<FakeDaemon>,
+    session_restarts: Rc<std::cell::Cell<usize>>,
     sequence: RefCell<Vec<String>>,
     // Dropped last: the writing folder outlives the pages that use it.
     _temp: tempfile::TempDir,
@@ -1758,12 +1935,25 @@ impl TestShell {
                 editor.reapply_style();
             })
         };
+        let session_restarts = Rc::new(std::cell::Cell::new(0usize));
+        let restart_session: Rc<dyn Fn()> = {
+            let editor = Rc::clone(&editor);
+            let session_restarts = Rc::clone(&session_restarts);
+            Rc::new(move || {
+                editor.maybe_name_untitled(true);
+                editor.flush();
+                session_restarts.set(session_restarts.get() + 1);
+            })
+        };
+        let session_keyboard = Some(settings.borrow().keyboard.clone());
         let settings_page = SettingsPage::new(
             client.clone(),
             Rc::clone(&nav),
             Rc::clone(&settings),
             root.clone(),
             Rc::clone(&restyle),
+            session_keyboard.clone(),
+            Rc::clone(&restart_session),
         );
         let export = ExportPage::new(
             client.clone(),
@@ -1776,6 +1966,8 @@ impl TestShell {
             root.clone(),
             Rc::clone(&nav),
             Rc::clone(&sync),
+            session_keyboard,
+            restart_session,
             Rc::clone(&restyle),
         );
         let dim = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1837,7 +2029,11 @@ impl TestShell {
                 DaemonEvent::Battery(_) => {}
             });
         }
-        editor.open_rel(Path::new(open)).expect("open fixture");
+        if open.is_empty() {
+            editor.open_last_or_new().expect("open new document");
+        } else {
+            editor.open_rel(Path::new(open)).expect("open fixture");
+        }
         window.present();
         settle();
 
@@ -1845,7 +2041,7 @@ impl TestShell {
             stack.clone(),
             Rc::clone(&nav),
             Rc::clone(&editor),
-            files,
+            Rc::clone(&files),
             history,
             Rc::clone(&quotes),
             Rc::clone(&sync),
@@ -1863,6 +2059,7 @@ impl TestShell {
             stack,
             window,
             editor,
+            files,
             quotes,
             palette,
             key_sheet,
@@ -1876,6 +2073,7 @@ impl TestShell {
             first_run,
             settings,
             daemon,
+            session_restarts,
             sequence: RefCell::new(Vec::new()),
             _temp: temp,
         }
@@ -1885,6 +2083,18 @@ impl TestShell {
     fn press(&self, label: &str, key: gdk::Key, modifiers: gdk::ModifierType) {
         self.sequence.borrow_mut().push(label.to_owned());
         self.keys.handle(key, modifiers);
+    }
+
+    /// One key press carrying a hardware keycode, matching `EventControllerKey`.
+    fn press_keycode(
+        &self,
+        label: &str,
+        key: gdk::Key,
+        keycode: u32,
+        modifiers: gdk::ModifierType,
+    ) {
+        self.sequence.borrow_mut().push(label.to_owned());
+        self.keys.handle_keycode(key, keycode, modifiers);
     }
 
     /// Type text as GTK delivers it: the key goes through the dispatcher
@@ -2479,6 +2689,164 @@ fn offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing() {
     assert_eq!(shell.daemon.pairs(), 1);
 }
 
+/// Issue #50: zoom shortcuts work with keypad keys, Ctrl+Shift+plus, non-US
+/// layout keyvals and hardware keycode fallbacks, briefly show the new size,
+/// stay in sync with Settings > Size, and persist to disk.
+fn zoom_shortcuts_handle_keypad_shift_and_non_us_layouts() {
+    use crate::editor::{KEYCODE_EQUAL, KEYCODE_KP_ADD, KEYCODE_KP_SUBTRACT, KEYCODE_MINUS};
+    use crate::settings::{MAX_FONT_SIZE, MIN_FONT_SIZE};
+
+    let ctrl = gdk::ModifierType::CONTROL_MASK;
+    let ctrl_shift = ctrl | gdk::ModifierType::SHIFT_MASK;
+    let none = gdk::ModifierType::empty();
+
+    let shell = TestShell::new(
+        &[(
+            "Alpha.md",
+            "The quiet morning begins with a single sentence.\n\nAnother paragraph.\n",
+        )],
+        "Alpha.md",
+    );
+    shell.daemon.set_update("none");
+    assert_eq!(shell.settings.borrow().font_size, 19);
+
+    let line_height = || {
+        let buffer = shell.editor.buffer();
+        let iter = buffer.start_iter();
+        shell.editor.view().iter_location(&iter).height()
+    };
+    let initial_height = line_height();
+
+    // Keypad + and - (plus keypad keycode fallback).
+    shell.press_keycode("Ctrl+KP_Add", gdk::Key::KP_Add, KEYCODE_KP_ADD, ctrl);
+    settle();
+    assert_eq!(shell.settings.borrow().font_size, 20);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 20"));
+    assert_eq!(Settings::load(&shell.root).font_size, 20);
+    assert!(
+        line_height() > initial_height,
+        "a single zoom step should visibly grow rendered line height ({initial_height} -> {})",
+        line_height()
+    );
+
+    shell.press_keycode(
+        "Ctrl+KP_Subtract",
+        gdk::Key::KP_Subtract,
+        KEYCODE_KP_SUBTRACT,
+        ctrl,
+    );
+    settle();
+    assert_eq!(shell.settings.borrow().font_size, 19);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 19"));
+
+    shell.press_keycode(
+        "Ctrl+KP_Add(keycode)",
+        gdk::Key::VoidSymbol,
+        KEYCODE_KP_ADD,
+        ctrl,
+    );
+    assert_eq!(shell.settings.borrow().font_size, 20);
+    shell.press_keycode(
+        "Ctrl+KP_Subtract(keycode)",
+        gdk::Key::VoidSymbol,
+        KEYCODE_KP_SUBTRACT,
+        ctrl,
+    );
+    assert_eq!(shell.settings.borrow().font_size, 19);
+
+    // Ctrl+Shift+plus and Ctrl+Shift+- (underscore).
+    shell.press_keycode("Ctrl+Shift++", gdk::Key::plus, KEYCODE_EQUAL, ctrl_shift);
+    assert_eq!(shell.settings.borrow().font_size, 20);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 20"));
+
+    shell.press_keycode(
+        "Ctrl+Shift+-",
+        gdk::Key::underscore,
+        KEYCODE_MINUS,
+        ctrl_shift,
+    );
+    assert_eq!(shell.settings.borrow().font_size, 19);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 19"));
+
+    // Swedish layout keyvals: `+` sits on US minus (keycode 20), `=` sits on
+    // Shift+0 (keycode 19), and `-` sits on US slash (keycode 61).
+    shell.press_keycode("Swedish Ctrl++", gdk::Key::plus, KEYCODE_MINUS, ctrl);
+    assert_eq!(
+        shell.settings.borrow().font_size,
+        20,
+        "layout keyval '+' must zoom in even on US minus hardware keycode"
+    );
+    shell.press_keycode("Swedish Ctrl+=", gdk::Key::equal, 19, ctrl_shift);
+    assert_eq!(shell.settings.borrow().font_size, 21);
+    shell.press_keycode("Swedish Ctrl+-", gdk::Key::minus, 61, ctrl);
+    assert_eq!(shell.settings.borrow().font_size, 20);
+
+    // Non-US layout hardware keycode fallback: physical `=` sending dead_acute
+    // (Swedish/German) zooms in; physical `-` sending ssharp (German) zooms out.
+    shell.press_keycode("Ctrl+dead_acute", gdk::Key::dead_acute, KEYCODE_EQUAL, ctrl);
+    assert_eq!(shell.settings.borrow().font_size, 21);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 21"));
+
+    shell.press_keycode("Ctrl+ssharp", gdk::Key::ssharp, KEYCODE_MINUS, ctrl);
+    assert_eq!(shell.settings.borrow().font_size, 20);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 20"));
+
+    // Reaching the bounds still reports the clamped size.
+    for _ in 0..10 {
+        shell.press_keycode("Ctrl+KP_Add", gdk::Key::KP_Add, KEYCODE_KP_ADD, ctrl);
+    }
+    assert_eq!(shell.settings.borrow().font_size, MAX_FONT_SIZE);
+    assert_eq!(
+        shell.editor.note_text().as_deref(),
+        Some(format!("Text size {MAX_FONT_SIZE}").as_str())
+    );
+    for _ in 0..12 {
+        shell.press_keycode(
+            "Ctrl+KP_Subtract",
+            gdk::Key::KP_Subtract,
+            KEYCODE_KP_SUBTRACT,
+            ctrl,
+        );
+    }
+    assert_eq!(shell.settings.borrow().font_size, MIN_FONT_SIZE);
+    assert_eq!(
+        shell.editor.note_text().as_deref(),
+        Some(format!("Text size {MIN_FONT_SIZE}").as_str())
+    );
+
+    // Zoom to 22, verify persistence and Settings > Size sync (both on open
+    // and when zoomed via the command palette while Settings is visible).
+    for _ in 0..6 {
+        shell.press_keycode("Ctrl+=", gdk::Key::equal, KEYCODE_EQUAL, ctrl);
+    }
+    settle();
+    assert_eq!(shell.settings.borrow().font_size, 22);
+    assert_eq!(Settings::load(&shell.root).font_size, 22);
+
+    shell.press("Ctrl+,", gdk::Key::comma, ctrl);
+    settle();
+    assert_eq!(shell.visible(), "settings");
+    assert!(
+        shell.has_label("22"),
+        "Settings > Size should show the zoomed size"
+    );
+
+    shell.press("Ctrl+K", gdk::Key::k, ctrl);
+    shell.type_text("larger text");
+    assert_eq!(
+        shell.palette.selected_label().as_deref(),
+        Some("Larger text")
+    );
+    shell.press("Enter", gdk::Key::Return, none);
+    settle();
+    assert_eq!(shell.settings.borrow().font_size, 23);
+    assert_eq!(Settings::load(&shell.root).font_size, 23);
+    assert!(
+        shell.has_label("23"),
+        "Settings > Size should update immediately after palette zoom"
+    );
+}
+
 /// Changing Time zone in Settings updates the bottom-line clock and Automatic
 /// day/night theme immediately and survives reloading settings from disk.
 fn time_zone_setting_updates_clock_and_automatic_theme() {
@@ -2773,4 +3141,177 @@ fn wait_for_dialog_button(label: &str) {
         glib::MainContext::default().iteration(false);
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn find_list_box(widget: &gtk::Widget) -> Option<gtk::ListBox> {
+    if let Some(list) = widget.downcast_ref::<gtk::ListBox>() {
+        return Some(list.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(list) = find_list_box(&widget) {
+            return Some(list);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn first_label(widget: &gtk::Widget) -> Option<gtk::Label> {
+    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+        return Some(label.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(label) = first_label(&widget) {
+            return Some(label);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+/// Every row in the Files screen's ListBox as `(is_section_header, primary_label_text)`.
+fn files_list_rows(page: &gtk::Widget) -> Vec<(bool, String)> {
+    let list = find_list_box(page).expect("Files ListBox");
+    let mut out = Vec::new();
+    let mut child = list.first_child();
+    while let Some(widget) = child {
+        if let Some(row) = widget.downcast_ref::<gtk::ListBoxRow>() {
+            if let Some(label) = first_label(row.upcast_ref()) {
+                let is_header = !row.is_selectable()
+                    && !row.is_activatable()
+                    && label.has_css_class("section-title");
+                out.push((is_header, label.text().to_string()));
+            }
+        }
+        child = widget.next_sibling();
+    }
+    out
+}
+
+fn changing_keyboard_in_settings_flushes_document_and_restarts_session() {
+    let shell = TestShell::new(&[("Notes.md", "Initial text")], "Notes.md");
+    shell.daemon.set_update("none");
+    shell.type_text(" and unsaved words");
+    assert_eq!(shell.session_restarts.get(), 0);
+
+    // Open Settings via Ctrl+, and jump to Keyboard layout (End, then 4× Up).
+    shell.press("Ctrl+,", gdk::Key::comma, gdk::ModifierType::CONTROL_MASK);
+    settle();
+    assert_eq!(shell.keys.visible(), "settings");
+    shell.press("End", gdk::Key::End, gdk::ModifierType::empty());
+    for _ in 0..4 {
+        shell.press("Up", gdk::Key::Up, gdk::ModifierType::empty());
+    }
+
+    // Cycle from US (index 0) to Swedish (index 8): cycling must NOT restart
+    // mid-way while the writer is still stepping through layouts.
+    for _ in 0..8 {
+        shell.press("Right", gdk::Key::Right, gdk::ModifierType::empty());
+    }
+    settle();
+    assert_eq!(shell.settings.borrow().keyboard, "se");
+    assert_eq!(Settings::load(&shell.root).keyboard, "se");
+    assert_eq!(shell.session_restarts.get(), 0);
+
+    // Pressing Esc saves and flushes the open document and requests a session
+    // restart so cage picks up XKB_DEFAULT_LAYOUT=se.
+    shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    assert_eq!(shell.session_restarts.get(), 1);
+    let saved = std::fs::read_to_string(shell.root.join("Notes.md")).expect("flushed document");
+    assert_eq!(saved, "Initial text and unsaved words");
+
+    // Pressing Enter on the changed Keyboard row also triggers the reload.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert_eq!(shell.session_restarts.get(), 2);
+
+    // Cycling back to the active session layout ("us") clears the pending reload
+    // so Esc returns to the editor without restarting.
+    for _ in 0..8 {
+        shell.press("Left", gdk::Key::Left, gdk::ModifierType::empty());
+    }
+    assert_eq!(shell.settings.borrow().keyboard, "us");
+    shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    assert_eq!(shell.session_restarts.get(), 2);
+    assert_eq!(shell.keys.visible(), "editor");
+}
+
+fn changing_keyboard_in_first_run_saves_and_restarts_session() {
+    let shell = TestShell::new(&[("Notes.md", "")], "Notes.md");
+    shell.settings.borrow_mut().first_run_complete = false;
+    shell.first_run.start();
+    shell.nav.show("first_run");
+    settle();
+    assert_eq!(shell.keys.visible(), "first_run");
+
+    // Welcome starts on row 3 (Start writing). Two Ups land on row 1 (Keyboard).
+    shell.press("Up", gdk::Key::Up, gdk::ModifierType::empty());
+    shell.press("Up", gdk::Key::Up, gdk::ModifierType::empty());
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    // Keeping US (index 0) does not restart the session.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert_eq!(shell.session_restarts.get(), 0);
+    assert_eq!(shell.settings.borrow().keyboard, "us");
+
+    // Reopen Keyboard (still selected on row 1), move down 8 to Swedish, confirm.
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    for _ in 0..8 {
+        shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+    }
+    shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+    assert_eq!(shell.settings.borrow().keyboard, "se");
+    let persisted = Settings::load(&shell.root);
+    assert_eq!(persisted.keyboard, "se");
+    assert!(!persisted.first_run_complete);
+    assert_eq!(shell.session_restarts.get(), 1);
+}
+
+/// A modal confirmation card keeps focus until answered: global screen chords
+/// cannot leave it orphaned behind another screen. Outside a modal dialog,
+/// Ctrl+O opens Files from non-editor screens as well.
+fn modal_dialogs_block_global_shortcuts_and_ctrl_o_works_from_other_screens() {
+    let ctrl = gdk::ModifierType::CONTROL_MASK;
+    let ctrl_shift = ctrl | gdk::ModifierType::SHIFT_MASK;
+    let shell = TestShell::new(
+        &[("Alpha.md", "# Alpha\n"), ("Beta.md", "# Beta\n")],
+        "Alpha.md",
+    );
+
+    // Ctrl+O from Settings opens Files directly.
+    shell.press("Ctrl+,", gdk::Key::comma, ctrl);
+    settle();
+    assert_eq!(shell.visible(), "settings");
+    shell.press("Ctrl+O", gdk::Key::o, ctrl);
+    settle();
+    assert_eq!(shell.visible(), "files");
+
+    // Open the Delete confirmation card on Files and press every global chord.
+    shell.press("Delete", gdk::Key::Delete, gdk::ModifierType::empty());
+    wait_for_dialog_button("Delete");
+    for (label, key, state) in [
+        ("Ctrl+,", gdk::Key::comma, ctrl),
+        ("Ctrl+H", gdk::Key::h, ctrl),
+        ("Ctrl+E", gdk::Key::e, ctrl),
+        ("Ctrl+Shift+S", gdk::Key::s, ctrl_shift),
+        ("Ctrl+K", gdk::Key::k, ctrl),
+        ("Ctrl+/", gdk::Key::slash, ctrl),
+        ("Ctrl+Shift+R", gdk::Key::r, ctrl_shift),
+    ] {
+        shell.press(label, key, state);
+        assert_eq!(
+            shell.visible(),
+            "files",
+            "{label} must not switch screens while a confirmation dialog is open"
+        );
+        assert!(
+            has_dialog_button("Delete"),
+            "{label} must leave the confirmation dialog open"
+        );
+    }
+
+    // Esc cancels the dialog cleanly.
+    shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    assert!(!has_dialog_button("Delete"));
+    assert_eq!(shell.visible(), "files");
 }

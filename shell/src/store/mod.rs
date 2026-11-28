@@ -363,16 +363,28 @@ impl Store {
     }
 
     /// The last [`RECENT_LIMIT`] documents the writer opened, newest first.
-    /// Missing files are skipped, so a rename or delete never leaves a ghost
-    /// in the Files screen's Recent group.
+    /// Missing files and duplicates are skipped, so a rename or delete never
+    /// leaves a ghost or double entry in the Files screen's Recent group.
     pub fn recent_files(&self) -> Vec<PathBuf> {
-        self.load_shell_state()
-            .recent
-            .into_iter()
-            .map(PathBuf::from)
-            .filter(|rel| self.resolve(rel).is_ok() && self.root.join(rel).is_file())
-            .take(RECENT_LIMIT)
-            .collect()
+        let mut recent = Vec::new();
+        for item in self.load_shell_state().recent {
+            let raw = Path::new(&item);
+            if self.resolve(raw).is_err() {
+                continue;
+            }
+            let rel = normalize_rel(raw);
+            if rel.as_os_str().is_empty()
+                || !self.root.join(&rel).is_file()
+                || recent.contains(&rel)
+            {
+                continue;
+            }
+            recent.push(rel);
+            if recent.len() == RECENT_LIMIT {
+                break;
+            }
+        }
+        recent
     }
 
     /// Remember the open document: `rel` is both the last file and the newest
@@ -380,9 +392,9 @@ impl Store {
     /// than duplicating it.
     pub fn set_last_file(&self, rel: Option<&Path>) -> io::Result<()> {
         let mut state = self.load_shell_state();
-        state.last_file = rel.map(|rel| rel.to_string_lossy().to_string());
-        if let Some(rel) = rel {
-            let recent = rel.to_string_lossy().to_string();
+        let normalized = rel.map(|rel| normalize_rel(rel).to_string_lossy().to_string());
+        state.last_file = normalized.clone();
+        if let Some(recent) = normalized {
             state.recent.retain(|item| item != &recent);
             state.recent.insert(0, recent);
             state.recent.truncate(RECENT_LIMIT);
@@ -499,6 +511,12 @@ fn moved_rel(path: &Path, from: &Path, to: &Path) -> PathBuf {
     } else {
         path.to_path_buf()
     }
+}
+
+fn normalize_rel(path: &Path) -> PathBuf {
+    path.components()
+        .filter(|component| !matches!(component, Component::CurDir))
+        .collect()
 }
 
 #[cfg(test)]
@@ -734,5 +752,66 @@ mod tests {
             "Novel/Chapter one"
         );
         assert_eq!(display_path(Path::new("Notes.md")), "Notes");
+    }
+
+    #[test]
+    fn new_document_writes_one_file_across_saves_and_rename() {
+        let (dir, store) = store();
+        let rel = store
+            .unique_rel_path(Path::new(""), "Untitled", "md")
+            .unwrap();
+        store.create_file(&rel).unwrap();
+        store.set_last_file(Some(&rel)).unwrap();
+
+        // First save.
+        let doc = store.open_document(&rel).unwrap();
+        doc.apply(0, 0, "# Morning notes\n\nFirst draft.").unwrap();
+        doc.flush().unwrap();
+        drop(doc);
+        assert_eq!(store.document_paths(), vec![PathBuf::from("Untitled.md")]);
+        assert_eq!(store.recent_files(), vec![PathBuf::from("Untitled.md")]);
+
+        // Title-based rename.
+        let renamed = PathBuf::from("Morning notes.md");
+        store.rename(&rel, &renamed).unwrap();
+        store.set_last_file(Some(&renamed)).unwrap();
+        assert_eq!(store.document_paths(), vec![renamed.clone()]);
+        assert_eq!(store.recent_files(), vec![renamed.clone()]);
+
+        // Later save.
+        let doc = store.open_document(&renamed).unwrap();
+        let end = doc.char_len();
+        doc.apply(end, 0, "\n\nSecond paragraph.").unwrap();
+        doc.flush().unwrap();
+        drop(doc);
+        assert_eq!(store.document_paths(), vec![renamed.clone()]);
+        assert_eq!(store.recent_files(), vec![renamed.clone()]);
+
+        // Confirm no stray non-hidden files (e.g. .tmp) exist on disk.
+        let visible_on_disk: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|entry| {
+                let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+                (!name.starts_with('.')).then_some(name)
+            })
+            .collect();
+        assert_eq!(visible_on_disk, vec!["Morning notes.md"]);
+    }
+
+    #[test]
+    fn recent_files_never_duplicates_a_document() {
+        let (dir, store) = store();
+        store.create_file(Path::new("Notes.md")).unwrap();
+        store.set_last_file(Some(Path::new("Notes.md"))).unwrap();
+        store.set_last_file(Some(Path::new("./Notes.md"))).unwrap();
+        assert_eq!(store.recent_files(), vec![PathBuf::from("Notes.md")]);
+
+        // Even if state.json on disk contains duplicate or ./-prefixed entries.
+        fs::write(
+            dir.path().join(".carrel/state.json"),
+            br#"{"last_file": "Notes.md", "recent": ["Notes.md", "./Notes.md", "Notes.md"]}"#,
+        )
+        .unwrap();
+        assert_eq!(store.recent_files(), vec![PathBuf::from("Notes.md")]);
     }
 }
