@@ -281,6 +281,9 @@ pub fn run(application: &gtk::Application) {
                     editor.flush();
                     editor.flash_note(crate::i18n::tr("note.shutdown_sync"), SHUTDOWN_NOTE_SECONDS);
                 }
+                if info.state != "syncing" {
+                    editor.look_at_disk();
+                }
                 sync.on_sync(info);
             }
             DaemonEvent::Flush => editor.flush(),

@@ -92,6 +92,24 @@ fn gtk_scenarios() {
     the_palette_saves_then_shuts_down_restarts_and_suspends();
     the_power_actions_follow_the_language();
     typing_does_not_wait_for_a_slow_stick();
+    a_pulled_open_file_is_shown_and_never_overwritten();
+}
+
+/// carreld writes pulled text into the file that is open (issue #96).
+fn a_pulled_open_file_is_shown_and_never_overwritten() {
+    let shell = TestShell::new(&[("Notes.md", "old text")], "Notes.md");
+    let path = shell.root.join("Notes.md");
+    let buffer = shell.editor.buffer();
+    std::fs::write(&path, "the pulled text").expect("pull");
+    shell.editor.look_at_disk();
+    pump(|| contents(&buffer) == "the pulled text");
+
+    buffer.insert(&mut buffer.end_iter(), " and mine");
+    shell.editor.flush();
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("saved"),
+        "the pulled text and mine"
+    );
 }
 
 /// A USB stick can take hundreds of milliseconds for one write (issue #94).

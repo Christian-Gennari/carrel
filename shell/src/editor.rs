@@ -473,6 +473,7 @@ impl EditorPage {
         glib::timeout_add_seconds_local(1, move || {
             if let Some(page) = weak.upgrade() {
                 page.check_disk();
+                page.show_external();
                 page.maybe_name_untitled(false);
                 glib::ControlFlow::Continue
             } else {
@@ -1650,6 +1651,37 @@ impl EditorPage {
             }
         }
         self.check_disk();
+    }
+
+    /// A sync may have written the open file: read it again, off the main
+    /// loop. The one-second timer shows a changed text.
+    pub fn look_at_disk(&self) {
+        if let Some(doc) = self.doc.borrow().as_ref() {
+            doc.look_at_disk();
+        }
+    }
+
+    /// Show the text a sync wrote to the open file, if it has no unsaved
+    /// edits. The caret keeps its place.
+    pub(crate) fn show_external(self: &Rc<Self>) {
+        let Some(text) = self.doc.borrow().as_ref().and_then(Document::take_external) else {
+            return;
+        };
+        let caret = self.buffer.cursor_position();
+        self.loading.set(true);
+        // Undo must not bring the replaced text back as if it were typed.
+        self.buffer.begin_irreversible_action();
+        self.buffer.set_text(&text);
+        self.buffer.end_irreversible_action();
+        self.loading.set(false);
+        self.focus_previous.set(None);
+        self.buffer.place_cursor(&self.buffer.iter_at_offset(caret));
+        self.last_words.set(stats::count_words(&text));
+        self.update_start_hint();
+        self.restyle_full();
+        self.reapply_focus();
+        self.refresh_status();
+        self.scroll_to_cursor();
     }
 
     /// Writes happen on other threads; show here that one of them failed.
