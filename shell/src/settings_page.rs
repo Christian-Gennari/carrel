@@ -715,7 +715,7 @@ impl SettingsPage {
         });
     }
 
-    fn refresh(self: &Rc<Self>) {
+    pub(crate) fn refresh(self: &Rc<Self>) {
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }

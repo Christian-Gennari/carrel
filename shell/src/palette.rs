@@ -587,13 +587,11 @@ impl CommandPalette {
             Action::KeySheet => self.key_sheet.open(),
             Action::LargerFont => {
                 self.editor.change_font(true);
-                let size = self.settings.borrow().font_size;
-                self.editor.flash_note(&format!("Text size {size}"), 2);
+                self.settings_page.refresh();
             }
             Action::SmallerFont => {
                 self.editor.change_font(false);
-                let size = self.settings.borrow().font_size;
-                self.editor.flash_note(&format!("Text size {size}"), 2);
+                self.settings_page.refresh();
             }
             Action::BackToEditor => self.nav.show_editor(),
             Action::ToggleBottomLine => {
