@@ -76,6 +76,7 @@ fn gtk_scenarios() {
     offline_pairing_from_sync_prompts_wifi_and_resumes_pairing();
     offline_self_hosted_pairing_preserves_url_across_wifi_handoff();
     offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing();
+    zoom_shortcuts_handle_keypad_shift_and_non_us_layouts();
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.
@@ -1868,6 +1869,18 @@ impl TestShell {
         self.keys.handle(key, modifiers);
     }
 
+    /// One key press carrying a hardware keycode, matching `EventControllerKey`.
+    fn press_keycode(
+        &self,
+        label: &str,
+        key: gdk::Key,
+        keycode: u32,
+        modifiers: gdk::ModifierType,
+    ) {
+        self.sequence.borrow_mut().push(label.to_owned());
+        self.keys.handle_keycode(key, keycode, modifiers);
+    }
+
     /// Type text as GTK delivers it: the key goes through the dispatcher
     /// first, then the character reaches the focused text view. While the
     /// command palette is open it takes the letters itself, as it does in the
@@ -2458,6 +2471,164 @@ fn offline_pairing_from_first_run_prompts_wifi_and_resumes_pairing() {
     pump(|| shell.sync.pairing_code() == "K7Q-4MZ");
     assert_eq!(shell.sync.pairing_code(), "K7Q-4MZ");
     assert_eq!(shell.daemon.pairs(), 1);
+}
+
+/// Issue #50: zoom shortcuts work with keypad keys, Ctrl+Shift+plus, non-US
+/// layout keyvals and hardware keycode fallbacks, briefly show the new size,
+/// stay in sync with Settings > Size, and persist to disk.
+fn zoom_shortcuts_handle_keypad_shift_and_non_us_layouts() {
+    use crate::editor::{KEYCODE_EQUAL, KEYCODE_KP_ADD, KEYCODE_KP_SUBTRACT, KEYCODE_MINUS};
+    use crate::settings::{MAX_FONT_SIZE, MIN_FONT_SIZE};
+
+    let ctrl = gdk::ModifierType::CONTROL_MASK;
+    let ctrl_shift = ctrl | gdk::ModifierType::SHIFT_MASK;
+    let none = gdk::ModifierType::empty();
+
+    let shell = TestShell::new(
+        &[(
+            "Alpha.md",
+            "The quiet morning begins with a single sentence.\n\nAnother paragraph.\n",
+        )],
+        "Alpha.md",
+    );
+    shell.daemon.set_update("none");
+    assert_eq!(shell.settings.borrow().font_size, 19);
+
+    let line_height = || {
+        let buffer = shell.editor.buffer();
+        let iter = buffer.start_iter();
+        shell.editor.view().iter_location(&iter).height()
+    };
+    let initial_height = line_height();
+
+    // Keypad + and - (plus keypad keycode fallback).
+    shell.press_keycode("Ctrl+KP_Add", gdk::Key::KP_Add, KEYCODE_KP_ADD, ctrl);
+    settle();
+    assert_eq!(shell.settings.borrow().font_size, 20);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 20"));
+    assert_eq!(Settings::load(&shell.root).font_size, 20);
+    assert!(
+        line_height() > initial_height,
+        "a single zoom step should visibly grow rendered line height ({initial_height} -> {})",
+        line_height()
+    );
+
+    shell.press_keycode(
+        "Ctrl+KP_Subtract",
+        gdk::Key::KP_Subtract,
+        KEYCODE_KP_SUBTRACT,
+        ctrl,
+    );
+    settle();
+    assert_eq!(shell.settings.borrow().font_size, 19);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 19"));
+
+    shell.press_keycode(
+        "Ctrl+KP_Add(keycode)",
+        gdk::Key::VoidSymbol,
+        KEYCODE_KP_ADD,
+        ctrl,
+    );
+    assert_eq!(shell.settings.borrow().font_size, 20);
+    shell.press_keycode(
+        "Ctrl+KP_Subtract(keycode)",
+        gdk::Key::VoidSymbol,
+        KEYCODE_KP_SUBTRACT,
+        ctrl,
+    );
+    assert_eq!(shell.settings.borrow().font_size, 19);
+
+    // Ctrl+Shift+plus and Ctrl+Shift+- (underscore).
+    shell.press_keycode("Ctrl+Shift++", gdk::Key::plus, KEYCODE_EQUAL, ctrl_shift);
+    assert_eq!(shell.settings.borrow().font_size, 20);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 20"));
+
+    shell.press_keycode(
+        "Ctrl+Shift+-",
+        gdk::Key::underscore,
+        KEYCODE_MINUS,
+        ctrl_shift,
+    );
+    assert_eq!(shell.settings.borrow().font_size, 19);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 19"));
+
+    // Swedish layout keyvals: `+` sits on US minus (keycode 20), `=` sits on
+    // Shift+0 (keycode 19), and `-` sits on US slash (keycode 61).
+    shell.press_keycode("Swedish Ctrl++", gdk::Key::plus, KEYCODE_MINUS, ctrl);
+    assert_eq!(
+        shell.settings.borrow().font_size,
+        20,
+        "layout keyval '+' must zoom in even on US minus hardware keycode"
+    );
+    shell.press_keycode("Swedish Ctrl+=", gdk::Key::equal, 19, ctrl_shift);
+    assert_eq!(shell.settings.borrow().font_size, 21);
+    shell.press_keycode("Swedish Ctrl+-", gdk::Key::minus, 61, ctrl);
+    assert_eq!(shell.settings.borrow().font_size, 20);
+
+    // Non-US layout hardware keycode fallback: physical `=` sending dead_acute
+    // (Swedish/German) zooms in; physical `-` sending ssharp (German) zooms out.
+    shell.press_keycode("Ctrl+dead_acute", gdk::Key::dead_acute, KEYCODE_EQUAL, ctrl);
+    assert_eq!(shell.settings.borrow().font_size, 21);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 21"));
+
+    shell.press_keycode("Ctrl+ssharp", gdk::Key::ssharp, KEYCODE_MINUS, ctrl);
+    assert_eq!(shell.settings.borrow().font_size, 20);
+    assert_eq!(shell.editor.note_text().as_deref(), Some("Text size 20"));
+
+    // Reaching the bounds still reports the clamped size.
+    for _ in 0..10 {
+        shell.press_keycode("Ctrl+KP_Add", gdk::Key::KP_Add, KEYCODE_KP_ADD, ctrl);
+    }
+    assert_eq!(shell.settings.borrow().font_size, MAX_FONT_SIZE);
+    assert_eq!(
+        shell.editor.note_text().as_deref(),
+        Some(format!("Text size {MAX_FONT_SIZE}").as_str())
+    );
+    for _ in 0..12 {
+        shell.press_keycode(
+            "Ctrl+KP_Subtract",
+            gdk::Key::KP_Subtract,
+            KEYCODE_KP_SUBTRACT,
+            ctrl,
+        );
+    }
+    assert_eq!(shell.settings.borrow().font_size, MIN_FONT_SIZE);
+    assert_eq!(
+        shell.editor.note_text().as_deref(),
+        Some(format!("Text size {MIN_FONT_SIZE}").as_str())
+    );
+
+    // Zoom to 22, verify persistence and Settings > Size sync (both on open
+    // and when zoomed via the command palette while Settings is visible).
+    for _ in 0..6 {
+        shell.press_keycode("Ctrl+=", gdk::Key::equal, KEYCODE_EQUAL, ctrl);
+    }
+    settle();
+    assert_eq!(shell.settings.borrow().font_size, 22);
+    assert_eq!(Settings::load(&shell.root).font_size, 22);
+
+    shell.press("Ctrl+,", gdk::Key::comma, ctrl);
+    settle();
+    assert_eq!(shell.visible(), "settings");
+    assert!(
+        shell.has_label("22"),
+        "Settings > Size should show the zoomed size"
+    );
+
+    shell.press("Ctrl+K", gdk::Key::k, ctrl);
+    shell.type_text("larger text");
+    assert_eq!(
+        shell.palette.selected_label().as_deref(),
+        Some("Larger text")
+    );
+    shell.press("Enter", gdk::Key::Return, none);
+    settle();
+    assert_eq!(shell.settings.borrow().font_size, 23);
+    assert_eq!(Settings::load(&shell.root).font_size, 23);
+    assert!(
+        shell.has_label("23"),
+        "Settings > Size should update immediately after palette zoom"
+    );
 }
 
 /// Print and write the table; fail when a count moved away from the baseline
