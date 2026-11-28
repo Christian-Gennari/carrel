@@ -12,6 +12,7 @@ use gtk::{gdk, glib};
 
 use crate::daemon::{Client, HistoryEntry};
 use crate::editor::EditorPage;
+use crate::i18n::{tr, trf, trn};
 use crate::markdown::{self, Kind};
 use crate::nav::Navigator;
 use crate::settings::Settings;
@@ -24,13 +25,13 @@ use crate::ui;
 const HISTORY_LIST_WIDTH: i32 = 340;
 
 const HINTS: [(&str, &str); 4] = [
-    ("Enter", "Restore"),
-    ("↑ ↓", "Versions"),
-    ("PgUp PgDn", "Scroll"),
-    ("Esc", "Back"),
+    ("Enter", "hint.restore"),
+    ("↑ ↓", "hint.versions"),
+    ("PgUp PgDn", "hint.scroll"),
+    ("Esc", "hint.back"),
 ];
 
-const EMPTY_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
+const EMPTY_HINTS: [(&str, &str); 1] = [("Esc", "hint.back")];
 
 fn hints_for_versions(has_versions: bool) -> &'static [(&'static str, &'static str)] {
     if has_versions {
@@ -137,24 +138,30 @@ impl HistoryState {
     }
 
     pub fn on_restored(&mut self, when: String) {
-        self.notice = format!("Restored the version from {when}. The newer text stays in history.");
+        self.notice = trf("history.restored", &[("when", &when)]);
         self.error = None;
     }
 
     pub fn delta_label(entry: &HistoryEntry) -> String {
         let delta = entry.delta;
         if delta > 0 {
-            format!(
-                "+{} words",
-                crate::store::stats::format_number(delta as u64)
+            let count = delta as u64;
+            trn(
+                "history.added",
+                count,
+                &crate::store::stats::format_number(count),
+                &[],
             )
         } else if delta < 0 {
-            format!(
-                "−{} words",
-                crate::store::stats::format_number(delta.unsigned_abs())
+            let count = delta.unsigned_abs();
+            trn(
+                "history.removed",
+                count,
+                &crate::store::stats::format_number(count),
+                &[],
             )
         } else {
-            "no change".to_owned()
+            tr("history.no_change").to_owned()
         }
     }
 
@@ -344,7 +351,7 @@ impl HistoryPage {
         // History is the one two-pane screen: the wide frame keeps the title,
         // the status and the hint bar on every other screen's left edge and
         // grows to the right, so the diff reads at about 66 characters a line.
-        let screen = ui::Screen::new_wide("History");
+        let screen = ui::Screen::new_wide(tr("history.title"));
         screen.set_hints(&HINTS);
 
         let list = ui::list();
@@ -468,20 +475,15 @@ impl HistoryPage {
 
     /// Refresh from the editor's current file. Called when the screen appears.
     fn open(self: &Rc<Self>) {
+        self.screen.set_title(tr("history.title"));
+        self.screen.set_hints(&HINTS);
         let Some(path) = self.editor.current_rel() else {
             self.screen.set_status("");
-            self.show_message_state(
-                "No file open",
-                "Open a document to see its versions.",
-                false,
-            );
+            self.show_message_state(tr("history.no_file"), tr("history.no_file_detail"), false);
             return;
         };
         if let Err(error) = self.editor.flush_now() {
-            self.show_message(
-                &format!("Cannot save the file before history: {error}"),
-                true,
-            );
+            self.show_message(&trf("history.cannot_save", &[("error", &error)]), true);
             return;
         }
         let path = path.to_string_lossy().to_string();
@@ -513,11 +515,7 @@ impl HistoryPage {
 
     fn set_versions(self: &Rc<Self>, versions: Vec<HistoryEntry>) {
         if versions.is_empty() {
-            self.show_message_state(
-                "No versions yet",
-                "Carrel saves history after five quiet minutes.",
-                false,
-            );
+            self.show_message_state(tr("history.none"), tr("history.none_detail"), false);
             return;
         }
         let effects = self.state.borrow_mut().set_versions(versions);
@@ -547,7 +545,7 @@ impl HistoryPage {
         self.preview_legend.set_visible(false);
         self.preview.buffer().set_text("");
         self.update_notice();
-        self.show_message_state("Loading versions…", "This takes a moment.", false);
+        self.show_message_state(tr("history.loading_versions"), tr("history.moment"), false);
     }
 
     /// A state takes the panes' place: one headline, one detail line, on the
@@ -575,7 +573,7 @@ impl HistoryPage {
         self.preview_legend.set_visible(false);
         self.preview.buffer().set_text("");
         self.update_notice();
-        self.show_message_state(message, "Nothing in your writing changed.", error);
+        self.show_message_state(message, tr("history.unchanged"), error);
     }
 
     fn clear_list(&self) {
@@ -651,7 +649,7 @@ impl HistoryPage {
         let generation = self.preview_generation.get().wrapping_add(1);
         self.preview_generation.set(generation);
         let weak = Rc::downgrade(self);
-        self.preview_title.set_text("Loading…");
+        self.preview_title.set_text(tr("history.loading"));
         self.preview_legend.set_visible(false);
         let request_rev = rev.clone();
         self.client.spawn(
@@ -692,10 +690,11 @@ impl HistoryPage {
             self.update_notice();
             return;
         };
-        self.preview_title.set_text(&format!(
-            "{} · {} words",
-            ui::format_moment(entry.time),
-            crate::store::stats::format_number(u64::from(entry.words))
+        self.preview_title.set_text(&trn(
+            "history.meta",
+            u64::from(entry.words),
+            &crate::store::stats::format_number(u64::from(entry.words)),
+            &[("when", &ui::format_moment(entry.time))],
         ));
         if let Some(message) = error {
             self.preview_legend.set_visible(false);
@@ -710,8 +709,7 @@ impl HistoryPage {
             return;
         };
         self.preview_legend.set_visible(true);
-        self.preview_legend
-            .set_text("Compared with the current text · tinted added · struck removed");
+        self.preview_legend.set_text(tr("history.legend"));
         self.show_diff(&old, &self.current_text());
         self.update_notice();
     }
@@ -845,9 +843,9 @@ impl HistoryPage {
         // A short question, one width for every card; the moment leads the
         // sentence, where no title length can stretch the card.
         self.screen.ask(
-            "Restore this version?",
-            &format!("{when}. Your current text is kept in History."),
-            "Restore",
+            tr("history.restore_title"),
+            &trf("history.restore_text", &[("when", &when)]),
+            tr("button.restore"),
             move || {
                 if let Some(page) = weak.upgrade() {
                     page.restore_selected();
@@ -864,7 +862,8 @@ impl HistoryPage {
             return;
         };
         if let Err(error) = self.editor.flush_now() {
-            self.state.borrow_mut().error = Some(format!("Cannot save before restoring: {error}"));
+            self.state.borrow_mut().error =
+                Some(trf("history.cannot_save_restore", &[("error", &error)]));
             self.update_notice();
             return;
         }
@@ -895,7 +894,7 @@ impl HistoryPage {
                     Ok(text) => {
                         if let Err(error) = page.editor.replace_text(&text) {
                             page.state.borrow_mut().error =
-                                Some(format!("Cannot write the old version: {error}"));
+                                Some(trf("history.cannot_write", &[("error", &error)]));
                             page.update_notice();
                             return;
                         }
@@ -920,8 +919,10 @@ impl HistoryPage {
             move |result| {
                 if let Some(page) = weak.upgrade() {
                     if let Err(error) = result {
-                        page.state.borrow_mut().error =
-                            Some(format!("Restored, but the history commit failed: {error}"));
+                        page.state.borrow_mut().error = Some(trf(
+                            "history.commit_failed",
+                            &[("error", &error.to_string())],
+                        ));
                     }
                     let path = page.state.borrow().path.clone();
                     let generation = page.list_generation.get().wrapping_add(1);
@@ -964,11 +965,11 @@ fn delta_bar(delta: i64, largest: f64, ink: gdk::RGBA, dim: gdk::RGBA) -> gtk::D
     area.set_focusable(false);
     area.set_accessible_role(gtk::AccessibleRole::Img);
     let sign = if delta > 0 {
-        "words added"
+        tr("access.words_added")
     } else if delta < 0 {
-        "words removed"
+        tr("access.words_removed")
     } else {
-        "no change"
+        tr("history.no_change")
     };
     area.update_property(&[gtk::accessible::Property::Label(sign)]);
     let largest = largest.max(1.0);
@@ -1263,9 +1264,9 @@ mod tests {
 
     #[test]
     fn empty_state_only_hints_back() {
-        assert_eq!(hints_for_versions(false), &[("Esc", "Back")]);
+        assert_eq!(hints_for_versions(false), &[("Esc", "hint.back")]);
         assert!(hints_for_versions(true)
             .iter()
-            .any(|(key, word)| *key == "Enter" && *word == "Restore"));
+            .any(|(key, word)| *key == "Enter" && *word == "hint.restore"));
     }
 }

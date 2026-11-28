@@ -21,6 +21,7 @@ use crate::files::FilesPage;
 use crate::first_run::FirstRunPage;
 use crate::handoff::WifiHandoff;
 use crate::history::HistoryPage;
+use crate::i18n;
 use crate::keys::Keys;
 use crate::locale;
 use crate::nav::Navigator;
@@ -47,6 +48,7 @@ pub fn run(application: &gtk::Application) {
     };
 
     let settings = Rc::new(RefCell::new(Settings::load(&root)));
+    i18n::set_language(&settings.borrow().language);
     let provider = gtk::CssProvider::new();
     if let Some(display) = gdk::Display::default() {
         gtk::style_context_add_provider_for_display(
@@ -276,7 +278,7 @@ pub fn run(application: &gtk::Application) {
             DaemonEvent::Sync(info) => {
                 if info.state == "syncing" && info.message == SHUTDOWN_SYNC_MESSAGE {
                     editor.flush();
-                    editor.flash_note(SHUTDOWN_SYNC_MESSAGE, SHUTDOWN_NOTE_SECONDS);
+                    editor.flash_note(crate::i18n::tr("note.shutdown_sync"), SHUTDOWN_NOTE_SECONDS);
                 }
                 sync.on_sync(info);
             }
@@ -406,10 +408,12 @@ fn present_root_error(application: &gtk::Application, root: &Path, error: &std::
         .default_height(600)
         .decorated(false)
         .build();
-    let label = gtk::Label::new(Some(&format!(
-        "Carrel could not open the writing folder.\n\n{}\n\n{}\n\nCreate the folder or set CARREL_WRITING_DIR.",
-        root.display(),
-        error
+    let label = gtk::Label::new(Some(&i18n::trf(
+        "app.root_error",
+        &[
+            ("path", &root.display().to_string()),
+            ("error", &error.to_string()),
+        ],
     )));
     label.set_wrap(true);
     label.set_justify(gtk::Justification::Center);

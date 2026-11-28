@@ -19,6 +19,7 @@ pub mod goal;
 mod gtk_tests;
 pub mod handoff;
 pub mod history;
+pub mod i18n;
 pub mod keys;
 pub mod locale;
 pub mod markdown;

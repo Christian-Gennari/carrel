@@ -14,6 +14,7 @@ use gtk::prelude::*;
 use gtk::{gdk, glib};
 
 use crate::daemon::Client;
+use crate::i18n::{self, tr, trf, trn};
 use crate::locale;
 use crate::nav::Navigator;
 use crate::settings::{
@@ -54,7 +55,13 @@ pub enum SettingsItem {
 }
 
 /// The four group labels, in order.
-pub const GROUPS: [&str; 4] = ["Look", "Writing", "Connections", "Device"];
+/// Their i18n keys.
+pub const GROUPS: [&str; 4] = [
+    "group.look",
+    "group.writing",
+    "group.connections",
+    "group.device",
+];
 
 /// Every line of the screen, in order. With an update ready the update row
 /// sits at the very top instead of the bottom of Device (issue #28).
@@ -153,27 +160,27 @@ impl UpdateState {
     /// The one clear sentence at the top of Settings.
     pub fn top_label(&self) -> String {
         if self.applying {
-            return "Installing update… Carrel will restart.".to_owned();
+            return tr("update.top_installing").to_owned();
         }
         match self.ready_version() {
             Some(version) if !version.is_empty() => {
-                format!("Update ready ({version}) — Enter to restart and update")
+                trf("update.top_ready_version", &[("version", version)])
             }
-            _ => "Update ready — Enter to restart and update".to_owned(),
+            _ => tr("update.top_ready").to_owned(),
         }
     }
 
     pub fn label(&self) -> String {
         if self.applying {
-            return "Installing…".to_owned();
+            return tr("update.installing").to_owned();
         }
         match self.wire.as_str() {
-            "" | "none" => "Up to date".to_owned(),
-            "applying" => "Installing…".to_owned(),
-            other if other.starts_with("downloading ") => "Downloading update…".to_owned(),
-            other if other.starts_with("available ") => "Waiting for a sync".to_owned(),
-            other if other.starts_with("error ") => "Could not check for updates".to_owned(),
-            _ => "Update ready".to_owned(),
+            "" | "none" => tr("update.up_to_date").to_owned(),
+            "applying" => tr("update.installing").to_owned(),
+            other if other.starts_with("downloading ") => tr("update.downloading").to_owned(),
+            other if other.starts_with("available ") => tr("update.waiting").to_owned(),
+            other if other.starts_with("error ") => tr("update.check_failed").to_owned(),
+            _ => tr("update.ready").to_owned(),
         }
     }
 }
@@ -367,18 +374,23 @@ impl SettingsState {
             SettingRow::NightTheme => settings.night_theme.label().to_owned(),
             SettingRow::Font => settings.font.label().to_owned(),
             SettingRow::Size => settings.font_size.to_string(),
-            SettingRow::DailyGoal => format!("{} words", settings.daily_goal),
+            SettingRow::DailyGoal => trn(
+                "value.words",
+                u64::from(settings.daily_goal),
+                &settings.daily_goal.to_string(),
+                &[],
+            ),
             SettingRow::GoalProgress => settings.goal_display.label().to_owned(),
             SettingRow::FocusMode => on_off(settings.focus_mode),
             SettingRow::Typewriter => on_off(settings.typewriter_mode),
             SettingRow::Spellcheck => on_off(settings.spellcheck),
             SettingRow::Clock => on_off(settings.clock),
-            SettingRow::Wifi => "Open".to_owned(),
-            SettingRow::SyncBackends => "Open".to_owned(),
+            SettingRow::Wifi => tr("value.open").to_owned(),
+            SettingRow::SyncBackends => tr("value.open").to_owned(),
             SettingRow::SyncAtShutdown => on_off(settings.sync_at_shutdown),
             SettingRow::Keyboard => locale::keyboard_label(&settings.keyboard).to_owned(),
             SettingRow::Language => settings.language.clone(),
-            SettingRow::TimeZone => settings.time_zone.clone(),
+            SettingRow::TimeZone => locale::time_zone_label(&settings.time_zone).to_owned(),
             SettingRow::Update => self.update.label(),
             SettingRow::About => format!("Carrel OS {}", env!("CARGO_PKG_VERSION")),
         }
@@ -387,69 +399,46 @@ impl SettingsState {
     /// The line under the selected row; empty for a row that needs no help.
     pub fn hint_for(&self, settings: &Settings) -> String {
         match self.row(settings) {
-            SettingRow::Theme if settings.theme.is_automatic() => format!(
-                "{} in the day (07:00–19:00), {} at night.",
-                settings.day_theme.label(),
-                settings.night_theme.label()
+            SettingRow::Theme if settings.theme.is_automatic() => trf(
+                "note.theme_automatic",
+                &[
+                    ("day", settings.day_theme.label()),
+                    ("night", settings.night_theme.label()),
+                ],
             ),
-            SettingRow::Theme => "This paper and ink stay until you change them.".to_owned(),
-            SettingRow::DayTheme => "The theme from 07:00 while Automatic is on.".to_owned(),
-            SettingRow::NightTheme => "The theme from 19:00 while Automatic is on.".to_owned(),
-            SettingRow::Font => {
-                "Serif, sans or mono. The page and this screen change at once.".to_owned()
-            }
-            SettingRow::Size => "Ctrl+= and Ctrl+- change this while writing.".to_owned(),
-            SettingRow::DailyGoal => {
-                "The words you aim for today, shown at the bottom of the page.".to_owned()
-            }
-            SettingRow::GoalProgress => {
-                "Numbers on the bottom line, or a thin line along the bottom edge.".to_owned()
-            }
-            SettingRow::FocusMode => {
-                "Only the paragraph with the cursor stays dark. F2 switches it.".to_owned()
-            }
-            SettingRow::Typewriter => {
-                "Backspace and Delete do nothing. Keep moving forward.".to_owned()
-            }
-            SettingRow::Spellcheck => {
-                "Marks words to check later; no squiggles in the first draft.".to_owned()
-            }
-            SettingRow::Clock => "The time at the end of the bottom line.".to_owned(),
-            SettingRow::Wifi => {
-                "Choose a network. The radio is on only while you are here.".to_owned()
-            }
-            SettingRow::SyncBackends => "Nostos, your own server or Google Drive.".to_owned(),
-            SettingRow::SyncAtShutdown => {
-                "One last sync before Carrel powers off, when a server is set up.".to_owned()
-            }
+            SettingRow::Theme => tr("note.theme").to_owned(),
+            SettingRow::DayTheme => tr("note.day_theme").to_owned(),
+            SettingRow::NightTheme => tr("note.night_theme").to_owned(),
+            SettingRow::Font => tr("note.font").to_owned(),
+            SettingRow::Size => tr("note.size").to_owned(),
+            SettingRow::DailyGoal => tr("note.daily_goal").to_owned(),
+            SettingRow::GoalProgress => tr("note.goal_progress").to_owned(),
+            SettingRow::FocusMode => tr("note.focus_mode").to_owned(),
+            SettingRow::Typewriter => tr("note.typewriter").to_owned(),
+            SettingRow::Spellcheck => tr("note.spellcheck").to_owned(),
+            SettingRow::Clock => tr("note.clock").to_owned(),
+            SettingRow::Wifi => tr("note.wifi").to_owned(),
+            SettingRow::SyncBackends => tr("note.sync").to_owned(),
+            SettingRow::SyncAtShutdown => tr("note.sync_shutdown").to_owned(),
             SettingRow::Keyboard if self.keyboard_restart_needed(settings) => {
-                "Carrel reloads briefly to switch the keyboard layout. Press Enter or Esc to apply."
-                    .to_owned()
+                tr("note.keyboard_reload").to_owned()
             }
-            SettingRow::Keyboard => {
-                "The keys you type on, including an external keyboard.".to_owned()
-            }
-            SettingRow::Language => "The language of the screens and of Spellcheck.".to_owned(),
-            SettingRow::TimeZone => {
-                "Used for the Automatic day and night and for the clock.".to_owned()
-            }
-            SettingRow::Update if self.update.applying => {
-                "Carrel is installing the update and will restart.".to_owned()
-            }
-            SettingRow::Update if self.update.ready() => {
-                "Carrel restarts and opens the new version.".to_owned()
-            }
-            SettingRow::Update => "Carrel looks for updates when it syncs.".to_owned(),
-            SettingRow::About => "Free software. No account is needed to write.".to_owned(),
+            SettingRow::Keyboard => tr("note.keyboard").to_owned(),
+            SettingRow::Language => tr("note.language").to_owned(),
+            SettingRow::TimeZone => tr("note.time_zone").to_owned(),
+            SettingRow::Update if self.update.applying => tr("note.update_applying").to_owned(),
+            SettingRow::Update if self.update.ready() => tr("note.update_ready").to_owned(),
+            SettingRow::Update => tr("note.update").to_owned(),
+            SettingRow::About => tr("note.about").to_owned(),
         }
     }
 }
 
 fn on_off(value: bool) -> String {
     if value {
-        "On".to_owned()
+        tr("value.on").to_owned()
     } else {
-        "Off".to_owned()
+        tr("value.off").to_owned()
     }
 }
 
@@ -466,29 +455,41 @@ fn cycle_theme(list: &[Theme], current: Theme, delta: i32) -> Theme {
 fn hints_for(state: &SettingsState, settings: &Settings) -> Vec<(&'static str, &'static str)> {
     match state.row(settings) {
         SettingRow::Wifi | SettingRow::SyncBackends => {
-            vec![("Enter", "Open"), ("↑ ↓", "Move"), ("Esc", "Back")]
+            vec![
+                ("Enter", "hint.open"),
+                ("↑ ↓", "hint.move"),
+                ("Esc", "hint.back"),
+            ]
         }
         SettingRow::Update if state.update.ready() => {
-            vec![("Enter", "Update"), ("↑ ↓", "Move"), ("Esc", "Back")]
+            vec![
+                ("Enter", "hint.update"),
+                ("↑ ↓", "hint.move"),
+                ("Esc", "hint.back"),
+            ]
         }
         SettingRow::Keyboard if state.keyboard_restart_needed(settings) => {
             vec![
-                ("Enter", "Apply"),
-                ("← →", "Change"),
-                ("↑ ↓", "Move"),
-                ("Esc", "Back"),
+                ("Enter", "hint.apply"),
+                ("← →", "hint.change"),
+                ("↑ ↓", "hint.move"),
+                ("Esc", "hint.back"),
             ]
         }
         SettingRow::Update | SettingRow::About => {
-            vec![("↑ ↓", "Move"), ("Esc", "Back")]
+            vec![("↑ ↓", "hint.move"), ("Esc", "hint.back")]
         }
-        _ => vec![("← →", "Change"), ("↑ ↓", "Move"), ("Esc", "Back")],
+        _ => vec![
+            ("← →", "hint.change"),
+            ("↑ ↓", "hint.move"),
+            ("Esc", "hint.back"),
+        ],
     }
 }
 
 /// The line under the Look group: this month's answer in the writer's own
 /// font and size, so a change is seen without leaving Settings.
-const SAMPLE: &str = "The quiet morning begins with a single sentence.";
+const SAMPLE: &str = "settings.sample";
 
 pub struct SettingsPage {
     pub widget: gtk::Overlay,
@@ -520,8 +521,12 @@ impl SettingsPage {
         session_keyboard: Option<String>,
         on_restart_session: Rc<dyn Fn()>,
     ) -> Rc<Self> {
-        let screen = ui::Screen::new("Settings");
-        screen.set_hints(&[("← →", "Change"), ("↑ ↓", "Move"), ("Esc", "Back")]);
+        let screen = ui::Screen::new(tr("settings.title"));
+        screen.set_hints(&[
+            ("← →", "hint.change"),
+            ("↑ ↓", "hint.move"),
+            ("Esc", "hint.back"),
+        ]);
         let list = ui::list();
         let scroller = ui::scroller(&list);
         screen.content.append(&ui::fade_top(&scroller));
@@ -696,6 +701,7 @@ impl SettingsPage {
             self.state.borrow_mut().change(&mut settings, delta)
         };
         if changed {
+            i18n::set_language(&self.settings.borrow().language);
             if let Err(error) = self.settings.borrow().save(&self.root) {
                 eprintln!("carrel: could not save settings: {error}");
             }
@@ -736,7 +742,7 @@ impl SettingsPage {
                             }
                             Err(error) => {
                                 state.update.applying = false;
-                                Some(error.message)
+                                Some(i18n::daemon_message(&error.message))
                             }
                         }
                     };
@@ -764,6 +770,7 @@ impl SettingsPage {
     }
 
     pub(crate) fn refresh(self: &Rc<Self>) {
+        self.screen.set_title(tr("settings.title"));
         while let Some(child) = self.list.first_child() {
             self.list.remove(&child);
         }
@@ -781,7 +788,7 @@ impl SettingsPage {
             for (list_index, item) in items(&settings, top_update).iter().enumerate() {
                 match item {
                     SettingsItem::Group(name) => {
-                        self.list.append(&group_row(name));
+                        self.list.append(&group_row(tr(name)));
                         index_map.push(None);
                     }
                     SettingsItem::Sample => {
@@ -884,7 +891,7 @@ fn sample_row() -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.set_selectable(false);
     row.set_activatable(false);
-    let label = gtk::Label::new(Some(SAMPLE));
+    let label = gtk::Label::new(Some(tr(SAMPLE)));
     label.set_xalign(0.0);
     label.add_css_class("setting-label");
     label.set_margin_start(14);
@@ -916,25 +923,25 @@ fn theme_value_row(row: SettingRow, settings: &Settings, note: &str) -> gtk::Lis
 
 fn setting_name(row: SettingRow) -> &'static str {
     match row {
-        SettingRow::Theme => "Theme",
-        SettingRow::DayTheme => "Day theme",
-        SettingRow::NightTheme => "Night theme",
-        SettingRow::Font => "Font",
-        SettingRow::Size => "Size",
-        SettingRow::DailyGoal => "Daily goal",
-        SettingRow::GoalProgress => "Goal progress",
-        SettingRow::FocusMode => "Focus mode",
-        SettingRow::Typewriter => "Typewriter mode",
-        SettingRow::Spellcheck => "Spellcheck",
-        SettingRow::Clock => "Clock",
-        SettingRow::Wifi => "Wi-Fi networks",
-        SettingRow::SyncBackends => "Sync",
-        SettingRow::SyncAtShutdown => "Sync at shutdown",
-        SettingRow::Keyboard => "Keyboard layout",
-        SettingRow::Language => "Language",
-        SettingRow::TimeZone => "Time zone",
-        SettingRow::Update => "Update",
-        SettingRow::About => "About",
+        SettingRow::Theme => tr("setting.theme"),
+        SettingRow::DayTheme => tr("setting.day_theme"),
+        SettingRow::NightTheme => tr("setting.night_theme"),
+        SettingRow::Font => tr("setting.font"),
+        SettingRow::Size => tr("setting.size"),
+        SettingRow::DailyGoal => tr("setting.daily_goal"),
+        SettingRow::GoalProgress => tr("setting.goal_progress"),
+        SettingRow::FocusMode => tr("setting.focus_mode"),
+        SettingRow::Typewriter => tr("setting.typewriter"),
+        SettingRow::Spellcheck => tr("setting.spellcheck"),
+        SettingRow::Clock => tr("setting.clock"),
+        SettingRow::Wifi => tr("setting.wifi"),
+        SettingRow::SyncBackends => tr("setting.sync"),
+        SettingRow::SyncAtShutdown => tr("setting.sync_shutdown"),
+        SettingRow::Keyboard => tr("setting.keyboard"),
+        SettingRow::Language => tr("setting.language"),
+        SettingRow::TimeZone => tr("setting.time_zone"),
+        SettingRow::Update => tr("setting.update"),
+        SettingRow::About => tr("setting.about"),
     }
 }
 
@@ -1016,7 +1023,7 @@ mod tests {
             .position(|item| *item == SettingsItem::Sample)
             .expect("the sample line is on the screen");
         assert_eq!(items[sample - 1], SettingsItem::Row(SettingRow::Size));
-        assert_eq!(items[sample + 1], SettingsItem::Group("Writing"));
+        assert_eq!(items[sample + 1], SettingsItem::Group("group.writing"));
     }
 
     #[test]
@@ -1316,7 +1323,7 @@ mod tests {
         state.select(&settings, 0);
         assert!(hints_for(&state, &settings)
             .iter()
-            .any(|(key, word)| *key == "Enter" && *word == "Update"));
+            .any(|(key, word)| *key == "Enter" && *word == "hint.update"));
     }
 
     #[test]
@@ -1379,7 +1386,7 @@ mod tests {
         assert!(state.hint_for(&settings).contains("reloads briefly"));
         assert!(hints_for(&state, &settings)
             .iter()
-            .any(|(key, word)| *key == "Enter" && *word == "Apply"));
+            .any(|(key, word)| *key == "Enter" && *word == "hint.apply"));
 
         // Cycling back to the active layout clears the pending reload.
         state.change(&mut settings, -1);

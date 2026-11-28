@@ -8,6 +8,7 @@ use std::fmt;
 use std::sync::Mutex;
 
 use crate::daemon::BatteryStatus;
+use crate::i18n::{tr, trf};
 
 pub trait Battery: fmt::Debug {
     fn percent(&self) -> u8;
@@ -21,12 +22,15 @@ pub trait Battery: fmt::Debug {
     /// from reading as goal progress. No icon fonts, no tofu.
     fn label(&self) -> String {
         if !self.present() {
-            return "No battery".to_owned();
+            return tr("battery.none").to_owned();
         }
         if self.charging() {
-            format!("Battery {}% charging", self.percent())
+            trf(
+                "battery.charging",
+                &[("percent", &self.percent().to_string())],
+            )
         } else {
-            format!("Battery {}%", self.percent())
+            trf("battery.level", &[("percent", &self.percent().to_string())])
         }
     }
 }

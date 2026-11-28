@@ -18,18 +18,20 @@ use gtk::{gdk, glib};
 
 use crate::daemon::{Client, DaemonError, DaemonErrorKind, WifiNetwork};
 use crate::handoff::WifiHandoff;
+use crate::i18n::{self, tr, trf};
 use crate::nav::Navigator;
 use crate::ui;
 
 const HINTS: [(&str, &str); 5] = [
-    ("Enter", "Connect"),
-    ("F", "Forget"),
-    ("R", "Scan"),
-    ("↑ ↓", "Move"),
-    ("Esc", "Back"),
+    ("Enter", "hint.connect"),
+    ("F", "hint.forget"),
+    ("R", "hint.scan"),
+    ("↑ ↓", "hint.move"),
+    ("Esc", "hint.back"),
 ];
-const PASSWORD_HINTS: [(&str, &str); 2] = [("Enter", "Connect"), ("Esc", "Cancel")];
-const RADIO_NOTE: &str = "The radio is on only while this screen is open.";
+const PASSWORD_HINTS: [(&str, &str); 2] = [("Enter", "hint.connect"), ("Esc", "hint.cancel")];
+/// An i18n key.
+const RADIO_NOTE: &str = "wifi.radio_note";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum WifiMode {
@@ -124,7 +126,7 @@ impl WifiState {
             WifiMode::Password { ssid, secured } => {
                 if secured && self.password.is_empty() {
                     self.error = false;
-                    self.inline = Some("Type the password for this network.".to_owned());
+                    self.inline = Some(tr("wifi.type_password").to_owned());
                     return None;
                 }
                 let password = self.password.clone();
@@ -143,7 +145,7 @@ impl WifiState {
     pub fn submit_other_ssid(&mut self) -> bool {
         let ssid = self.password.trim().to_owned();
         if ssid.is_empty() {
-            self.inline = Some("Type the network name.".to_owned());
+            self.inline = Some(tr("wifi.type_name").to_owned());
             return false;
         }
         self.password.clear();
@@ -173,7 +175,7 @@ impl WifiState {
         self.password.clear();
         self.error = false;
         self.inline = None;
-        self.message = format!("Connected to {ssid}.");
+        self.message = trf("wifi.connected_to", &[("ssid", ssid)]);
         for network in &mut self.networks {
             network.connected = network.ssid == ssid;
         }
@@ -187,17 +189,17 @@ impl WifiState {
         let lower = error.message.to_ascii_lowercase();
         if error.kind == DaemonErrorKind::CaptivePortal {
             self.mode = WifiMode::List;
-            self.inline = Some(error.message.clone());
+            self.inline = Some(i18n::daemon_message(&error.message));
         } else if lower.contains("password") || lower.contains("secret") {
             self.mode = WifiMode::Password {
                 ssid: ssid.to_owned(),
                 secured: true,
             };
             self.password.clear();
-            self.inline = Some("That password did not work. Try again.".to_owned());
+            self.inline = Some(tr("wifi.bad_password").to_owned());
         } else {
             self.mode = WifiMode::List;
-            self.inline = Some(error.message.clone());
+            self.inline = Some(i18n::daemon_message(&error.message));
         }
     }
 
@@ -208,10 +210,8 @@ impl WifiState {
         self.error = true;
         self.inline = None;
         self.message = match error.kind {
-            DaemonErrorKind::CaptivePortal => {
-                "This network needs a login page. Use a phone hotspot.".to_owned()
-            }
-            _ => error.message.clone(),
+            DaemonErrorKind::CaptivePortal => tr("wifi.portal").to_owned(),
+            _ => i18n::daemon_message(&error.message),
         };
     }
 
@@ -230,9 +230,9 @@ impl WifiState {
     /// accessible name for the icon.
     pub fn access_label(network: &WifiNetwork) -> &'static str {
         if network.secured {
-            "locked"
+            tr("wifi.locked")
         } else {
-            "open"
+            tr("wifi.open")
         }
     }
 
@@ -240,9 +240,9 @@ impl WifiState {
     pub fn field_label(&self) -> String {
         match &self.mode {
             WifiMode::Password { ssid, .. } | WifiMode::OtherPassword { ssid } => {
-                format!("Password for {ssid}")
+                trf("wifi.password_for", &[("ssid", ssid)])
             }
-            WifiMode::OtherSsid => "Network name".to_owned(),
+            WifiMode::OtherSsid => tr("wifi.network_name").to_owned(),
             WifiMode::List => String::new(),
         }
     }
@@ -262,9 +262,9 @@ pub struct WifiPage {
 
 impl WifiPage {
     pub fn new(client: Client, nav: Rc<Navigator>, handoff: WifiHandoff) -> Rc<Self> {
-        let screen = ui::Screen::new("Wi-Fi");
+        let screen = ui::Screen::new(tr("wifi.title"));
         screen.set_hints(&HINTS);
-        screen.set_status(RADIO_NOTE);
+        screen.set_status(tr(RADIO_NOTE));
 
         let list = ui::list();
         // The password field lives inside a row of this list, and GTK only
@@ -339,7 +339,7 @@ impl WifiPage {
             let mut state = self.state.borrow_mut();
             state.loading = true;
             state.error = false;
-            state.message = "Scanning…".to_owned();
+            state.message = tr("wifi.scanning").to_owned();
         }
         self.refresh();
         let weak = Rc::downgrade(self);
@@ -422,7 +422,7 @@ impl WifiPage {
                     let mut state = self.state.borrow_mut();
                     state.loading = true;
                     state.error = false;
-                    state.message = format!("Connecting to {ssid}…");
+                    state.message = trf("wifi.connecting", &[("ssid", &ssid)]);
                 }
                 self.refresh();
                 let weak = Rc::downgrade(self);
@@ -458,9 +458,9 @@ impl WifiPage {
     fn confirm_forget(self: &Rc<Self>, ssid: String) {
         let weak = Rc::downgrade(self);
         self.screen.ask(
-            &format!("Forget “{ssid}”?"),
-            "The saved password is removed from this device.",
-            "Forget",
+            &trf("wifi.forget_title", &[("ssid", &ssid)]),
+            tr("wifi.forget_text"),
+            tr("button.forget"),
             move || {
                 let Some(page) = weak.upgrade() else {
                     return;
@@ -483,7 +483,7 @@ impl WifiPage {
                         Ok(()) => {
                             let mut state = page.state.borrow_mut();
                             state.networks.retain(|network| network.ssid != ssid);
-                            state.message = format!("Forgot {ssid}.");
+                            state.message = trf("wifi.forgot", &[("ssid", &ssid)]);
                             state.error = false;
                             state.inline = None;
                             drop(state);
@@ -622,7 +622,7 @@ impl WifiPage {
         let other = gtk::ListBoxRow::new();
         other.add_css_class("ui-row");
         other.add_css_class("file-row");
-        let label = gtk::Label::new(Some("Other network…"));
+        let label = gtk::Label::new(Some(tr("wifi.other")));
         label.set_xalign(0.0);
         label.add_css_class("file-name");
         other.set_child(Some(&label));
@@ -654,7 +654,7 @@ impl WifiPage {
         if empty_error {
             // The state block above carries the error; the line under the
             // title stays the quiet context.
-            self.screen.set_status(RADIO_NOTE);
+            self.screen.set_status(tr(RADIO_NOTE));
         } else if !state.message.is_empty() {
             if state.error {
                 self.screen.set_status_error(&state.message);
@@ -664,16 +664,17 @@ impl WifiPage {
         } else if let Some(action) = self.handoff.asked_action() {
             // Sync sent the writer here to fix a failed sync or pairing: say why.
             match action {
-                crate::handoff::HandoffAction::Sync => self
-                    .screen
-                    .set_status("Choose a network. Sync finishes when you are connected."),
-                crate::handoff::HandoffAction::Pair { .. } => self
-                    .screen
-                    .set_status("Choose a network. Pairing continues when you are connected."),
+                crate::handoff::HandoffAction::Sync => {
+                    self.screen.set_status(tr("wifi.choose_for_sync"))
+                }
+                crate::handoff::HandoffAction::Pair { .. } => {
+                    self.screen.set_status(tr("wifi.choose_for_pair"))
+                }
             }
         } else {
-            self.screen.set_status(RADIO_NOTE);
+            self.screen.set_status(tr(RADIO_NOTE));
         }
+        self.screen.set_title(tr("wifi.title"));
         if mode == WifiMode::List {
             self.screen.set_hints(&HINTS);
         } else {
@@ -724,15 +725,11 @@ impl WifiPage {
 fn state_row(state: &WifiState) -> gtk::ListBoxRow {
     let block = crate::ui::State::new();
     if state.error {
-        block.set(&state.message, &["Press R to scan again."], true);
+        block.set(&state.message, &[tr("wifi.rescan")], true);
     } else if state.loading {
-        block.set(
-            "Scanning for networks…",
-            &["The list fills as soon as one answers."],
-            false,
-        );
+        block.set(tr("wifi.scanning_networks"), &[tr("wifi.fills")], false);
     } else {
-        block.set("No networks in range", &["Press R to scan again."], false);
+        block.set(tr("wifi.none"), &[tr("wifi.rescan")], false);
     }
     let row = gtk::ListBoxRow::new();
     row.set_selectable(false);
@@ -758,7 +755,7 @@ fn network_row(network: &WifiNetwork) -> gtk::ListBoxRow {
     name.add_css_class("file-name");
     line.append(&name);
     if network.connected {
-        let connected = gtk::Label::new(Some("Connected"));
+        let connected = gtk::Label::new(Some(tr("wifi.connected")));
         connected.add_css_class("row-note");
         line.append(&connected);
     }
@@ -800,8 +797,9 @@ fn signal_icon(strength: u8) -> gtk::DrawingArea {
     area.set_focusable(false);
     area.add_css_class("wifi-signal");
     area.set_accessible_role(gtk::AccessibleRole::Img);
-    area.update_property(&[gtk::accessible::Property::Label(&format!(
-        "Wi-Fi signal {level} of 3"
+    area.update_property(&[gtk::accessible::Property::Label(&trf(
+        "access.wifi_signal",
+        &[("level", &level.to_string())],
     ))]);
     area.set_draw_func(move |area, context, _width, _height| {
         let color = area.color();
@@ -843,7 +841,7 @@ fn lock_icon() -> gtk::DrawingArea {
     area.set_focusable(false);
     area.add_css_class("wifi-signal");
     area.set_accessible_role(gtk::AccessibleRole::Img);
-    area.update_property(&[gtk::accessible::Property::Label("Locked")]);
+    area.update_property(&[gtk::accessible::Property::Label(tr("access.locked"))]);
     area.set_draw_func(|area, context, _width, _height| {
         let color = area.color();
         context.set_source_rgba(

@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::tr;
 use crate::store::atomic_write;
 
 /// One of the six colours a person can wear (issue #21): the five Nostos
@@ -43,12 +44,12 @@ impl Theme {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Light => "Light",
-            Self::Sepia => "Sepia",
-            Self::Mist => "Mist",
-            Self::Study => "Writer's Study",
-            Self::Dark => "Dark",
-            Self::HighContrast => "High contrast",
+            Self::Light => tr("theme.light"),
+            Self::Sepia => tr("theme.sepia"),
+            Self::Mist => tr("theme.mist"),
+            Self::Study => tr("theme.study"),
+            Self::Dark => tr("theme.dark"),
+            Self::HighContrast => tr("theme.high_contrast"),
         }
     }
 
@@ -97,7 +98,7 @@ impl ThemeChoice {
     pub fn label(self) -> &'static str {
         match self.theme() {
             Some(theme) => theme.label(),
-            None => "Automatic",
+            None => tr("theme.automatic"),
         }
     }
 
@@ -160,9 +161,9 @@ pub enum FontChoice {
 impl FontChoice {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Serif => "Serif",
-            Self::Sans => "Sans",
-            Self::Mono => "Mono",
+            Self::Serif => tr("font.serif"),
+            Self::Sans => tr("font.sans"),
+            Self::Mono => tr("font.mono"),
         }
     }
 
@@ -217,8 +218,8 @@ pub enum GoalDisplay {
 impl GoalDisplay {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Numbers => "Numbers",
-            Self::Hairline => "Hairline",
+            Self::Numbers => tr("goal.numbers"),
+            Self::Hairline => tr("goal.hairline"),
         }
     }
 

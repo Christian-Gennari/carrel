@@ -15,30 +15,34 @@ use serde::{Deserialize, Serialize};
 
 use crate::daemon::{Client, Drive};
 use crate::editor::EditorPage;
+use crate::i18n::{self, tr, trf, trn};
 use crate::nav::Navigator;
 use crate::store::{atomic_write, display_path, Store};
 use crate::ui;
 
 const EXPORT_HINTS: [(&str, &str); 4] = [
-    ("Enter", "Export"),
-    ("← →", "Change"),
-    ("↑ ↓", "Move"),
-    ("Esc", "Back"),
+    ("Enter", "hint.export"),
+    ("← →", "hint.change"),
+    ("↑ ↓", "hint.move"),
+    ("Esc", "hint.back"),
 ];
-const EXPORT_NO_DRIVE_HINTS: [(&str, &str); 3] =
-    [("← →", "Change"), ("↑ ↓", "Move"), ("Esc", "Back")];
-const IMPORT_HINTS: [(&str, &str); 2] = [("Enter", "Import"), ("Esc", "Back")];
-const IMPORT_NO_DRIVE_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
-const RUNNING_HINTS: [(&str, &str); 1] = [("Esc", "Back")];
+const EXPORT_NO_DRIVE_HINTS: [(&str, &str); 3] = [
+    ("← →", "hint.change"),
+    ("↑ ↓", "hint.move"),
+    ("Esc", "hint.back"),
+];
+const IMPORT_HINTS: [(&str, &str); 2] = [("Enter", "hint.import"), ("Esc", "hint.back")];
+const IMPORT_NO_DRIVE_HINTS: [(&str, &str); 1] = [("Esc", "hint.back")];
+const RUNNING_HINTS: [(&str, &str); 1] = [("Esc", "hint.back")];
 const DONE_EXPORT_HINTS: [(&str, &str); 3] = [
-    ("Enter", "Done"),
-    ("E", "Export something else"),
-    ("Esc", "Back"),
+    ("Enter", "hint.done"),
+    ("E", "hint.export_else"),
+    ("Esc", "hint.back"),
 ];
 const DONE_IMPORT_HINTS: [(&str, &str); 3] = [
-    ("Enter", "Done"),
-    ("I", "Import something else"),
-    ("Esc", "Back"),
+    ("Enter", "hint.done"),
+    ("I", "hint.import_else"),
+    ("Esc", "hint.back"),
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,7 +72,7 @@ impl ExportFormat {
     pub fn label(self) -> &'static str {
         match self {
             Self::Markdown => "Markdown",
-            Self::Text => "Plain text",
+            Self::Text => tr("export.plain_text"),
             Self::Docx => "Word .docx",
             Self::Odt => "OpenDocument .odt",
             Self::Pdf => "PDF",
@@ -337,7 +341,7 @@ impl ExportState {
 
     pub fn folder_label(&self) -> String {
         if self.folder.is_empty() {
-            "Writing".to_owned()
+            tr("export.writing").to_owned()
         } else {
             self.folder.clone()
         }
@@ -387,7 +391,7 @@ impl ExportState {
             });
         }
         if self.target == ExportTarget::Current && self.current_file.is_none() {
-            self.error = Some("Open a file first.".to_owned());
+            self.error = Some(tr("export.open_first").to_owned());
             return None;
         }
         Some(ExportEffect::Export {
@@ -452,23 +456,20 @@ impl ExportState {
     pub fn status(&self, dated_folder: &str) -> String {
         match self.step {
             ExportStep::Configure if self.current_drive().is_none() => {
-                "Plug in a drive; this screen notices it as soon as it appears.".to_owned()
+                tr("export.plug_in").to_owned()
             }
             ExportStep::Configure if self.mode == ExportMode::Import => {
-                "Copies .md and .txt files from the USB drive into Imported/.".to_owned()
+                tr("export.import_status").to_owned()
             }
             ExportStep::Configure => match self.target {
-                ExportTarget::Current => {
-                    "Nothing leaves the device. A USB drive needs no network or account.".to_owned()
-                }
+                ExportTarget::Current => tr("export.offline").to_owned(),
                 ExportTarget::Folder => {
-                    format!(
-                        "“{}” keeps its structure inside the export.",
-                        self.folder_label()
-                    )
+                    trf("export.folder_keeps", &[("folder", &self.folder_label())])
                 }
                 ExportTarget::Everything => {
-                    format!("Everything goes into “Carrel export {dated_folder}/”.")
+                    // The folder's name on the drive, which is not translated.
+                    let folder = format!("Carrel export {dated_folder}");
+                    trf("export.everything_into", &[("folder", &folder)])
                 }
             },
             ExportStep::Running | ExportStep::Done => String::new(),
@@ -477,23 +478,25 @@ impl ExportState {
 
     pub fn progress_heading(&self) -> String {
         if self.mode == ExportMode::Import {
-            format!("Copying from {}…", self.running_drive)
+            trf("export.copying_from", &[("drive", &self.running_drive)])
         } else {
-            format!("Exporting to {}…", self.running_drive)
+            trf("export.exporting_to", &[("drive", &self.running_drive)])
         }
     }
 
     pub fn progress_line(&self) -> &'static str {
         if self.mode == ExportMode::Import {
-            "Copying files. Do not remove the drive."
+            tr("export.copying")
         } else {
-            "Writing files. Do not remove the drive."
+            tr("export.writing_files")
         }
     }
 
     pub fn outcome_heading(&self) -> Option<String> {
         match &self.outcome {
-            Some(ExportOutcome::Exported { drive, .. }) => Some(format!("Exported to {drive}")),
+            Some(ExportOutcome::Exported { drive, .. }) => {
+                Some(trf("export.exported_to", &[("drive", drive)]))
+            }
             Some(ExportOutcome::Imported { paths, drive }) => {
                 Some(imported_heading(paths.len(), drive))
             }
@@ -512,13 +515,13 @@ impl ExportState {
                     lines.push(folder);
                 }
                 lines.push(match file {
-                    Some(file) => format!("{file}. Safe to remove."),
-                    None => "Safe to remove.".to_owned(),
+                    Some(file) => trf("export.file_safe", &[("file", file)]),
+                    None => tr("export.safe").to_owned(),
                 });
                 lines
             }
             Some(ExportOutcome::Imported { .. }) => {
-                vec!["Saved in Imported/. Safe to remove.".to_owned()]
+                vec![tr("export.saved_imported").to_owned()]
             }
             None => Vec::new(),
         }
@@ -574,11 +577,15 @@ pub fn export_location(path: &str) -> Option<String> {
 /// The import result headline, matching "Exported to …": who did what, and
 /// from which drive.
 pub fn imported_heading(files: usize, drive: &str) -> String {
-    match files {
-        0 => format!("No files imported from {drive}"),
-        1 => format!("Imported 1 file from {drive}"),
-        count => format!("Imported {count} files from {drive}"),
+    if files == 0 {
+        return trf("export.imported_none", &[("drive", drive)]);
     }
+    trn(
+        "export.imported",
+        files as u64,
+        &files.to_string(),
+        &[("drive", drive)],
+    )
 }
 
 fn free_space(bytes: u64) -> String {
@@ -619,17 +626,17 @@ impl ExportPage {
         editor: Rc<EditorPage>,
         store: Store,
     ) -> Rc<Self> {
-        let screen = ui::Screen::new("Export");
+        let screen = ui::Screen::new(tr("export.title"));
         screen.set_hints(&EXPORT_HINTS);
 
         let rows = ui::list();
         rows.set_selection_mode(gtk::SelectionMode::Single);
 
         let (action, action_cap, action_word) =
-            action_button("Enter", "Export", "export-action", "action-word");
+            action_button("Enter", tr("hint.export"), "export-action", "action-word");
         action.set_margin_top(22);
         let (quiet, quiet_cap, quiet_word) =
-            action_button("I", "Import from a USB drive", "quiet-action", "quiet-word");
+            action_button("I", tr("export.import_usb"), "quiet-action", "quiet-word");
         quiet.set_margin_top(12);
 
         // Running, done and error all use the shared state block: one headline
@@ -1003,8 +1010,11 @@ impl ExportPage {
             let state = self.state.borrow();
             (state.step, state.error.clone(), state.is_import())
         };
-        self.screen
-            .set_title(if import { "Import" } else { "Export" });
+        self.screen.set_title(if import {
+            tr("export.import_title")
+        } else {
+            tr("export.title")
+        });
         // An error is a state, not a second line under the title: the block
         // below says what happened and what Enter does next.
         let status = self.state.borrow().status(&ui::local_date());
@@ -1012,8 +1022,11 @@ impl ExportPage {
 
         self.configure.set_visible(step == ExportStep::Configure);
         if let Some(message) = &error {
-            self.state_view
-                .set(message, &["Nothing was removed from your writing."], true);
+            self.state_view.set(
+                &i18n::daemon_message(message),
+                &[tr("export.untouched")],
+                true,
+            );
         } else {
             self.state_view.hide();
         }
@@ -1024,8 +1037,11 @@ impl ExportPage {
                 let state = self.state.borrow();
                 let exporting = state.mode == ExportMode::Export;
                 self.action_cap.set_text("Enter");
-                self.action_word
-                    .set_text(if exporting { "Export" } else { "Import" });
+                self.action_word.set_text(if exporting {
+                    tr("hint.export")
+                } else {
+                    tr("hint.import")
+                });
                 let can = state.can_export();
                 self.action.set_sensitive(can);
                 if can {
@@ -1035,9 +1051,9 @@ impl ExportPage {
                 }
                 self.quiet_cap.set_text(if exporting { "I" } else { "E" });
                 self.quiet_word.set_text(if exporting {
-                    "Import from a USB drive"
+                    tr("export.import_usb")
                 } else {
-                    "Export instead"
+                    tr("export.instead")
                 });
                 let hints = match (exporting, can) {
                     (true, true) => &EXPORT_HINTS[..],
@@ -1085,7 +1101,13 @@ impl ExportPage {
                 state.format,
                 state.folder_label(),
                 state.current_drive().map(|drive| {
-                    format!("{} · {} free", drive.label, free_space(drive.free_bytes))
+                    trf(
+                        "export.free",
+                        &[
+                            ("drive", &drive.label),
+                            ("size", &free_space(drive.free_bytes)),
+                        ],
+                    )
                 }),
                 state.current_file.is_some(),
                 state.current_file.clone(),
@@ -1096,26 +1118,31 @@ impl ExportPage {
         for kind in self.state.borrow().rows() {
             let (name, value, dim, changeable) = match kind {
                 ExportRow::What => (
-                    "What",
+                    tr("export.what"),
                     match target {
-                        ExportTarget::Current if has_file => format!(
-                            "Current file · {}",
-                            display_path(Path::new(current_path.as_deref().unwrap_or_default()))
+                        ExportTarget::Current if has_file => trf(
+                            "export.current",
+                            &[(
+                                "name",
+                                &display_path(Path::new(
+                                    current_path.as_deref().unwrap_or_default(),
+                                )),
+                            )],
                         ),
-                        ExportTarget::Current => "Current file · no file open".to_owned(),
-                        ExportTarget::Folder => "A folder…".to_owned(),
-                        ExportTarget::Everything => "Everything".to_owned(),
+                        ExportTarget::Current => tr("export.current_none").to_owned(),
+                        ExportTarget::Folder => tr("export.folder_choice").to_owned(),
+                        ExportTarget::Everything => tr("export.everything").to_owned(),
                     },
                     target == ExportTarget::Current && !has_file,
                     true,
                 ),
-                ExportRow::Folder => ("Folder", folder.clone(), false, folder_count > 0),
-                ExportRow::Format => ("Format", format.label().to_owned(), false, true),
+                ExportRow::Folder => (tr("export.folder"), folder.clone(), false, folder_count > 0),
+                ExportRow::Format => (tr("export.format"), format.label().to_owned(), false, true),
                 ExportRow::To => (
-                    "To",
+                    tr("export.to"),
                     drive
                         .clone()
-                        .unwrap_or_else(|| "Insert a USB drive".to_owned()),
+                        .unwrap_or_else(|| tr("export.insert_drive").to_owned()),
                     drive.is_none(),
                     drive_count > 1,
                 ),
