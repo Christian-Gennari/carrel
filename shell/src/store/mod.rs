@@ -18,7 +18,7 @@ use std::time::SystemTime;
 use serde::{Deserialize, Serialize};
 
 pub use document::{Document, SavePolicy};
-pub use fsutil::atomic_write;
+pub use fsutil::{atomic_write, read_latest, settle, write_later, write_now};
 pub use stats::{DailyStats, StatsWriter};
 pub use text::EditOutOfRange;
 
@@ -400,11 +400,12 @@ impl Store {
             state.recent.truncate(RECENT_LIMIT);
         }
         let json = serde_json::to_vec_pretty(&state).map_err(io::Error::other)?;
-        atomic_write(&self.carrel_dir().join("state.json"), &json)
+        write_later(&self.carrel_dir().join("state.json"), json);
+        Ok(())
     }
 
     fn load_shell_state(&self) -> ShellState {
-        fs::read(self.carrel_dir().join("state.json"))
+        read_latest(&self.carrel_dir().join("state.json"))
             .ok()
             .and_then(|bytes| serde_json::from_slice(&bytes).ok())
             .unwrap_or_default()

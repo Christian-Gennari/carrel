@@ -276,6 +276,7 @@ pub fn run(application: &gtk::Application) {
                 editor.on_battery();
             }
             DaemonEvent::Sync(info) => {
+                crate::stall::note(&format!("sync {}", info.state));
                 if info.state == "syncing" && info.message == SHUTDOWN_SYNC_MESSAGE {
                     editor.flush();
                     editor.flash_note(crate::i18n::tr("note.shutdown_sync"), SHUTDOWN_NOTE_SECONDS);
@@ -335,6 +336,7 @@ pub fn run(application: &gtk::Application) {
     }
     window.add_controller(key);
 
+    crate::stall::install(&root);
     if let Err(error) = editor.open_last_or_new() {
         eprintln!("carrel: cannot open a document: {error}");
     }

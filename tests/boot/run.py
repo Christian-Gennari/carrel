@@ -18,6 +18,10 @@ Scenarios (all run by `make test-boot`):
   palette-power  run Suspend, Restart and Shut down from the Command palette:
              the VM sleeps and wakes, comes back up, then powers off; the text
              typed just before each one is saved, and Sync at shutdown runs
+  typing-slow-disk  start Carrel from a USB drive that writes like a slow stick,
+             type across autosaves, a new file's naming and two sync rounds
+             against a local server, and fail on any main-loop stall over
+             50 ms in the shell's stall log
   update     stage the offline update fixture, apply it with sysupdate, make
              the new slot fail to reach boot-complete three times and assert
              that the previous slot boots
@@ -40,14 +44,17 @@ from __future__ import annotations
 import argparse
 import contextlib
 import hashlib
+import http.server
 import json
 import re
 import shutil
 import socket
+import ssl
 import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -1574,6 +1581,279 @@ def scenario_palette_power(image: Path, out: Path, timeout: float) -> None:
     print("palette-power: PASS (suspend, restart, shut down)", flush=True)
 
 
+# --------------------------------------------------------------------------
+# Typing on a slow USB drive
+
+# A cheap USB 2.0 stick: writes are slow and few per second, reads are fine.
+SLOW_STICK = {"bps": 0, "bps_rd": 20_000_000, "bps_wr": 2_000_000,
+              "iops": 0, "iops_rd": 0, "iops_wr": 12}
+
+
+class FakeSyncServer:
+    """Enough of spec/02-sync-protocol.md to give carreld real work per round."""
+
+    FILES = 40
+    FILE_BYTES = 100_000
+    LIBRARY_ITEMS = 1500
+
+    def __init__(self) -> None:
+        self.files: dict[str, dict] = {}
+        self.seq = 0
+        self.rounds = 0
+        self.finished = -1
+        self.finished_at = 0.0
+        self.lock = threading.Lock()
+        self.requests: list[str] = []
+        for index in range(self.FILES):
+            self._change(str(uuid.UUID(int=index + 1)), f"Synced/Part {index}.md")
+
+    def _change(self, file_id: str, path: str) -> None:
+        self.seq += 1
+        previous = self.files.get(file_id)
+        line = f"revision {self.seq} of {path}\n"
+        content = line * (self.FILE_BYTES // len(line))
+        self.files[file_id] = {
+            "path": path, "content": content, "seq": self.seq,
+            "rev": previous["rev"] + 1 if previous else 1,
+        }
+
+    def _entry(self, file_id: str) -> dict:
+        item = self.files[file_id]
+        return {"file_id": file_id, "path": item["path"], "rev": item["rev"],
+                "hash": hashlib.sha256(item["content"].encode()).hexdigest(),
+                "deleted": False, "modified_at": int(time.time())}
+
+    def get(self, path: str) -> tuple[int, dict]:
+        route, _, query = path.partition("?")
+        since = query.partition("=")[2]
+        with self.lock:
+            if route == "/files":
+                changed = [self._entry(i) for i, f in self.files.items()
+                           if f["seq"] > int(since or 0)]
+                return 200, {"files": changed, "cursor": str(self.seq)}
+            if route.startswith("/files/"):
+                file_id = route.rsplit("/", 1)[1]
+                entry = self._entry(file_id)
+                return 200, {**{k: entry[k] for k in
+                                ("file_id", "path", "hash", "rev")},
+                             "content": self.files[file_id]["content"]}
+            if route == "/library":
+                if since == str(self.rounds):
+                    # The library is the last thing a sync round asks for.
+                    if self.finished != self.rounds:
+                        self.finished = self.rounds
+                        self.finished_at = time.monotonic()
+                    return 200, {"cursor": since}
+                items = [{"id": f"item-{n}", "kind": "highlight", "book_id": "b",
+                          "text": f"round {self.rounds} quote {n} " * 20}
+                         for n in range(self.LIBRARY_ITEMS)]
+                return 200, {"books": [{"id": "b", "title": "A book"}],
+                             "items": items, "cursor": str(self.rounds)}
+        return 404, {"error": "not found"}
+
+    def put(self, path: str, body: dict) -> tuple[int, dict]:
+        file_id = path.rsplit("/", 1)[1]
+        with self.lock:
+            self.seq += 1
+            previous = self.files.get(file_id)
+            rev = previous["rev"] + 1 if previous else 1
+            self.files[file_id] = {"path": body["path"], "content": body["content"],
+                                   "seq": self.seq, "rev": rev}
+            return 200, {"rev": rev,
+                         "hash": hashlib.sha256(body["content"].encode()).hexdigest()}
+
+    def next_round(self) -> None:
+        """Change every file, so the next sync pulls and rewrites them all."""
+        with self.lock:
+            self.rounds += 1
+            for file_id, item in list(self.files.items()):
+                if item["path"].startswith("Synced/"):
+                    self._change(file_id, item["path"])
+
+
+@contextlib.contextmanager
+def fake_sync_server(directory: Path):
+    """The fake over HTTPS: yields (server, port, certificate sha256)."""
+    key, cert = directory / "server.key", directory / "server.pem"
+    run("openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "30",
+        "-subj", "/CN=10.0.2.2", "-addext", "subjectAltName=IP:10.0.2.2",
+        "-keyout", key, "-out", cert, stderr=subprocess.DEVNULL)
+    der = ssl.PEM_cert_to_DER_cert(cert.read_text())
+    server = FakeSyncServer()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def reply(self, status: int, body: dict) -> None:
+            data = json.dumps(body).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(data)
+
+        def do_GET(self) -> None:
+            server.requests.append(f"{time.monotonic():.1f} GET {self.path}")
+            self.reply(*server.get(self.path))
+
+        def do_PUT(self) -> None:
+            server.requests.append(f"{time.monotonic():.1f} PUT {self.path}")
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            self.reply(*server.put(self.path, json.loads(body)))
+
+        def do_DELETE(self) -> None:
+            self.reply(200, {"rev": 1})
+
+        def log_message(self, *args: object) -> None:
+            pass
+
+    httpd = http.server.ThreadingHTTPServer(("0.0.0.0", 0), Handler)
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield server, httpd.server_address[1], hashlib.sha256(der).hexdigest()
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def type_sentence(qemu: Qemu, number: int, pause: float) -> None:
+    """A sentence, then a pause long enough to matter to the autosave."""
+    qemu.type_text("the quiet morning came slowly over the hill. ", delay=0.08)
+    if number % 2:
+        qemu.key("ret")
+    time.sleep(pause)
+
+
+def scenario_typing_slow_disk(image: Path, out: Path, timeout: float) -> None:
+    base = out / "test" / "typing-slow-disk"
+    base.mkdir(parents=True, exist_ok=True)
+    usb = base / "usb.img"
+    usb.unlink(missing_ok=True)
+    run("cp", "--sparse=always", image, usb)
+    run("truncate", "-s", "8G", usb)
+
+    with fake_sync_server(base) as (server, port, fingerprint):
+        parts = read_gpt(usb)
+        data = part_named(parts, "carrel-data")
+        seed_shutdown_sync(usb, f"https://10.0.2.2:{port}", out)
+        with mounted(usb, data, "ext4", writable=True, root=out / "test") as root:
+            # Only the host is reachable: the update check that ends a sync
+            # round must not depend on the internet or download a release.
+            (root / "etc" / "NetworkManager" / "system-connections"
+             / "boot-test.nmconnection").write_text(
+                "[connection]\nid=boot-test\ntype=ethernet\n"
+                "[ipv4]\nmethod=manual\naddress1=10.0.2.15/24\n"
+                "[ipv6]\nmethod=disabled\n")
+            carrel = root / "writing" / ".carrel"
+            (carrel / "settings.json").write_text(
+                json.dumps({"first_run_complete": True}))
+            (carrel / "stall-log").write_text("")
+            run("chown", "-R", "1000:1000", root / "writing")
+            with (root / ".carrel" / "sync.toml").open("a") as sync:
+                sync.write(f'cert_sha256 = "{fingerprint}"\n')
+
+        with Qemu("typing-slow-disk", out, "uefi", [], network=True,
+                  usb={"path": usb, "format": "raw"}) as qemu:
+            wait_installer(qemu, "main menu", timeout)
+            time.sleep(2)
+            qemu.key("ret")  # Start Carrel
+            wait_installer(qemu, "start selected", 60)
+            boot_to_editor(qemu, timeout)
+            time.sleep(15)  # let start-up work and the wired link finish
+            assert qemu.qmp is not None
+            qemu.qmp.command("block_set_io_throttle", device="usb", **SLOW_STICK)
+
+            # Sync off: a new file (named from its first line) and autosaves.
+            qemu.key("ctrl-n")
+            time.sleep(2)
+            qemu.type_text("a slow stick", delay=0.08)
+            qemu.key("ret")
+            time.sleep(3)
+            sentences = 0
+            unfinished = 0
+            for _ in range(8):
+                type_sentence(qemu, sentences, 6.0)
+                sentences += 1
+            qemu.screenshot(out / "screenshot-typing-slow-disk.png")
+
+            # Typing while sync rounds run.
+            for round_number in (1, 2):
+                server.next_round()
+                qemu.key("ctrl-shift-s")
+                time.sleep(2)
+                qemu.screenshot(out / f"screenshot-typing-slow-disk-round{round_number}.png")
+                qemu.key("esc")
+                time.sleep(1)
+                # Type for as long as the round runs, and a little after.
+                started = sentences
+                # carreld still writes what it fetched for a while after the
+                # last request: keep typing, and start no second round early.
+                while (server.finished < server.rounds
+                       or time.monotonic() - server.finished_at < 30
+                       or sentences - started < 4):
+                    if sentences - started >= 40:
+                        unfinished += 1
+                        qemu.screenshot(out / "screenshot-typing-slow-disk-stuck.png")
+                        break
+                    type_sentence(qemu, sentences, 3.0)
+                    sentences += 1
+            qemu.screenshot(out / "screenshot-typing-slow-disk-sync.png")
+
+            qemu.qmp.command("block_set_io_throttle", device="usb",
+                             **dict.fromkeys(SLOW_STICK, 0))
+            time.sleep(15)
+            qemu.powerdown()
+        (base / "requests.log").write_text("\n".join(server.requests))
+
+    # The first boot grew the data partition to fill the drive.
+    data = part_named(read_gpt(usb), "carrel-data")
+    with mounted(usb, data, "ext4", root=out / "test") as root:
+        journal = subprocess.run(
+            ["journalctl", "--directory", str(root / "var" / "log" / "journal"),
+             "--output", "cat", "--no-pager"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        written = "".join(p.read_text(errors="replace")
+                          for p in (root / "writing").glob("*.md"))
+    (base / "journal.log").write_text(journal)
+    lines = clean_serial(journal).splitlines()
+    if "carrel-stall: typing" not in lines:
+        raise BootError("the shell logged no typing; the stall log did not run")
+    after = lines[lines.index("carrel-stall: typing"):]
+    stalls: list[int] = []
+    phases: dict[str, list[int]] = {"sync off": [], "during sync": []}
+    phase = "sync off"
+    for line in after:
+        if line == "carrel-stall: sync syncing":
+            phase = "during sync"
+        elif line.startswith("carrel-stall: sync "):
+            phase = "sync off"
+        elif match := re.fullmatch(r"carrel-stall: (\d+) ms", line):
+            stalls.append(int(match.group(1)))
+            phases[phase].append(int(match.group(1)))
+    synced = sum("sync finished" in line for line in lines)
+    typed = written.count("quiet morning")
+    print(f"typing-slow-disk: {synced} sync rounds finished; "
+          f"{typed} of {sentences} sentences on disk", flush=True)
+    for name, found in phases.items():
+        print(f"  {name}: {len(found)} stalls over 50 ms, worst "
+              f"{max(found, default=0)} ms, total {sum(found)} ms: {found}",
+              flush=True)
+    if unfinished:
+        raise BootError(f"{unfinished} sync round(s) did not finish in time")
+    if synced < 2:
+        raise BootError(f"expected two finished sync rounds, saw {synced}")
+    if typed != sentences:
+        raise BootError(f"expected {sentences} typed sentences on disk, found {typed}")
+    if stalls:
+        raise BootError(f"the main loop stalled while typing: {stalls}")
+    usb.unlink(missing_ok=True)
+    print("typing-slow-disk: PASS", flush=True)
+
+
 def stage_update(disk: Path, update_dir: Path, out: Path) -> None:
     parts = read_gpt(disk)
     data = part_named(parts, "carrel-data")
@@ -2072,7 +2352,8 @@ def main() -> int:
     parser.add_argument("--scenario", default="all",
                         choices=("all", "checks", "uefi", "bios", "keyboard",
                                  "install", "recovery", "powercut", "shutdown-sync",
-                                 "palette-power", "update", "online", "secureboot",
+                                 "palette-power", "typing-slow-disk", "update",
+                                 "online", "secureboot",
                                  "update-secureboot", "release", "actions"))
     parser.add_argument("--swedish", action="store_true",
                         help="enable Swedish layout typing checks in the 'actions' scenario")
@@ -2120,6 +2401,8 @@ def main() -> int:
             scenario_shutdown_sync(args.image, args.out, args.timeout)
         if args.scenario in ("all", "palette-power"):
             scenario_palette_power(args.image, args.out, args.timeout)
+        if args.scenario in ("all", "typing-slow-disk"):
+            scenario_typing_slow_disk(args.image, args.out, args.timeout)
         if args.scenario in ("all", "install", "recovery", "powercut", "update",
                              "online"):
             reused = args.out / "test" / "install" / "disk.img"

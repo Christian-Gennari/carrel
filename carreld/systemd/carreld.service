@@ -11,6 +11,11 @@ Wants=dbus.service
 Type=dbus
 BusName=page.nostos.Carrel.Daemon1
 ExecStart=/usr/bin/carreld run
+# History, sync and the quote index give way to the writer: lower CPU and disk
+# priority than the editor on an old computer and a slow drive.
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
 Restart=always
 RestartSec=2
 

@@ -67,6 +67,10 @@
    `/data/writing/.carrel/journal/<file-id>.log` (operation log: offset,
    delete-length, inserted text, timestamp). `fdatasync` at most 1 s after
    the last write.
+   Carrel may run from a slow USB stick, where one `write` can take seconds, so
+   the GTK main loop never touches the disk while the writer types: a key only
+   changes memory, a store thread writes its journal record at once, and
+   saves, renames and settings happen on background threads.
 2. After 5 s idle (and before suspend, file switch and exit) the full text is
    written atomically: write `name.md.tmp` → `fsync` → `rename` → `fsync` the
    directory. Then the journal is truncated.

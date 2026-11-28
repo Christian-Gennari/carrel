@@ -619,7 +619,7 @@ fn memory_path(root: &Path) -> PathBuf {
 /// `None` when this device has never written a memory file: an older install
 /// whose pairing the shell has not seen yet.
 fn load_memory(root: &Path) -> Option<Vec<Backend>> {
-    let bytes = std::fs::read(memory_path(root)).ok()?;
+    let bytes = crate::store::read_latest(&memory_path(root)).ok()?;
     let memory: PairingMemory = serde_json::from_slice(&bytes).ok()?;
     Some(
         memory
@@ -635,7 +635,7 @@ fn save_memory(root: &Path, services: &[Backend]) {
         paired: services.iter().map(|it| it.wire().to_owned()).collect(),
     };
     if let Ok(json) = serde_json::to_vec_pretty(&memory) {
-        let _ = crate::store::atomic_write(&memory_path(root), &json);
+        crate::store::write_later(&memory_path(root), json);
     }
 }
 

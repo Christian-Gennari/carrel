@@ -15,6 +15,7 @@ use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use super::fsutil::slow_disk;
 use super::hash::{fnv1a64, fnv1a64_update};
 
 const MAGIC: &[u8; 4] = b"STLJ";
@@ -224,8 +225,26 @@ impl Journal {
     /// Append a record. This is a plain `write`: `sync_data` is called by the
     /// store's timer, at most one second later.
     pub fn append(&mut self, record: &Record) -> io::Result<()> {
-        let bytes = encode(record)?;
-        self.file.write_all(&bytes)
+        self.append_all(std::slice::from_ref(record))
+    }
+
+    /// Append records with one `write`. On failure the journal is cut back to
+    /// what it held before, so a retry never follows a torn record.
+    pub fn append_all(&mut self, records: &[Record]) -> io::Result<()> {
+        let mut bytes = Vec::new();
+        for record in records {
+            bytes.extend_from_slice(&encode(record)?);
+        }
+        slow_disk(&self.path);
+        let before = self.file.metadata()?.len();
+        self.file.write_all(&bytes).inspect_err(|_| {
+            let _ = self.file.set_len(before);
+        })
+    }
+
+    /// The journal file was renamed; the open descriptor followed it.
+    pub fn moved_to(&mut self, path: PathBuf) {
+        self.path = path;
     }
 
     /// fdatasync the journal.
@@ -241,6 +260,7 @@ impl Journal {
 
     /// Cut the journal back to a byte length (used for a corrupt tail).
     pub fn truncate_to(&mut self, len: u64) -> io::Result<()> {
+        slow_disk(&self.path);
         self.file.set_len(len)?;
         self.file.seek(SeekFrom::Start(len))?;
         Ok(())

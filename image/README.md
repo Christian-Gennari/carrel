@@ -383,7 +383,12 @@ Boot, BIOS) with QMP:
   assert the installer made Carrel the first UEFI boot entry;
 - `update-secureboot`: update and forced rollback on that installed disk;
 - `release`: flash `out/dist/carrel-<version>.img.xz` onto a fresh virtual
-  external drive and choose **Start Carrel** on UEFI, Secure Boot and BIOS.
+  external drive and choose **Start Carrel** on UEFI, Secure Boot and BIOS;
+- `typing-slow-disk`: choose **Start Carrel** on a USB drive throttled to
+  12 writes a second, type through autosaves, the naming of a new file and two
+  sync rounds, and fail on any main-loop stall over 50 ms. The shell logs
+  stalls to the journal when `/data/writing/.carrel/stall-log` exists, which
+  also works for measuring on real hardware.
 
 Screenshots are written to `out/screenshot-*.png`.
 

@@ -17,7 +17,7 @@ use crate::daemon::{Client, Drive};
 use crate::editor::EditorPage;
 use crate::i18n::{self, tr, trf, trn};
 use crate::nav::Navigator;
-use crate::store::{atomic_write, display_path, Store};
+use crate::store::{display_path, write_later, Store};
 use crate::ui;
 
 const EXPORT_HINTS: [(&str, &str); 4] = [
@@ -203,7 +203,7 @@ impl Default for ExportPrefs {
 
 impl ExportPrefs {
     pub fn load(root: &Path) -> Self {
-        std::fs::read(prefs_path(root))
+        crate::store::read_latest(&prefs_path(root))
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Self>(&bytes).ok())
             .unwrap_or_default()
@@ -213,9 +213,7 @@ impl ExportPrefs {
         let Ok(json) = serde_json::to_vec_pretty(self) else {
             return;
         };
-        if let Err(error) = atomic_write(&prefs_path(root), &json) {
-            eprintln!("carrel: could not remember the export choices: {error}");
-        }
+        write_later(&prefs_path(root), json);
     }
 }
 

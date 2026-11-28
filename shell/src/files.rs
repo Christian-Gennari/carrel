@@ -451,6 +451,7 @@ impl FilesPage {
     }
 
     fn reload(self: &Rc<Self>, keep: Option<PathBuf>) {
+        self.editor.finish_rename();
         let dir = self.current_dir.borrow().clone();
         match self.store.list(&dir) {
             Ok(entries) => {
