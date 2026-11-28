@@ -10,6 +10,8 @@ Scenarios (all run by `make test-boot`):
   recovery   boot the recovery entry and screenshot its menu
   powercut   type with QMP sendkey, system_reset, boot again and check that
              the text reached /data/writing
+  shutdown-sync  enable sync_at_shutdown with a paired server, power off, and
+             check carreld's journal for the bounded shutdown sync attempt
   update     stage the offline update fixture, apply it with sysupdate, make
              the new slot fail to reach boot-complete three times and assert
              that the previous slot boots
@@ -30,6 +32,7 @@ import argparse
 import contextlib
 import hashlib
 import json
+import os
 import re
 import shutil
 import socket
@@ -559,7 +562,7 @@ class Qemu:
         assert self.qmp is not None
         self.qmp.command("system_reset")
 
-    def powerdown(self, timeout: float = 90.0) -> None:
+    def powerdown(self, timeout: float = 90.0) -> bool:
         assert self.qmp is not None
         try:
             self.qmp.command("system_powerdown")
@@ -569,10 +572,11 @@ class Qemu:
         while self.proc is not None and self.proc.poll() is None:
             if time.monotonic() > deadline:
                 self.stop()
-                return
+                return False
             time.sleep(0.5)
         self.qmp is not None and self.qmp.close()
         self.qmp = None
+        return True
 
     def stop(self) -> None:
         if self.qmp is not None:
@@ -1142,6 +1146,91 @@ def scenario_powercut(disk: Path, out: Path, timeout: float) -> None:
     print("powercut: PASS", flush=True)
 
 
+def scenario_shutdown_sync(disk: Path, out: Path, timeout: float) -> None:
+    parts = read_gpt(disk)
+    data = part_named(parts, "carrel-data")
+
+    settings_rel = Path("writing") / ".carrel" / "settings.json"
+    sync_rel = Path(".carrel") / "sync.toml"
+    original_settings: bytes | None = None
+    original_sync: bytes | None = None
+
+    with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
+        settings_path = root / settings_rel
+        settings_path.parent.mkdir(parents=True, exist_ok=True)
+        if settings_path.exists():
+            original_settings = settings_path.read_bytes()
+            settings = json.loads(original_settings.decode("utf-8"))
+        else:
+            settings = {}
+        settings["first_run_complete"] = True
+        settings["sync_at_shutdown"] = True
+        settings_path.write_text(json.dumps(settings, indent=2) + "\n")
+        os.chown(settings_path.parent, 1000, 1000)
+        os.chown(settings_path, 1000, 1000)
+
+        sync_path = root / sync_rel
+        sync_path.parent.mkdir(parents=True, exist_ok=True)
+        if sync_path.exists():
+            original_sync = sync_path.read_bytes()
+        sync_path.write_text(
+            'server_url = "https://sync.invalid"\n'
+            'token = "shutdown-sync-test-token"\n'
+        )
+        os.chmod(sync_path, 0o600)
+
+    try:
+        with Qemu("shutdown-sync", out, "uefi", [{"path": disk, "format": "raw"}]) as qemu:
+            boot_to_editor(qemu, timeout)
+            if not qemu.powerdown(timeout=60.0):
+                raise BootError("[shutdown-sync] VM did not power off cleanly")
+
+        with mounted(disk, data, "ext4", root=out / "test") as root:
+            journal_dir = root / "var" / "log" / "journal"
+            if not journal_dir.is_dir():
+                raise BootError(f"[shutdown-sync] persistent journal missing at {journal_dir}")
+            result = subprocess.run(
+                [
+                    "journalctl",
+                    "-D", str(journal_dir),
+                    "-u", "carreld.service",
+                    "-b", "0",
+                    "--no-pager",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            journal = result.stdout
+    finally:
+        with mounted(disk, data, "ext4", writable=True, root=out / "test") as root:
+            settings_path = root / settings_rel
+            if original_settings is not None:
+                settings_path.write_bytes(original_settings)
+                os.chown(settings_path, 1000, 1000)
+            else:
+                settings_path.unlink(missing_ok=True)
+
+            sync_path = root / sync_rel
+            if original_sync is not None:
+                sync_path.write_bytes(original_sync)
+                os.chmod(sync_path, 0o600)
+            else:
+                sync_path.unlink(missing_ok=True)
+
+    if "starting sync before power off" not in journal:
+        raise BootError(
+            "[shutdown-sync] carreld did not attempt a shutdown sync at poweroff\n"
+            f"--- carreld journal ---\n{journal}"
+        )
+    if "skipping shutdown sync: offline" not in journal:
+        raise BootError(
+            "[shutdown-sync] carreld did not skip shutdown sync quickly while offline\n"
+            f"--- carreld journal ---\n{journal}"
+        )
+    print("shutdown-sync: PASS (attempted shutdown sync and skipped quickly offline)", flush=True)
+
+
 def stage_update(disk: Path, update_dir: Path, out: Path) -> None:
     parts = read_gpt(disk)
     data = part_named(parts, "carrel-data")
@@ -1341,8 +1430,9 @@ def main() -> int:
                         help="release .img.xz for the 'release' scenario")
     parser.add_argument("--scenario", default="all",
                         choices=("all", "checks", "uefi", "bios", "install",
-                                 "recovery", "powercut", "update", "online",
-                                 "secureboot", "update-secureboot", "release"))
+                                 "recovery", "powercut", "shutdown-sync",
+                                 "update", "online", "secureboot",
+                                 "update-secureboot", "release"))
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="seconds for one boot (default 300)")
     parser.add_argument("--expect-version", default="0.3.0",
@@ -1378,8 +1468,8 @@ def main() -> int:
             scenario_boot("uefi", args.image, args.out, args.timeout)
         if args.scenario in ("all", "bios"):
             scenario_boot("bios", args.image, args.out, args.timeout)
-        if args.scenario in ("all", "install", "recovery", "powercut", "update",
-                             "online"):
+        if args.scenario in ("all", "install", "recovery", "powercut",
+                             "shutdown-sync", "update", "online"):
             reused = args.out / "test" / "install" / "disk.img"
             if args.scenario != "all" and reused.exists():
                 installed = reused
@@ -1390,6 +1480,8 @@ def main() -> int:
             scenario_recovery(installed, args.out, args.timeout)
         if args.scenario in ("all", "powercut"):
             scenario_powercut(installed, args.out, args.timeout)
+        if args.scenario in ("all", "shutdown-sync"):
+            scenario_shutdown_sync(installed, args.out, args.timeout)
         if args.scenario in ("all", "update"):
             stage_update(installed, args.update_dir, args.out)
             scenario_update(installed, args.update_dir, args.out, args.timeout, "uefi")
