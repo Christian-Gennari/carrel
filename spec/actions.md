@@ -307,7 +307,7 @@ Booted via `Carrel recovery` (`systemd.unit=carrel-recovery.target`); `whiptail`
 | Menu Item | Defined at | Expected effect | Persists | Status |
 |---|---|---|---|---|
 | `previous` — `Boot previous system` | `recovery:22,129` | Confirm and switch `loader.conf` / `grubenv` to inactive slot (`a`/`b`), then reboot. | `y` | `ok` |
-| `copy` — `Copy all writing to USB drive` | `recovery:55,130` | List removable/USB drives, mount first partition (FAT or ext4), copy `/data/writing/` into timestamped folder, sync & unmount. | `y` | `ok` (fixed in this PR: previously hardcoded `-t ext4` and `cp -a`, breaking FAT drives) |
+| `copy` — `Copy all writing to USB drive` | `recovery:55,130` | List removable/USB drives, mount first partition (ext4, FAT or exFAT), copy `/data/writing/` into timestamped folder (on FAT/exFAT, characters those drives reject become `-` and colliding names get ` (2)`), sync & unmount. | `y` | `ok` (fixed in this PR: previously hardcoded `-t ext4` and `cp -a`, breaking FAT drives) |
 | `reset` — `Reset settings (keeps writing)` | `recovery:111,131` | Confirm and remove `/data/writing/.carrel/settings.json` and `stats.json`, keeping writing & history. | `y` | `ok` (fixed in this PR: previously deleted `/data/.carrel/settings.json` instead of `/data/writing/.carrel/settings.json`) |
 | `poweroff` — `Power off` (or `Esc`/Cancel) | `recovery:132,139` | Power off the computer (`systemctl poweroff`). | `na` | `ok` |
 

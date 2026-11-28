@@ -330,7 +330,8 @@ boots `carrel-recovery.conf`, i.e. `systemd.unit=carrel-recovery.target`.
 `/usr/lib/carrel/recovery` is a whiptail menu with exactly four actions:
 
 - Boot previous system (rewrites the loader default / grubenv and reboots)
-- Copy all writing to a USB drive
+- Copy all writing to a USB drive (first partition: ext4, FAT or exFAT; on
+  FAT and exFAT, names those drives cannot hold are changed, never overwritten)
 - Reset settings (keeps writing)
 - Power off
 

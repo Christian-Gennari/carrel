@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       hunspell-es hunspell-it hunspell-pt-pt hunspell-nl hunspell-pl hunspell-tr \
       mkosi systemd-container systemd-boot-efi systemd-ukify dosfstools mtools \
       grub-pc-bin grub-efi-amd64-bin \
-      erofs-utils squashfs-tools e2fsprogs cpio zstd xz-utils file gdisk \
+      erofs-utils squashfs-tools e2fsprogs exfatprogs cpio zstd xz-utils file gdisk \
       debian-archive-keyring \
       qemu-system-x86 qemu-utils ovmf \
       cage weston xvfb imagemagick tesseract-ocr \
