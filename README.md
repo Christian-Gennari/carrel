@@ -54,11 +54,14 @@ Download the image from [carrel.nostos.page](https://carrel.nostos.page) or from
    `.asc` file is the release signature
    ([how to verify](image/README.md#verify-a-download)).
 2. Flash it to a USB stick or external drive (8 GB or more) with
-   [Fedora Media Writer](https://fedoraproject.org/workstation/download),
-   [balenaEtcher](https://etcher.balena.io/) 2.19 or newer (2.14 fails on this
-   image), [Rufus](https://rufus.ie/) in
-   **DD Image mode**, or
+   [Rufus](https://rufus.ie/) in **DD Image mode** (Windows),
+   [Fedora Media Writer](https://fedoraproject.org/workstation/download)
+   (Windows, macOS, Linux), or
    `xz -dc carrel-<version>.img.xz | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync`.
+   Do not use balenaEtcher: it has failed to write this image to USB sticks
+   (it worked only on an SD card), and 2.14 fails on it everywhere. A failed
+   flash with Etcher does not mean the stick is broken; flash it again with
+   Rufus or Fedora Media Writer.
 3. Boot the laptop from the external drive.
 4. Choose **Start Carrel** (Carrel runs from the external drive and saves your
    writing there; nothing on the internal disk changes) or **Install Carrel**

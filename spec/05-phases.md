@@ -88,7 +88,7 @@ is committed on its branch. A maintainer reviews and merges to `main`.
   `carrel-<version>.img.xz` (+ `.sha256`, signature); add `intel-microcode`,
   `amd64-microcode`, `firmware-amd-graphics`; README states that Docker is only
   the build environment and that users flash the image (Fedora Media Writer,
-  Etcher, Rufus in DD mode, `dd`). Gate: the compressed image flashes to a
+  Rufus in DD mode, `dd`; not balenaEtcher, which fails on USB sticks). Gate: the compressed image flashes to a
   virtual external drive and passes the boot tests.
 - **WP10 · Hardware** — tier 1 quirks, real-laptop checklist
   (`spec/04-hardware.md`), signed release pipeline, docs site. First real

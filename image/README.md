@@ -310,9 +310,11 @@ gpg --verify carrel-<version>.img.xz.asc carrel-<version>.img.xz
 
 ### Flash
 
-Use Fedora Media Writer, balenaEtcher, Rufus (choose *DD Image mode*) or
+Use Rufus (choose *DD Image mode*), Fedora Media Writer or
 `xz -dc carrel-<version>.img.xz | sudo dd of=/dev/sdX bs=4M status=progress
-conv=fsync`. The root README has the steps. Docker is only the build
+conv=fsync`. Do not use balenaEtcher: it failed to write this image to two
+different USB sticks that Rufus then flashed and booted (it worked only on an
+SD card), and 2.14 fails on the image everywhere. The root README has the steps. Docker is only the build
 environment; users never need it.
 
 ### Gate
