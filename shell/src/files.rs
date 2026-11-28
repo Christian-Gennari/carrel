@@ -583,6 +583,10 @@ impl FilesPage {
             // The folder tree starts here.
             self.recent_rows.set(self.rows.borrow().len());
         }
+        if !entries.is_empty() || !recent.is_empty() {
+            let header = folder_section_header(&self.current_dir.borrow());
+            self.push_header(&header);
+        }
         for entry in entries {
             if entry.is_dir {
                 self.push_folder(&entry.rel, &entry.name);
@@ -1463,6 +1467,13 @@ fn display_path(dir: &Path) -> String {
     }
 }
 
+fn folder_section_header(dir: &Path) -> String {
+    dir.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "All files".to_owned())
+}
+
 /// Reject empty names, path separators, and hidden names.
 pub(crate) fn validate_entry_name(name: &str) -> Result<String, &'static str> {
     let name = name.trim().to_owned();
@@ -1515,7 +1526,8 @@ pub(crate) fn ensure_document_extension(
 #[cfg(test)]
 mod tests {
     use super::{
-        editable_name, ensure_document_extension, fuzzy_score, moved_path, typed_character,
+        editable_name, ensure_document_extension, folder_section_header, fuzzy_score, moved_path,
+        typed_character,
     };
     use gtk::gdk;
     use std::path::{Path, PathBuf};
@@ -1609,5 +1621,12 @@ mod tests {
             typed_character(gdk::Key::Return, gdk::ModifierType::empty()),
             None
         );
+    }
+
+    #[test]
+    fn folder_section_header_uses_all_files_at_root_and_folder_name_inside() {
+        assert_eq!(folder_section_header(Path::new("")), "All files");
+        assert_eq!(folder_section_header(Path::new("Novel")), "Novel");
+        assert_eq!(folder_section_header(Path::new("Novel/Part 1")), "Part 1");
     }
 }

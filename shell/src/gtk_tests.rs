@@ -58,6 +58,7 @@ fn gtk_scenarios() {
     rename_sheet_traps_tab_pauses_auto_naming_and_preserves_undo();
     files_search_finds_a_document_in_any_folder();
     recent_files_open_from_the_files_screen();
+    new_document_has_one_file_and_two_section_headers();
     opening_a_folder_starts_at_its_first_entry();
     new_file_from_files_lands_in_the_selected_folder();
     a_conflict_copy_offers_three_ways();
@@ -998,6 +999,113 @@ fn recent_files_open_from_the_files_screen() {
     );
 }
 
+/// A newly created document writes only one file on disk (across first save,
+/// title-based rename, and later saves), appears once in recent_files(), and
+/// Files separates Recent from the folder list with its own header ("All files"
+/// at top level, or the folder name inside a folder).
+fn new_document_has_one_file_and_two_section_headers() {
+    let visible_entries = |dir: &Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("read writing dir")
+            .filter_map(|entry| {
+                let name = entry.ok()?.file_name().to_string_lossy().into_owned();
+                (!name.starts_with('.')).then_some(name)
+            })
+            .collect();
+        names.sort();
+        names
+    };
+
+    // Part 1: empty writing root -> start a new document, save, auto-name, save again.
+    {
+        let shell = TestShell::new(&[], "");
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Untitled.md"))
+        );
+
+        // First save.
+        shell.type_text("# Morning notes\n\nFirst draft.");
+        shell.editor.flush();
+        assert_eq!(visible_entries(&shell.root), vec!["Untitled.md"]);
+
+        // Title-based rename replaces Untitled.md rather than writing a second file.
+        shell.editor.maybe_name_untitled(true);
+        settle();
+        assert_eq!(
+            shell.editor.current_rel().as_deref(),
+            Some(Path::new("Morning notes.md"))
+        );
+        assert_eq!(visible_entries(&shell.root), vec!["Morning notes.md"]);
+        let store = Store::open(&shell.root).expect("store");
+        assert_eq!(
+            store.recent_files(),
+            vec![PathBuf::from("Morning notes.md")]
+        );
+
+        // Later save still leaves exactly one file on disk and one recent entry.
+        shell.type_text("\n\nSecond paragraph.");
+        shell.editor.flush();
+        assert_eq!(visible_entries(&shell.root), vec!["Morning notes.md"]);
+        assert_eq!(
+            store.recent_files(),
+            vec![PathBuf::from("Morning notes.md")]
+        );
+
+        // Files shows the two section headers: "Recent" and "All files".
+        shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        let page = shell.stack.visible_child().expect("files page");
+        assert_eq!(
+            files_list_rows(&page),
+            vec![
+                (true, "Recent".to_owned()),
+                (false, "Morning notes".to_owned()),
+                (true, "All files".to_owned()),
+                (false, "Morning notes".to_owned()),
+            ]
+        );
+    }
+
+    // Part 2: inside a subfolder, the folder section header uses the folder name.
+    {
+        let shell = TestShell::new(
+            &[
+                ("Novel/Chapter one.md", "# Chapter one\n"),
+                ("Alpha.md", "# Alpha\n"),
+            ],
+            "Alpha.md",
+        );
+        shell.press("Ctrl+O", gdk::Key::o, gdk::ModifierType::CONTROL_MASK);
+        settle();
+        let page = shell.stack.visible_child().expect("files page");
+        assert_eq!(
+            files_list_rows(&page),
+            vec![
+                (true, "Recent".to_owned()),
+                (false, "Alpha".to_owned()),
+                (true, "All files".to_owned()),
+                (false, "Novel/".to_owned()),
+                (false, "Alpha".to_owned()),
+            ]
+        );
+
+        // Down steps over the "All files" header to Novel/, Enter opens it.
+        shell.press("Down", gdk::Key::Down, gdk::ModifierType::empty());
+        shell.press("Enter", gdk::Key::Return, gdk::ModifierType::empty());
+        settle();
+        assert_eq!(
+            files_list_rows(&page),
+            vec![
+                (true, "Recent".to_owned()),
+                (false, "Alpha".to_owned()),
+                (true, "Novel".to_owned()),
+                (false, "Chapter one".to_owned()),
+            ]
+        );
+    }
+}
+
 /// Opening a folder lands on its first entry, not on the Recent group above
 /// it (the open document is often both).
 fn opening_a_folder_starts_at_its_first_entry() {
@@ -1819,7 +1927,11 @@ impl TestShell {
                 DaemonEvent::Battery(_) => {}
             });
         }
-        editor.open_rel(Path::new(open)).expect("open fixture");
+        if open.is_empty() {
+            editor.open_last_or_new().expect("open new document");
+        } else {
+            editor.open_rel(Path::new(open)).expect("open fixture");
+        }
         window.present();
         settle();
 
@@ -2594,4 +2706,51 @@ fn wait_for_dialog_button(label: &str) {
         glib::MainContext::default().iteration(false);
         std::thread::sleep(Duration::from_millis(5));
     }
+}
+
+fn find_list_box(widget: &gtk::Widget) -> Option<gtk::ListBox> {
+    if let Some(list) = widget.downcast_ref::<gtk::ListBox>() {
+        return Some(list.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(list) = find_list_box(&widget) {
+            return Some(list);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+fn first_label(widget: &gtk::Widget) -> Option<gtk::Label> {
+    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+        return Some(label.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        if let Some(label) = first_label(&widget) {
+            return Some(label);
+        }
+        child = widget.next_sibling();
+    }
+    None
+}
+
+/// Every row in the Files screen's ListBox as `(is_section_header, primary_label_text)`.
+fn files_list_rows(page: &gtk::Widget) -> Vec<(bool, String)> {
+    let list = find_list_box(page).expect("Files ListBox");
+    let mut out = Vec::new();
+    let mut child = list.first_child();
+    while let Some(widget) = child {
+        if let Some(row) = widget.downcast_ref::<gtk::ListBoxRow>() {
+            if let Some(label) = first_label(row.upcast_ref()) {
+                let is_header = !row.is_selectable()
+                    && !row.is_activatable()
+                    && label.has_css_class("section-title");
+                out.push((is_header, label.text().to_string()));
+            }
+        }
+        child = widget.next_sibling();
+    }
+    out
 }
