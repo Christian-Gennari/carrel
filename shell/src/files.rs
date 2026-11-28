@@ -41,7 +41,7 @@ const HINTS: [(&str, &str); 5] = [
     ("Enter", "Open"),
     ("Type", "Search"),
     ("F2", "Rename"),
-    ("M", "Move"),
+    ("Shift+M", "Move"),
     ("Del", "Delete"),
 ];
 const MOVE_HINTS: [(&str, &str); 3] =
@@ -154,6 +154,16 @@ impl FilesPage {
         self.screen.is_dialog_open()
     }
 
+    #[cfg(test)]
+    pub(crate) fn query(&self) -> String {
+        self.query.borrow().clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_move_mode(&self) -> bool {
+        self.mode.get() == EntryMode::Move
+    }
+
     pub(crate) fn handle_key(
         self: &Rc<Self>,
         keyval: gdk::Key,
@@ -245,9 +255,15 @@ impl FilesPage {
                 glib::Propagation::Stop
             }
             _ => {
-                // Plain letters search; the capital M moves, so every letter
-                // (including a lowercase m) can start a query.
-                if shift && key == gdk::Key::m {
+                // Plain letters search; Shift+M moves only when no search query
+                // is active, so typing a capital M inside a query still searches.
+                if !control
+                    && !state
+                        .intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SUPER_MASK)
+                    && shift
+                    && key == gdk::Key::m
+                    && self.query.borrow().is_empty()
+                {
                     self.start_move();
                     return glib::Propagation::Stop;
                 }
@@ -1435,7 +1451,7 @@ fn folder_label(dir: &Path) -> String {
 
 /// The printable character a key press means, or `None` for a command chord,
 /// a function key or an editing key. Shift is allowed: it is how the writer
-/// types a capital in the query (and capital M is Move).
+/// types a capital in the query (and Shift+M moves when the query is empty).
 fn typed_character(keyval: gdk::Key, state: gdk::ModifierType) -> Option<char> {
     if state.intersects(
         gdk::ModifierType::CONTROL_MASK
