@@ -3085,8 +3085,43 @@ fn time_zone_setting_updates_clock_and_automatic_theme() {
 /// Issue #68: Ctrl+/ (key sheet open & close), Ctrl+' (Quotes), and Ctrl+,
 /// (Settings) resolve through the shared keyval → level-0 → keycode
 /// matcher without stealing Swedish/German Ctrl+- zoom out on physical US `/`.
+/// The X test display's keymap, switched for one block and restored on drop.
+struct Keymap(std::path::PathBuf);
+
+impl Keymap {
+    fn switch_to(layout: &str) -> Self {
+        let saved = std::env::temp_dir().join(format!("carrel-keymap-{}.xkb", std::process::id()));
+        let display = std::env::var("DISPLAY").expect("an X test display");
+        run(std::process::Command::new("xkbcomp")
+            .args(["-w", "0", "-xkb", &display])
+            .arg(&saved));
+        let restore = Keymap(saved);
+        run(std::process::Command::new("setxkbmap").arg(layout));
+        settle();
+        restore
+    }
+}
+
+impl Drop for Keymap {
+    fn drop(&mut self) {
+        let display = std::env::var("DISPLAY").expect("an X test display");
+        run(std::process::Command::new("xkbcomp")
+            .args(["-w", "0"])
+            .arg(&self.0)
+            .arg(display));
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn run(command: &mut std::process::Command) {
+    let status = command.status().expect("keymap tool starts");
+    assert!(status.success(), "{command:?} failed: {status}");
+}
+
 fn punctuation_shortcuts_handle_non_us_layouts_without_stealing_zoom() {
-    use crate::keys::{KEYCODE_APOSTROPHE, KEYCODE_COMMA, KEYCODE_EQUAL, KEYCODE_SLASH};
+    use crate::keys::{
+        KEYCODE_APOSTROPHE, KEYCODE_COMMA, KEYCODE_EQUAL, KEYCODE_KP_DIVIDE, KEYCODE_SLASH,
+    };
 
     let ctrl = gdk::ModifierType::CONTROL_MASK;
     let ctrl_shift = ctrl | gdk::ModifierType::SHIFT_MASK;
@@ -3109,6 +3144,25 @@ fn punctuation_shortcuts_handle_non_us_layouts_without_stealing_zoom() {
         !shell.key_sheet.is_open(),
         "Swedish/German Ctrl+Shift+7 should also close the key sheet"
     );
+
+    // Keypad `/` opens and closes the key sheet.
+    for (open, label) in [(true, "Ctrl+KP/"), (false, "Ctrl+KP/ close")] {
+        shell.press_keycode(label, gdk::Key::KP_Divide, KEYCODE_KP_DIVIDE, ctrl);
+        settle();
+        assert_eq!(shell.key_sheet.is_open(), open, "{label}");
+    }
+
+    // On a real Swedish keymap, Ctrl+Shift+7 reported as the unshifted `7`
+    // finds the `/` on level 1 of the same key.
+    {
+        let _swedish = Keymap::switch_to("se");
+        for (open, label) in [(true, "SE Ctrl+Shift+7 as 7"), (false, "SE close as 7")] {
+            shell.press_keycode(label, gdk::Key::_7, 16, ctrl_shift);
+            settle();
+            assert_eq!(shell.key_sheet.is_open(), open, "{label}");
+        }
+    }
+    settle();
 
     // Swedish/German Ctrl + physical US `/` (keycode 61) produces `-` (and `_`
     // with Shift): keyval match MUST win so zoom-out works and the key sheet
