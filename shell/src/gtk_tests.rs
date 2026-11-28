@@ -89,6 +89,67 @@ fn gtk_scenarios() {
     time_zone_setting_updates_clock_and_automatic_theme();
     punctuation_shortcuts_handle_non_us_layouts_without_stealing_zoom();
     changing_the_language_changes_the_screens_at_once();
+    the_palette_saves_then_shuts_down_restarts_and_suspends();
+    the_power_actions_follow_the_language();
+}
+
+/// Ctrl+K, a few letters, Enter: the text is on disk before logind is asked,
+/// and a text that cannot be saved keeps the computer on.
+fn the_palette_saves_then_shuts_down_restarts_and_suspends() {
+    let none = gdk::ModifierType::empty();
+    let shell = TestShell::new(&[("Notes.md", "")], "Notes.md");
+    let path = shell.root.join("Notes.md");
+    let run = |query: &str, label: &str| {
+        shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+        shell.type_text(query);
+        assert_eq!(shell.palette.selected_label().as_deref(), Some(label));
+        shell.press("Enter", gdk::Key::Return, none);
+        assert!(!shell.palette.is_open());
+    };
+
+    let mut text = String::new();
+    for (index, (query, label, call)) in [
+        ("shut", "Shut down", "ShutDown"),
+        ("restart", "Restart", "Restart"),
+        ("suspend", "Suspend", "Suspend"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        shell.type_text("word ");
+        text.push_str("word ");
+        run(query, label);
+        // Saved synchronously, before the daemon call can even start.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text, "{label}");
+        pump(|| shell.daemon.power_calls().len() == index + 1);
+        assert_eq!(shell.daemon.power_calls()[index], call);
+    }
+
+    // A folder where the file should be: the save fails, nothing is asked.
+    shell.type_text("unsaved");
+    std::fs::remove_file(&path).unwrap();
+    std::fs::create_dir_all(path.join("in the way")).unwrap();
+    run("shut", "Shut down");
+    settle();
+    assert_eq!(shell.daemon.power_calls().len(), 3);
+    std::fs::remove_dir_all(&path).unwrap();
+}
+
+fn the_power_actions_follow_the_language() {
+    let shell = TestShell::new(&[("Notes.md", "one")], "Notes.md");
+    crate::i18n::set_language("Deutsch");
+    for (query, label) in [
+        ("herunter", "Herunterfahren"),
+        ("neu starten", "Neu starten"),
+        ("standby", "Standby"),
+    ] {
+        shell.press("Ctrl+K", gdk::Key::k, gdk::ModifierType::CONTROL_MASK);
+        shell.type_text(query);
+        assert_eq!(shell.palette.selected_label().as_deref(), Some(label));
+        assert!(widget_has_label(shell.palette.widget.upcast_ref(), label));
+        shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    }
+    crate::i18n::set_language("English");
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.

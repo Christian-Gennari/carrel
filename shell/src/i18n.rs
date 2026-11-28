@@ -165,7 +165,8 @@ fn plural(language: &str, count: u64) -> &'static str {
 /// A sentence the daemon sends in English, in the writer's language when it is
 /// one the shell knows. Anything else (an error chain) is shown as it came.
 pub fn daemon_message(message: &str) -> String {
-    const FIXED: [&str; 7] = [
+    const FIXED: [&str; 8] = [
+        "note.shutdown_sync",
         "sync.syncing",
         "daemon.not_synced",
         "daemon.up_to_date",
@@ -298,6 +299,22 @@ mod tests {
             }
         }
         assert!(missing.is_empty(), "{missing:#?}");
+    }
+
+    #[test]
+    fn the_daemons_shutdown_sync_line_is_translated() {
+        let english = daemon_message(crate::daemon::SHUTDOWN_SYNC_MESSAGE);
+        assert_eq!(english, "Syncing before shutting down…");
+        assert_eq!(
+            crate::daemon::SHUTDOWN_SYNC_MESSAGE,
+            carreld::SHUTDOWN_SYNC_MESSAGE
+        );
+        set_language("Deutsch");
+        assert_eq!(
+            daemon_message(crate::daemon::SHUTDOWN_SYNC_MESSAGE),
+            "Synchronisiere vor dem Herunterfahren…"
+        );
+        set_language("English");
     }
 
     #[test]
