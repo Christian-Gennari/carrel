@@ -275,7 +275,14 @@ pub enum DaemonEvent {
         code: String,
         message: String,
     },
+    /// logind announced a suspend or a power off (`PrepareForSleep(true)`,
+    /// `PrepareForShutdown(true)`): write the open file now.
+    Flush,
 }
+
+/// The `SyncStatus` message of the last sync before power off
+/// (`carreld::SHUTDOWN_SYNC_MESSAGE`).
+pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before power off…";
 
 /// Everything the shell needs from `page.nostos.Carrel.Daemon1`.
 ///
@@ -705,6 +712,19 @@ impl DaemonClient for ZbusDaemon {
             return;
         }
 
+        {
+            let connector = self.connector.clone();
+            let listeners = Arc::clone(&self.listeners);
+            connector.handle.clone().spawn(async move {
+                // No logind (tests, a development desktop) is not worth a
+                // message; try again in case the bus was only late.
+                loop {
+                    let _ = run_logind_loop(&connector, &listeners).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            });
+        }
+
         let connector = self.connector.clone();
         let listeners = Arc::clone(&self.listeners);
         connector.handle.clone().spawn(async move {
@@ -729,6 +749,37 @@ impl DaemonClient for ZbusDaemon {
 
 fn tracing_warn(message: &str) {
     eprintln!("carrel: {message}");
+}
+
+/// Turn logind's "about to sleep or power off" into [`DaemonEvent::Flush`].
+/// `carreld` holds the delay inhibitor and waits a moment before it reads the
+/// writing folder; the shell only has to listen.
+async fn run_logind_loop(
+    connector: &Connector,
+    listeners: &ListenerList,
+) -> Result<(), zbus::Error> {
+    let connection = connector.connection().await?;
+    let logind = zbus::Proxy::new(
+        &connection,
+        "org.freedesktop.login1",
+        "/org/freedesktop/login1",
+        "org.freedesktop.login1.Manager",
+    )
+    .await?;
+    let mut signals = logind.receive_all_signals().await?;
+    while let Some(message) = signals.next().await {
+        let pending = message.header().member().is_some_and(|member| {
+            matches!(member.as_str(), "PrepareForSleep" | "PrepareForShutdown")
+        }) && message.body().deserialize::<bool>().unwrap_or(false);
+        if pending {
+            if let Ok(listeners) = listeners.lock() {
+                for listener in listeners.iter() {
+                    listener(DaemonEvent::Flush);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Forward signals until the connection or the stream ends.

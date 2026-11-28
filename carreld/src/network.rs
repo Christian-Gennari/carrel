@@ -61,6 +61,9 @@ pub trait Network: Send + Sync {
     async fn connect(&self, ssid: &str, password: &str) -> Result<()>;
     async fn forget(&self, ssid: &str) -> Result<()>;
     async fn connectivity(&self) -> Result<Connectivity>;
+    /// True when there is a Wi-Fi device and a saved network it could rejoin
+    /// once the radio is unblocked.
+    async fn has_saved_wifi(&self) -> Result<bool>;
 }
 
 /// NetworkManager over the system bus.
@@ -94,6 +97,17 @@ impl Network for NetworkManager {
     async fn forget(&self, ssid: &str) -> Result<()> {
         let connection = self.connection().await?;
         forget(&connection, ssid).await
+    }
+
+    async fn has_saved_wifi(&self) -> Result<bool> {
+        let connection = self.connection().await?;
+        if wifi_devices(&connection).await?.is_empty() {
+            return Ok(false);
+        }
+        Ok(saved_profiles(&connection)
+            .await?
+            .iter()
+            .any(|(_, settings)| profile_ssid(settings).is_some()))
     }
 
     async fn connectivity(&self) -> Result<Connectivity> {
