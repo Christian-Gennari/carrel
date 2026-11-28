@@ -1,5 +1,5 @@
 //! The daemon's policy: what happens on a commit, a sync, a pairing, a Wi-Fi
-//! call, a battery reading and before suspend.
+//! call, a battery reading, before suspend and before power off.
 //!
 //! Everything here takes its outside world as a trait, so the whole policy is
 //! unit-tested with fakes. [`crate::dbus`] only translates D-Bus calls into
@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
@@ -42,6 +43,22 @@ pub const IDLE_COMMIT: Duration = Duration::from_secs(5 * 60);
 /// How often the daemon looks at the writing directory and the battery.
 pub const TICK: Duration = Duration::from_secs(30);
 
+/// Time the shell gets to write the open file after logind announces a
+/// suspend or shutdown, before the daemon reads the writing directory.
+const SHELL_FLUSH_GRACE: Duration = Duration::from_secs(1);
+
+/// The whole sync at shutdown, waiting for Wi-Fi included. With the flush
+/// grace this stays under `InhibitDelayMaxSec` in the image's logind.conf, so
+/// power off never hangs.
+const SHUTDOWN_SYNC_LIMIT: Duration = Duration::from_secs(12);
+
+/// How long a saved Wi-Fi network may take to come back at shutdown.
+const SHUTDOWN_NETWORK_WAIT: Duration = Duration::from_secs(7);
+
+/// The status line while the last sync before power off runs. The shell shows
+/// it over the editor.
+pub const SHUTDOWN_SYNC_MESSAGE: &str = "Syncing before power off…";
+
 /// How long a pairing may wait for the user to approve the code.
 const PAIRING_TIMEOUT: Duration = Duration::from_secs(600);
 const PAIRING_POLL: Duration = Duration::from_secs(2);
@@ -70,6 +87,49 @@ impl Default for SyncInfo {
             state: "idle".into(),
             message: "Not synced yet.".into(),
             last_sync: 0,
+        }
+    }
+}
+
+/// What happened to the sync at shutdown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShutdownSync {
+    /// The setting is off.
+    Off,
+    /// No sync backend is paired.
+    NotPaired,
+    /// No network, and none that could come back.
+    NoNetwork,
+    Synced,
+    /// The time limit passed; the sync was abandoned.
+    TimedOut,
+    Failed(String),
+}
+
+/// The shell's "Sync at shutdown" setting in
+/// `<writing>/.carrel/settings.json`. A missing or broken file means off.
+pub fn sync_at_shutdown_enabled(writing_dir: &Path) -> bool {
+    fs::read(writing_dir.join(".carrel").join("settings.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+        .and_then(|settings| settings.get("sync_at_shutdown")?.as_bool())
+        .unwrap_or(false)
+}
+
+/// Timing of the sync at shutdown, shortened by tests.
+#[derive(Debug, Clone, Copy)]
+struct ShutdownTiming {
+    flush_grace: Duration,
+    network_wait: Duration,
+    limit: Duration,
+}
+
+impl Default for ShutdownTiming {
+    fn default() -> Self {
+        Self {
+            flush_grace: SHELL_FLUSH_GRACE,
+            network_wait: SHUTDOWN_NETWORK_WAIT,
+            limit: SHUTDOWN_SYNC_LIMIT,
         }
     }
 }
@@ -428,12 +488,25 @@ impl DaemonCore {
         // The guard blocks the radio again when it drops, after both success and
         // failure. A panic unwinding through this function drops it as well.
         let _guard: RadioGuard = self.radio.hold("sync")?;
+        let summary = self.sync_backends().await?;
+        // The radio guard is still alive here: updates are checked and
+        // downloaded only inside a sync session's window (rule 2).
+        self.check_updates().await;
+        Ok(summary)
+    }
 
+    fn paired_backends(&self) -> Result<(bool, bool)> {
         let server_configured = SyncConfig::is_configured(&self.state_dir)?;
         let gdrive_configured = match &self.gdrive {
             Some(_) => GdriveConfig::is_configured(&self.state_dir)?,
             None => false,
         };
+        Ok((server_configured, gdrive_configured))
+    }
+
+    /// Every paired backend in order. The caller holds the radio.
+    async fn sync_backends(&self) -> Result<SyncSummary> {
+        let (server_configured, gdrive_configured) = self.paired_backends()?;
         if self.gdrive.is_some() && !server_configured && !gdrive_configured {
             bail!("this device is not paired with a sync server or Google Drive");
         }
@@ -477,10 +550,107 @@ impl DaemonCore {
             ),
             (None, None) => tracing::info!("sync finished with no backends"),
         }
-        // The radio guard is still alive here: updates are checked and
-        // downloaded only inside a sync session's window (rule 2).
-        self.check_updates().await;
         Ok(summary)
+    }
+
+    // ----- sync at shutdown -------------------------------------------------
+
+    /// One last sync before power off, when the writer asked for it and a
+    /// backend is paired. Always returns within the time limit; updates are
+    /// not checked here.
+    pub async fn sync_before_shutdown(&self) -> ShutdownSync {
+        self.sync_before_shutdown_with(ShutdownTiming::default())
+            .await
+    }
+
+    async fn sync_before_shutdown_with(&self, timing: ShutdownTiming) -> ShutdownSync {
+        if !sync_at_shutdown_enabled(&self.writing_dir) {
+            return ShutdownSync::Off;
+        }
+        match self.paired_backends() {
+            Ok((false, false)) => return ShutdownSync::NotPaired,
+            Ok(_) => {}
+            Err(error) => return ShutdownSync::Failed(format!("{error:#}")),
+        }
+        // The radio is normally blocked now, so "offline" only means "skip"
+        // when there is also no saved network to rejoin.
+        match self.network.connectivity().await {
+            Ok(Connectivity::Portal) => return ShutdownSync::NoNetwork,
+            Ok(Connectivity::None) if !self.network.has_saved_wifi().await.unwrap_or(false) => {
+                return ShutdownSync::NoNetwork;
+            }
+            _ => {}
+        }
+
+        tracing::info!("sync at shutdown: starting");
+        let info = {
+            let mut status = self.status.lock().expect("status lock poisoned");
+            status.sync = SyncInfo {
+                state: "syncing".into(),
+                message: SHUTDOWN_SYNC_MESSAGE.into(),
+                last_sync: status.sync.last_sync,
+            };
+            status.sync.clone()
+        };
+        self.emit(DaemonEvent::SyncStatus(info));
+        tokio::time::sleep(timing.flush_grace).await;
+
+        let claimed = AtomicBool::new(false);
+        let attempt = async {
+            // A sync the writer started just before finishes first.
+            loop {
+                {
+                    let mut status = self.status.lock().expect("status lock poisoned");
+                    if !status.sync_running {
+                        status.sync_running = true;
+                        claimed.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            self.commit_async("before sync").await?;
+            let _guard: RadioGuard = self.radio.hold("sync at shutdown")?;
+            if !self.wait_for_network(timing.network_wait).await {
+                return Ok(None);
+            }
+            self.sync_backends().await.map(Some)
+        };
+        let result = tokio::time::timeout(timing.limit, attempt).await;
+
+        let (outcome, finished) = match result {
+            Ok(Ok(Some(summary))) => (ShutdownSync::Synced, Ok(summary)),
+            Ok(Ok(None)) => (
+                ShutdownSync::NoNetwork,
+                Err(anyhow::anyhow!("No Wi-Fi connection.")),
+            ),
+            Ok(Err(error)) => (ShutdownSync::Failed(format!("{error:#}")), Err(error)),
+            Err(_) => (
+                ShutdownSync::TimedOut,
+                Err(anyhow::anyhow!("The sync took too long.")),
+            ),
+        };
+        if claimed.load(Ordering::SeqCst) {
+            self.finish_sync(finished);
+        }
+        outcome
+    }
+
+    /// Wait for a connection after unblocking the radio. An unreadable state
+    /// counts as connected: the sync itself then reports the real problem.
+    async fn wait_for_network(&self, limit: Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + limit;
+        loop {
+            match self.network.connectivity().await {
+                Ok(Connectivity::None) => {}
+                Ok(Connectivity::Portal) => return false,
+                _ => return true,
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(PAIRING_CONNECTIVITY_POLL).await;
+        }
     }
 
     // ----- library (Quotes palette) ---------------------------------------
@@ -1034,6 +1204,7 @@ impl DaemonCore {
 
     /// Called when logind says the system is about to sleep.
     pub async fn handle_sleep_pending(&self) {
+        tokio::time::sleep(SHELL_FLUSH_GRACE).await;
         match self.commit_async("before suspend").await {
             Ok(Some(rev)) => tracing::info!(rev, "committed history before suspend"),
             Ok(None) => tracing::debug!("nothing to commit before suspend"),
@@ -1043,7 +1214,7 @@ impl DaemonCore {
 }
 
 /// The daemon's long-running sleeps: commit when idle, watch the battery,
-/// sweep the Wi-Fi window and re-arm the logind delay inhibitor.
+/// sweep the Wi-Fi window and re-arm the logind delay inhibitors.
 pub struct DaemonTasks {
     core: Arc<DaemonCore>,
 }
@@ -1089,6 +1260,9 @@ impl DaemonTasks {
 
         let core = Arc::clone(&self.core);
         tokio::spawn(async move { sleep_watcher(core).await });
+
+        let core = Arc::clone(&self.core);
+        tokio::spawn(async move { shutdown_watcher(core).await });
     }
 }
 
@@ -1114,6 +1288,41 @@ async fn sleep_watcher(core: Arc<DaemonCore>) {
             tracing::debug!(%error, "waiting for resume failed");
             tokio::time::sleep(Duration::from_secs(60)).await;
         }
+    }
+}
+
+async fn shutdown_watcher(core: Arc<DaemonCore>) {
+    let session = Arc::clone(core.session());
+    loop {
+        match session.inhibit_shutdown().await {
+            Ok(mut guard) => match guard.wait_pending().await {
+                Ok(()) => {
+                    match core.sync_before_shutdown().await {
+                        ShutdownSync::Off => tracing::debug!("sync at shutdown is off"),
+                        ShutdownSync::NotPaired => {
+                            tracing::info!("sync at shutdown: skipped, not paired")
+                        }
+                        ShutdownSync::NoNetwork => {
+                            tracing::info!("sync at shutdown: skipped, no network")
+                        }
+                        ShutdownSync::Synced => tracing::info!("sync at shutdown: finished"),
+                        ShutdownSync::TimedOut => tracing::warn!("sync at shutdown: timed out"),
+                        ShutdownSync::Failed(error) => {
+                            tracing::warn!(%error, "sync at shutdown: failed")
+                        }
+                    }
+                    // Closing the inhibitor lets the power off continue.
+                    drop(guard);
+                }
+                Err(error) => tracing::warn!(%error, "waiting for shutdown failed"),
+            },
+            Err(error) => {
+                tracing::debug!(%error, "logind is not available for shutdown handling")
+            }
+        }
+        // Normally the machine is gone by now. Re-arm for a cancelled
+        // shutdown or a restarted logind.
+        tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
 
@@ -1237,10 +1446,10 @@ fn remove_if_exists(path: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex as StdMutex;
 
-    use crate::power::SleepGuard;
+    use crate::power::DelayGuard;
     use crate::radio::{Rfkill, WIFI_WINDOW};
     use carrel_export::{DriveCall, DriveInfo, FakeDrives};
 
@@ -1282,6 +1491,7 @@ mod tests {
         remaining_none: AtomicUsize,
         calls: StdMutex<Vec<String>>,
         fail_scan: AtomicBool,
+        saved_wifi: AtomicBool,
     }
 
     impl FakeNetwork {
@@ -1297,6 +1507,7 @@ mod tests {
                 remaining_none: AtomicUsize::new(0),
                 calls: StdMutex::new(Vec::new()),
                 fail_scan: AtomicBool::new(false),
+                saved_wifi: AtomicBool::new(false),
             })
         }
     }
@@ -1323,6 +1534,10 @@ mod tests {
                 .unwrap()
                 .retain(|network| network.ssid != ssid);
             Ok(())
+        }
+
+        async fn has_saved_wifi(&self) -> Result<bool> {
+            Ok(self.saved_wifi.load(Ordering::SeqCst))
         }
 
         async fn connectivity(&self) -> Result<Connectivity> {
@@ -1365,7 +1580,7 @@ mod tests {
     struct FakeGuard;
 
     #[async_trait]
-    impl SleepGuard for FakeGuard {
+    impl DelayGuard for FakeGuard {
         async fn wait_pending(&mut self) -> Result<()> {
             Ok(())
         }
@@ -1383,7 +1598,11 @@ mod tests {
             Ok(())
         }
 
-        async fn inhibit_sleep(&self) -> Result<Box<dyn SleepGuard>> {
+        async fn inhibit_sleep(&self) -> Result<Box<dyn DelayGuard>> {
+            Ok(Box::new(FakeGuard))
+        }
+
+        async fn inhibit_shutdown(&self) -> Result<Box<dyn DelayGuard>> {
             Ok(Box::new(FakeGuard))
         }
 
@@ -1419,6 +1638,8 @@ mod tests {
     #[derive(Default)]
     struct FakeRunner {
         fail: bool,
+        /// A server that never answers.
+        hang: bool,
         /// Whether local history had a commit at the moment the sync ran.
         saw_history: AtomicBool,
         calls: AtomicUsize,
@@ -1445,6 +1666,9 @@ mod tests {
             // The daemon's radio is not visible here; the test checks its state
             // after the call instead.
             let _ = state_dir;
+            if self.hang {
+                std::future::pending::<()>().await;
+            }
             if self.fail {
                 bail!("network is off");
             }
@@ -2139,5 +2363,136 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(harness.network.remaining_none.load(Ordering::SeqCst), 0);
+    }
+
+    // ----- sync at shutdown -----
+
+    const QUICK: ShutdownTiming = ShutdownTiming {
+        flush_grace: Duration::from_millis(1),
+        network_wait: Duration::from_millis(20),
+        limit: Duration::from_millis(500),
+    };
+
+    fn set_sync_at_shutdown(harness: &Harness, on: bool) {
+        harness.write(
+            ".carrel/settings.json",
+            &format!("{{\"sync_at_shutdown\": {on}, \"font_size\": 19}}"),
+        );
+    }
+
+    fn shutdown_harness(runner: Arc<FakeRunner>) -> Harness {
+        let harness = Harness::new(runner, plugged_in(80));
+        harness.write("draft.md", "text");
+        pair_server(&harness);
+        set_sync_at_shutdown(&harness, true);
+        harness
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_sync_when_the_setting_is_off_or_unreadable() {
+        let runner = FakeRunner::new(false);
+        let harness = shutdown_harness(runner.clone());
+        for settings in ["{\"sync_at_shutdown\": false}", "{}", "not json"] {
+            harness.write(".carrel/settings.json", settings);
+            let outcome = harness.core.sync_before_shutdown_with(QUICK).await;
+            assert_eq!(outcome, ShutdownSync::Off, "{settings}");
+        }
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(harness.rfkill.calls.lock().unwrap().is_empty());
+        assert!(harness.events.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_does_not_sync_without_a_pairing() {
+        let runner = FakeRunner::new(false);
+        let harness = Harness::new(runner.clone(), plugged_in(80));
+        set_sync_at_shutdown(&harness, true);
+
+        let outcome = harness.core.sync_before_shutdown_with(QUICK).await;
+
+        assert_eq!(outcome, ShutdownSync::NotPaired);
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(harness.rfkill.calls.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_syncs_when_enabled_and_paired() {
+        let runner = FakeRunner::new(false);
+        let harness = shutdown_harness(runner.clone());
+
+        let outcome = harness.core.sync_before_shutdown_with(QUICK).await;
+
+        assert_eq!(outcome, ShutdownSync::Synced);
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        assert!(runner.saw_history.load(Ordering::SeqCst));
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+        let events = harness.events.events();
+        assert!(matches!(&events[0], DaemonEvent::SyncStatus(info)
+            if info.state == "syncing" && info.message == SHUTDOWN_SYNC_MESSAGE));
+        assert!(matches!(events.last(), Some(DaemonEvent::SyncStatus(info))
+            if info.state == "idle"));
+    }
+
+    #[tokio::test]
+    async fn shutdown_abandons_a_sync_that_takes_too_long() {
+        let runner = Arc::new(FakeRunner {
+            hang: true,
+            ..FakeRunner::default()
+        });
+        let harness = shutdown_harness(runner.clone());
+
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            harness.core.sync_before_shutdown_with(QUICK),
+        )
+        .await
+        .expect("the time limit must end the sync");
+
+        assert_eq!(outcome, ShutdownSync::TimedOut);
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+        assert!(!harness.core.radio().is_on());
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
+        assert_eq!(harness.core.sync_info().state, "error");
+    }
+
+    #[tokio::test]
+    async fn shutdown_skips_at_once_with_no_network_to_rejoin() {
+        let runner = FakeRunner::new(false);
+        let harness = shutdown_harness(runner.clone());
+        *harness.network.connectivity.lock().unwrap() = Connectivity::None;
+
+        let outcome = harness.core.sync_before_shutdown_with(QUICK).await;
+
+        assert_eq!(outcome, ShutdownSync::NoNetwork);
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(harness.rfkill.calls.lock().unwrap().is_empty());
+        assert!(harness.events.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn shutdown_waits_for_a_saved_network_to_come_back() {
+        let runner = FakeRunner::new(false);
+        let harness = shutdown_harness(runner.clone());
+        harness.network.saved_wifi.store(true, Ordering::SeqCst);
+        harness.network.remaining_none.store(2, Ordering::SeqCst);
+
+        let outcome = harness.core.sync_before_shutdown_with(QUICK).await;
+
+        assert_eq!(outcome, ShutdownSync::Synced);
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_gives_up_when_the_saved_network_stays_away() {
+        let runner = FakeRunner::new(false);
+        let harness = shutdown_harness(runner.clone());
+        harness.network.saved_wifi.store(true, Ordering::SeqCst);
+        *harness.network.connectivity.lock().unwrap() = Connectivity::None;
+
+        let outcome = harness.core.sync_before_shutdown_with(QUICK).await;
+
+        assert_eq!(outcome, ShutdownSync::NoNetwork);
+        assert_eq!(runner.calls.load(Ordering::SeqCst), 0);
+        assert!(harness.rfkill.blocked.load(Ordering::SeqCst));
     }
 }
