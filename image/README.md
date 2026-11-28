@@ -9,9 +9,9 @@ One GPT disk image, bootable on both:
   initrd from the ESP.
 
 `make image` builds it with mkosi from this directory. The output is
-`out/image/carrel.img.raw` (and a `carrel.img` symlink). It is the USB
-installer *and* the installed system; the installer only starts when the
-running root is on removable/USB media.
+`out/image/carrel.img.raw` (and a `carrel.img` symlink). It is the
+external-drive image *and* the installed system; the installer only starts when
+the running root is on an external drive (removable or `TRAN=usb`).
 
 The icon `carrel.svg` (from `brand/`) is installed in
 `/usr/share/icons/hicolor/scalable/apps/`.
@@ -290,14 +290,14 @@ The ESP and the two root slots keep their size (sysupdate needs two equal
 slots); their unused parts are zeros and compress to nothing. The result is a
 raw image of about 5.3 GiB that compresses to a few hundred MiB.
 
-The installed system grows the data partition by itself:
+The system grows the data partition by itself:
 
-- Flashed to a USB stick, the first boot runs `carrel-grow-data.service`
-  (systemd-repart moves the backup GPT header to the end of the stick and
+- Flashed to an external drive, the first boot runs `carrel-grow-data.service`
+  (systemd-repart moves the backup GPT header to the end of the drive and
   grows the data partition), then `x-systemd.growfs` in fstab grows the ext4
-  file system when `/data` is mounted. **Try Carrel** therefore has the whole
-  stick as writing space.
-- **Install to this computer** copies the stick to the internal disk with `dd`
+  file system when `/data` is mounted. **Start Carrel** therefore runs the full
+  system from the external drive with the whole drive as writing space.
+- **Install Carrel** copies the external drive to an internal disk with `dd`
   and grows the data partition there before the reboot.
 
 ### Verify a download
@@ -318,10 +318,10 @@ environment; users never need it.
 ### Gate
 
 `tests/boot/run.py --scenario release --release-image out/dist/carrel-<version>.img.xz`
-decompresses the file onto a fresh 16 GiB virtual USB disk with `dd`, boots it
-in QEMU on UEFI, UEFI with Secure Boot enforcing and BIOS, chooses **Try
-Carrel**, reaches the editor and asserts that the data partition grew to fill
-the stick.
+decompresses the file onto a fresh 16 GiB virtual external drive with `dd`,
+boots it in QEMU on UEFI, UEFI with Secure Boot enforcing and BIOS, chooses
+**Start Carrel**, reaches the editor and asserts that the data partition grew
+to fill the external drive.
 
 ## Recovery
 
@@ -338,16 +338,17 @@ There is no shell or getty in the recovery target.
 
 ## Installer
 
-When booted from a USB disk (removable or `TRAN=usb`),
-`carrel-installer.service` shows **Try Carrel** / **Install to this
-computer** on tty1 before the session. Installing lists internal disks,
-requires the writer to type `ERASE`, copies the running USB disk to the
-target with `dd`, grows the data partition with systemd-repart and reboots.
+When booted from an external drive (removable or `TRAN=usb`),
+`carrel-installer.service` shows **Start Carrel** / **Install Carrel** on tty1
+before the session. **Start Carrel** runs directly from the external drive and
+saves writing there. **Install Carrel** lists internal disks, requires the
+writer to type `ERASE`, copies the external drive to the chosen internal disk
+with `dd`, grows the data partition with systemd-repart and reboots.
 When the computer booted in UEFI mode, the installer then makes Carrel the
 first UEFI boot entry with `efibootmgr` (an entry `Carrel` for
 `\EFI\carrel\shimx64.efi`, put first in `BootOrder`; an older Carrel entry is
-removed). Booting the installed disk is not removable, so the installer does
-not run again.
+removed). Booting an internal disk is not removable, so the installer does not
+run again.
 
 ## Boot test
 
@@ -361,7 +362,8 @@ Boot, BIOS) with QMP:
 - boot UEFI and BIOS to the real `carrel-shell`, complete first run, type a
   line and screenshot the editor; OCR asserts the no-battery line has no
   percentage;
-- install the USB image to a blank 16 GiB disk and boot that disk;
+- install the image from an external drive to a blank 16 GiB internal disk and
+  boot that disk;
 - screenshot the recovery menu, attach a virtual USB disk, choose "Copy all
   writing to USB drive" and assert the files are on that disk;
 - type into the editor with QMP `send-key`, `system_reset` after 2 s, boot
@@ -372,12 +374,12 @@ Boot, BIOS) with QMP:
   signature, then stage the good release through the daemon, call
   `ApplyUpdate` over D-Bus, reboot into 0.3.0 and assert the new slot label;
   `--expect-version` (default 0.3.0) is the version that update must boot
-- `secureboot`: boot the image, install it to a blank disk and boot the
+- `secureboot`: boot the image, install it to a blank internal disk and boot the
   installed disk with OVMF's Microsoft keys enrolled and Secure Boot enforcing;
   assert the installer made Carrel the first UEFI boot entry;
 - `update-secureboot`: update and forced rollback on that installed disk;
-- `release`: flash `out/dist/carrel-<version>.img.xz` onto a fresh virtual USB
-  disk and try Carrel on UEFI, Secure Boot and BIOS.
+- `release`: flash `out/dist/carrel-<version>.img.xz` onto a fresh virtual
+  external drive and choose **Start Carrel** on UEFI, Secure Boot and BIOS.
 
 Screenshots are written to `out/screenshot-*.png`.
 

@@ -62,9 +62,9 @@ is committed on its branch. A maintainer reviews and merges to `main`.
   Drive API; one manual run against a real account.
 - **WP7 · Image integration** — install real binaries into the image; A/B
   partitions, sysupdate, boot counting, recovery menu, installer with "type
-  ERASE". Gate: QEMU tests: install from USB image to a blank disk, power-cut
-  test (QMP `system_reset` while typing via `sendkey`), update + forced
-  rollback.
+  ERASE". Gate: QEMU tests: install from an external drive to a blank internal
+  disk, power-cut test (QMP `system_reset` while typing via `sendkey`), update
+  + forced rollback.
 
 ## Phase 3 — Nostos
 
@@ -82,18 +82,19 @@ is committed on its branch. A maintainer reviews and merges to `main`.
   of self-signed UKIs; dm-verity root hash stays on the command line). After
   install, Carrel makes itself the default EFI boot entry. Gate: QEMU with OVMF
   and Microsoft keys enrolled (`OVMF_VARS.ms.fd`, Secure Boot enforcing) boots
-  the USB image, installs, boots the installed disk, updates and rolls back.
+  from an external drive, runs **Install Carrel**, boots the internal disk,
+  updates and rolls back.
 - **WP7d · Release file and docs** — shrink the image to its content and ship
   `carrel-<version>.img.xz` (+ `.sha256`, signature); add `intel-microcode`,
   `amd64-microcode`, `firmware-amd-graphics`; README states that Docker is only
   the build environment and that users flash the image (Fedora Media Writer,
   Etcher, Rufus in DD mode, `dd`). Gate: the compressed image flashes to a
-  virtual USB disk and passes the boot tests.
+  virtual external drive and passes the boot tests.
 - **WP10 · Hardware** — tier 1 quirks, real-laptop checklist
   (`spec/04-hardware.md`), signed release pipeline, docs site. First real
   laptop: ThinkPad T14 Gen 1 (Intel i5-10210U, UHD graphics, AX201 Wi-Fi,
-  Secure Boot on) via "Try Carrel" from USB, internal disk untouched. Gate: all
-  tier 1 models pass; 1.0.
+  Secure Boot on) via **Start Carrel** from an external drive, internal disk
+  untouched. Gate: all tier 1 models pass; 1.0.
 
 ## Phase 5 — The writer's screen
 
