@@ -375,6 +375,29 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn carreld_reads_the_sync_at_shutdown_setting() {
+        let dir = tempdir().unwrap();
+        assert!(!carreld::sync_at_shutdown_enabled(dir.path()));
+        let mut settings = Settings {
+            sync_at_shutdown: true,
+            ..Settings::default()
+        };
+        settings.save(dir.path()).unwrap();
+        assert!(carreld::sync_at_shutdown_enabled(dir.path()));
+        settings.sync_at_shutdown = false;
+        settings.save(dir.path()).unwrap();
+        assert!(!carreld::sync_at_shutdown_enabled(dir.path()));
+    }
+
+    #[test]
+    fn the_shutdown_message_matches_the_daemon() {
+        assert_eq!(
+            crate::daemon::SHUTDOWN_SYNC_MESSAGE,
+            carreld::SHUTDOWN_SYNC_MESSAGE
+        );
+    }
+
+    #[test]
     fn defaults_match_the_spec() {
         let settings = Settings::default();
         assert_eq!(settings.theme, ThemeChoice::Automatic);

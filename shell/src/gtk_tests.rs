@@ -2026,7 +2026,7 @@ impl TestShell {
                     code,
                     message,
                 } => sync.on_pair_status(&state, &code, message),
-                DaemonEvent::Battery(_) => {}
+                DaemonEvent::Battery(_) | DaemonEvent::Flush => {}
             });
         }
         if open.is_empty() {
