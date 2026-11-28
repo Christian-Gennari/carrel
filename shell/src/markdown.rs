@@ -71,6 +71,45 @@ pub struct CachedLine {
     pub spans: Vec<Span>,
     /// Line-relative `(start, end)` character ranges of `Kind::CiteLink`.
     pub cite_links: Vec<(usize, usize)>,
+    /// A code fence on this line, also inside a quote. Spellcheck skips what
+    /// the fences enclose.
+    pub fence: Option<Fence>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Fence {
+    mark: char,
+    len: usize,
+    /// Nothing follows the run, so the line can close a block.
+    bare: bool,
+}
+
+impl Fence {
+    fn of(line: &str) -> Option<Self> {
+        let line = line.trim_start_matches([' ', '>']);
+        let (mark, len) = crate::quote_trigger::fence_marker(line)?;
+        let bare = line.trim_end().chars().all(|c| c == mark);
+        Some(Self { mark, len, bare })
+    }
+}
+
+/// Whether `line` is code (fences included), given the block `open` before it;
+/// `open` becomes the block open after it.
+pub fn fenced(open: &mut Option<Fence>, line: &CachedLine) -> bool {
+    match (*open, line.fence) {
+        (Some(block), Some(found))
+            if block.mark == found.mark && found.len >= block.len && found.bare =>
+        {
+            *open = None;
+            true
+        }
+        (Some(_), _) => true,
+        (None, Some(found)) => {
+            *open = Some(found);
+            true
+        }
+        (None, None) => false,
+    }
 }
 
 /// Iterator over `(line_text, break_char_len)` pairs matching `GtkTextBuffer`
@@ -197,6 +236,7 @@ fn scan_cached_line(line: &str, break_len: usize, scratch: &mut Vec<char>) -> Ca
         words,
         spans,
         cite_links,
+        fence: Fence::of(line),
     }
 }
 

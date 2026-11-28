@@ -1,9 +1,9 @@
 //! The editor screen: GtkSourceView, inline Markdown styling, typewriter
 //! scrolling, the bottom line and the durability wiring.
 
-use std::cell::{Cell, RefCell};
+use std::cell::{Cell, OnceCell, RefCell};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
@@ -13,8 +13,9 @@ use sourceview::prelude::*;
 use crate::battery::{Battery, BatteryHint, BATTERY_NOTE_SECONDS};
 use crate::focus::{self, Lines};
 use crate::goal;
-use crate::markdown::{CachedLine, Kind, LineCache};
+use crate::markdown::{self, CachedLine, Kind, LineCache};
 use crate::settings::{GoalDisplay, Settings};
+use crate::speller::Speller;
 use crate::store::{display_name, naming, stats, DailyStats, Document, StatsWriter, Store};
 use crate::theme;
 use crate::time;
@@ -102,6 +103,16 @@ pub struct EditorPage {
     status_generation: Cell<u64>,
     battery: Rc<dyn Battery>,
     save_error: Cell<bool>,
+    speller: Speller,
+    /// The logical line the caret was on when Spellcheck last looked.
+    spell_caret: Cell<usize>,
+    /// The word at the caret is still being typed, so it is not marked yet.
+    spell_typing: Cell<bool>,
+    /// Where the document-wide pass goes on, while one is running.
+    spell_next: gtk::TextMark,
+    spell_pass: Cell<bool>,
+    /// For the idle pass, which restyles start from `&self`.
+    weak: OnceCell<Weak<EditorPage>>,
 }
 
 impl EditorPage {
@@ -275,6 +286,7 @@ impl EditorPage {
         let start_iter = buffer.start_iter();
         let dirty_start = buffer.create_mark(None, &start_iter, true);
         let dirty_end = buffer.create_mark(None, &start_iter, false);
+        let spell_next = buffer.create_mark(None, &start_iter, true);
         let mut line_cache = LineCache::new();
         line_cache.rebuild("");
         let page = Rc::new(Self {
@@ -322,8 +334,16 @@ impl EditorPage {
             status_generation: Cell::new(0),
             battery,
             save_error: Cell::new(false),
+            speller: Speller::default(),
+            spell_caret: Cell::new(0),
+            spell_typing: Cell::new(false),
+            spell_next,
+            spell_pass: Cell::new(false),
+            weak: OnceCell::new(),
         });
+        let _ = page.weak.set(Rc::downgrade(&page));
         page.install();
+        page.sync_spelling();
         page
     }
 
@@ -404,6 +424,7 @@ impl EditorPage {
                 page.sync_cites();
                 page.sync_caret_line();
                 page.sync_focus();
+                page.spell_caret_moved();
                 scroll_to_cursor(&view, &buffer);
             }
         });
@@ -627,6 +648,7 @@ impl EditorPage {
         }
         drop(cache);
         self.sync_focus();
+        self.spell_all();
     }
 
     fn restyle_dirty(&self) {
@@ -687,6 +709,10 @@ impl EditorPage {
 
         let old_cite = self.cite_open.get();
         let mut cache_mismatch = false;
+        // A fence typed or removed turns every line below into code or prose.
+        let mut fences_changed = self.line_cache.borrow().lines[start_line..=old_end_line]
+            .iter()
+            .any(|line| line.fence.is_some());
         let can_skip_strip = {
             let mut cache = self.line_cache.borrow_mut();
             let single_line_no_newlines =
@@ -724,6 +750,10 @@ impl EditorPage {
             };
             self.tags.strip_range(&self.buffer, &from, &strip_to);
         }
+
+        fences_changed |= self.line_cache.borrow().lines[start_line..=new_end_line]
+            .iter()
+            .any(|line| line.fence.is_some());
 
         let new_cite = self.cite_under_cursor();
         self.cite_open.set(new_cite);
@@ -789,6 +819,149 @@ impl EditorPage {
             {
                 self.repaint_single_line(&cache, new_c.line, Some(new_c));
             }
+        }
+        drop(cache);
+
+        self.spell_typing.set(true);
+        self.spell_caret.set(caret.unwrap_or(0));
+        self.spell_lines(start_line, new_end_line + 1);
+        if fences_changed {
+            self.spell_all();
+        }
+    }
+
+    /// Follow Settings > Spellcheck and Language. Marks of another setting go
+    /// at once; a new dictionary is loaded after a short pause, so the page is
+    /// drawn first and walking the Language row loads nothing on the way.
+    fn sync_spelling(self: &Rc<Self>) {
+        let wanted = {
+            let settings = self.settings.borrow();
+            crate::spell::dictionary_code(&settings.language).filter(|_| settings.spellcheck)
+        };
+        if !self.speller.want(wanted) {
+            return;
+        }
+        self.buffer.remove_tag(
+            &self.tags.misspelled,
+            &self.buffer.start_iter(),
+            &self.buffer.end_iter(),
+        );
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(250), move || {
+            if let Some(page) = weak.upgrade() {
+                if page.speller.load(wanted) {
+                    page.spell_all();
+                }
+            }
+        });
+    }
+
+    /// Check the whole document, a slice at a time while GTK is idle, so a
+    /// long manuscript never holds up a key.
+    fn spell_all(&self) {
+        if !self.speller.ready() {
+            return;
+        }
+        self.buffer
+            .move_mark(&self.spell_next, &self.buffer.start_iter());
+        if self.spell_pass.replace(true) {
+            return;
+        }
+        let Some(weak) = self.weak.get().cloned() else {
+            return;
+        };
+        glib::idle_add_local(move || {
+            let Some(page) = weak.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if page.spell_slice() {
+                glib::ControlFlow::Continue
+            } else {
+                page.spell_pass.set(false);
+                glib::ControlFlow::Break
+            }
+        });
+    }
+
+    /// One slice of the document-wide pass. False when it is done.
+    fn spell_slice(&self) -> bool {
+        const LINES: usize = 100;
+        if !self.speller.ready() {
+            return false;
+        }
+        // The line cache is behind the buffer until the pending restyle.
+        if self.has_dirty.get() {
+            return true;
+        }
+        let offset = self.buffer.iter_at_mark(&self.spell_next).offset();
+        let (first, count) = {
+            let cache = self.line_cache.borrow();
+            let first = cursor_line_in(&cache, offset).unwrap_or(0);
+            (first, cache.lines.len())
+        };
+        let next = self.spell_lines(first, first + LINES);
+        self.buffer
+            .move_mark(&self.spell_next, &self.buffer.iter_at_offset(next));
+        first + LINES < count
+    }
+
+    /// Mark the misspelled words of the cache lines `from..to`; returns the
+    /// buffer offset where line `to` starts.
+    fn spell_lines(&self, from: usize, to: usize) -> i32 {
+        if !self.speller.ready() {
+            return 0;
+        }
+        let cache = self.line_cache.borrow();
+        let mut open = None;
+        let mut offset = 0i32;
+        let caret = self
+            .spell_typing
+            .get()
+            .then(|| self.buffer.cursor_position());
+        for (index, line) in cache.lines.iter().enumerate().take(to) {
+            let code = markdown::fenced(&mut open, line);
+            let next = offset + (line.char_len + line.break_len) as i32;
+            if index >= from {
+                let start = self.buffer.iter_at_offset(offset);
+                let end = self.buffer.iter_at_offset(offset + line.char_len as i32);
+                self.buffer.remove_tag(&self.tags.misspelled, &start, &end);
+                if !code {
+                    let text = self.buffer.text(&start, &end, true);
+                    for (word_start, word_end) in self.speller.misspelled(&text) {
+                        let word_start = offset + word_start as i32;
+                        let word_end = offset + word_end as i32;
+                        if caret.is_some_and(|at| (word_start..=word_end).contains(&at)) {
+                            continue;
+                        }
+                        self.buffer.apply_tag(
+                            &self.tags.misspelled,
+                            &self.buffer.iter_at_offset(word_start),
+                            &self.buffer.iter_at_offset(word_end),
+                        );
+                    }
+                }
+            }
+            offset = next;
+        }
+        offset
+    }
+
+    /// The caret was moved, not typed along: the word it left, and the word it
+    /// was typing, are marked now.
+    fn spell_caret_moved(&self) {
+        if self.has_dirty.get() || !self.speller.ready() {
+            return;
+        }
+        let Some(current) = self.cursor_line() else {
+            return;
+        };
+        let previous = self.spell_caret.replace(current);
+        let typing = self.spell_typing.replace(false);
+        if typing || previous != current {
+            self.spell_lines(previous, previous + 1);
+        }
+        if previous != current {
+            self.spell_lines(current, current + 1);
         }
     }
 
@@ -1291,6 +1464,27 @@ impl EditorPage {
     }
 
     /// For the tests and the screenshot script.
+    /// The dictionary Spellcheck is using.
+    #[cfg(test)]
+    pub(crate) fn spelling_language(&self) -> Option<&'static str> {
+        self.speller.language()
+    }
+
+    /// The words under a spelling mark, in document order.
+    #[cfg(test)]
+    pub(crate) fn misspelled_words(&self) -> Vec<String> {
+        let tag = &self.tags.misspelled;
+        let mut words = Vec::new();
+        let mut at = self.buffer.start_iter();
+        while at.starts_tag(Some(tag)) || at.forward_to_tag_toggle(Some(tag)) {
+            let mut end = at;
+            end.forward_to_tag_toggle(Some(tag));
+            words.push(self.buffer.text(&at, &end, true).to_string());
+            at = end;
+        }
+        words
+    }
+
     #[cfg(test)]
     pub(crate) fn start_hint_visible(&self) -> bool {
         self.start_hint.is_visible()
@@ -1342,6 +1536,7 @@ impl EditorPage {
         // `set_text` drops every tag; focus mode starts again from the new
         // document rather than trusting the old paragraph offsets.
         self.focus_previous.set(None);
+        self.spell_typing.set(false);
 
         self.last_words.set(words);
         if let Err(error) = self.store.set_last_file(Some(rel)) {
@@ -1708,6 +1903,7 @@ impl EditorPage {
             .set_visible(self.settings.borrow().show_bottom_line);
         self.update_line_height();
         self.update_column_width();
+        self.sync_spelling();
         self.restyle_full();
         // Document-wide, but only on a theme, font or settings change; typing
         // and cursor movement use the incremental `sync_focus`.
@@ -1800,6 +1996,8 @@ struct Tags {
     headings: Vec<gtk::TextTag>,
     /// Focus mode: everything but the cursor's paragraph, at 35 % opacity.
     focus: gtk::TextTag,
+    /// Spellcheck. The speller applies it, so a restyle leaves it alone.
+    misspelled: gtk::TextTag,
 }
 
 impl Tags {
@@ -1850,6 +2048,13 @@ impl Tags {
 
         let focus = make("carrel-focus-dim");
         focus.set_foreground_rgba(Some(&palette.focus_text()));
+        // A faded paragraph fades its spelling marks too.
+        focus.set_underline_rgba(Some(&palette.focus_text()));
+
+        // The platform's own wavy underline, in the theme's red.
+        let misspelled = make("carrel-misspelled");
+        misspelled.set_underline(pango::Underline::Error);
+        misspelled.set_underline_rgba(gdk::RGBA::parse(palette.danger).ok().as_ref());
 
         let scales = [1.65, 1.45, 1.28, 1.18, 1.10, 1.05];
         let mut headings = Vec::new();
@@ -1874,6 +2079,7 @@ impl Tags {
         cite_text.set_priority(7);
         hidden.set_priority(8);
         dim.set_priority(9);
+        misspelled.set_priority(10);
         focus.set_priority(11);
 
         let tags = Self {
@@ -1886,6 +2092,7 @@ impl Tags {
             hidden,
             headings,
             focus,
+            misspelled,
         };
         tags.update_metrics(font_size);
         tags
@@ -1909,6 +2116,9 @@ impl Tags {
         self.quote
             .set_paragraph_background(Some(&palette.surface()));
         self.focus.set_foreground_rgba(Some(&palette.focus_text()));
+        self.focus.set_underline_rgba(Some(&palette.focus_text()));
+        self.misspelled
+            .set_underline_rgba(gdk::RGBA::parse(palette.danger).ok().as_ref());
     }
 
     /// Every tag this module owns. Focus tags are not in this list: they
