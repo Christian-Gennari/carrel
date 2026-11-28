@@ -81,6 +81,7 @@ fn gtk_scenarios() {
     zoom_shortcuts_handle_keypad_shift_and_non_us_layouts();
     changing_keyboard_in_settings_flushes_document_and_restarts_session();
     changing_keyboard_in_first_run_saves_and_restarts_session();
+    modal_dialogs_block_global_shortcuts_and_ctrl_o_works_from_other_screens();
 }
 
 /// A buffer with `text`, the caret at its end and an empty undo history.
@@ -3085,4 +3086,53 @@ fn changing_keyboard_in_first_run_saves_and_restarts_session() {
     assert_eq!(persisted.keyboard, "se");
     assert!(!persisted.first_run_complete);
     assert_eq!(shell.session_restarts.get(), 1);
+}
+
+/// A modal confirmation card keeps focus until answered: global screen chords
+/// cannot leave it orphaned behind another screen. Outside a modal dialog,
+/// Ctrl+O opens Files from non-editor screens as well.
+fn modal_dialogs_block_global_shortcuts_and_ctrl_o_works_from_other_screens() {
+    let ctrl = gdk::ModifierType::CONTROL_MASK;
+    let ctrl_shift = ctrl | gdk::ModifierType::SHIFT_MASK;
+    let shell = TestShell::new(
+        &[("Alpha.md", "# Alpha\n"), ("Beta.md", "# Beta\n")],
+        "Alpha.md",
+    );
+
+    // Ctrl+O from Settings opens Files directly.
+    shell.press("Ctrl+,", gdk::Key::comma, ctrl);
+    settle();
+    assert_eq!(shell.visible(), "settings");
+    shell.press("Ctrl+O", gdk::Key::o, ctrl);
+    settle();
+    assert_eq!(shell.visible(), "files");
+
+    // Open the Delete confirmation card on Files and press every global chord.
+    shell.press("Delete", gdk::Key::Delete, gdk::ModifierType::empty());
+    wait_for_dialog_button("Delete");
+    for (label, key, state) in [
+        ("Ctrl+,", gdk::Key::comma, ctrl),
+        ("Ctrl+H", gdk::Key::h, ctrl),
+        ("Ctrl+E", gdk::Key::e, ctrl),
+        ("Ctrl+Shift+S", gdk::Key::s, ctrl_shift),
+        ("Ctrl+K", gdk::Key::k, ctrl),
+        ("Ctrl+/", gdk::Key::slash, ctrl),
+        ("Ctrl+Shift+R", gdk::Key::r, ctrl_shift),
+    ] {
+        shell.press(label, key, state);
+        assert_eq!(
+            shell.visible(),
+            "files",
+            "{label} must not switch screens while a confirmation dialog is open"
+        );
+        assert!(
+            has_dialog_button("Delete"),
+            "{label} must leave the confirmation dialog open"
+        );
+    }
+
+    // Esc cancels the dialog cleanly.
+    shell.press("Esc", gdk::Key::Escape, gdk::ModifierType::empty());
+    assert!(!has_dialog_button("Delete"));
+    assert_eq!(shell.visible(), "files");
 }

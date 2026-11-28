@@ -135,22 +135,25 @@ impl Keys {
             return glib::Propagation::Stop;
         }
 
-        if control {
+        // A modal confirmation card owns the keyboard until it is answered;
+        // global chords must never switch screens behind an open dialog.
+        if control && !self.dialog_open() {
             // Ctrl+K: the same palette from the editor and every screen.
-            if key == gdk::Key::k && !self.dialog_open() {
+            if key == gdk::Key::k {
                 self.palette.open();
                 return glib::Propagation::Stop;
             }
             // Ctrl+/: the key sheet. `?` stays a normal character in the
             // editor, so the sheet has a chord of its own.
-            if key == gdk::Key::slash && !self.dialog_open() {
+            if key == gdk::Key::slash {
                 self.key_sheet.open();
                 return glib::Propagation::Stop;
             }
-        }
-
-        // The global keys from spec/03-ui.md.
-        if control {
+            // The global keys from spec/03-ui.md.
+            if key == gdk::Key::o && visible != "files" {
+                self.nav.show("files");
+                return glib::Propagation::Stop;
+            }
             if key == gdk::Key::h {
                 self.nav.show("history");
                 return glib::Propagation::Stop;
@@ -159,7 +162,7 @@ impl Keys {
                 self.sync.sync_now();
                 return glib::Propagation::Stop;
             }
-            if key == gdk::Key::r && shift && !self.dialog_open() {
+            if key == gdk::Key::r && shift {
                 self.rename_sheet.open();
                 return glib::Propagation::Stop;
             }
