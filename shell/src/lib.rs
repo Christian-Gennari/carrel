@@ -31,5 +31,6 @@ pub mod settings_page;
 pub mod store;
 pub mod sync;
 pub mod theme;
+pub mod time;
 pub mod ui;
 pub mod wifi;

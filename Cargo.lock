@@ -352,6 +352,7 @@ dependencies = [
  "carrel-protocol",
  "carreld",
  "futures-util",
+ "glib",
  "gtk4",
  "qrcode",
  "serde",
