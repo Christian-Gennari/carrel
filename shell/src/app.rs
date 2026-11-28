@@ -3,7 +3,7 @@
 //! The shell never touches the network. All daemon work goes through [`Client`]
 //! on worker threads; the GTK main loop only receives callbacks and signals.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -123,13 +123,16 @@ pub fn run(application: &gtk::Application) {
     );
     let wifi = WifiPage::new(client.clone(), Rc::clone(&nav), handoff);
 
+    let showing = Rc::new(Cell::new(theme::active_theme(&settings.borrow())));
     let restyle: Rc<dyn Fn()> = {
         let settings = Rc::clone(&settings);
         let provider = provider.clone();
         let editor = Rc::clone(&editor);
+        let showing = Rc::clone(&showing);
         Rc::new(move || {
             {
                 let settings = settings.borrow();
+                showing.set(theme::active_theme(&settings));
                 theme::apply(&provider, &settings);
                 if let Some(gtk_settings) = gtk::Settings::default() {
                     gtk_settings
@@ -140,17 +143,16 @@ pub fn run(application: &gtk::Application) {
         })
     };
 
-    // Automatic follows local time, so the palette can change while the
-    // device is open. One check a minute is enough: the hour turns at most
+    // Automatic follows the chosen time zone, so the palette can change while
+    // the device is open. One check a minute is enough: the hour turns at most
     // twice a day (spec/03-ui.md).
     {
         let settings = Rc::clone(&settings);
         let restyle = Rc::clone(&restyle);
-        let mut showing = settings.borrow().theme_at(theme::local_hour());
+        let showing = Rc::clone(&showing);
         glib::timeout_add_seconds_local(60, move || {
-            let now = settings.borrow().theme_at(theme::local_hour());
-            if now != showing {
-                showing = now;
+            let now = theme::active_theme(&settings.borrow());
+            if now != showing.get() {
                 restyle();
             }
             glib::ControlFlow::Continue
@@ -202,6 +204,7 @@ pub fn run(application: &gtk::Application) {
         Rc::clone(&sync),
         session_keyboard,
         restart_session,
+        Rc::clone(&restyle),
     );
     // A paper layer at 60 % draws the page behind the palette and the key
     // sheet at about 40 %, the same dim as focus mode.

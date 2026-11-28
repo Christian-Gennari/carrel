@@ -17,6 +17,7 @@ use crate::markdown::{CachedLine, Kind, LineCache};
 use crate::settings::{GoalDisplay, Settings};
 use crate::store::{display_name, naming, stats, DailyStats, Document, StatsWriter, Store};
 use crate::theme;
+use crate::time;
 
 /// Line height of body text: 1.6 (spec/03-ui.md).
 const LINE_HEIGHT: f64 = 1.6;
@@ -268,7 +269,7 @@ impl EditorPage {
 
         let tags = Tags::new(&buffer, &palette, settings.borrow().font_size);
 
-        let today = local_date();
+        let today = time::date(&settings.borrow().time_zone);
         let stats = store.load_stats(&today);
         let stats_writer = StatsWriter::new(store.carrel_dir().join("stats.json"));
         let start_iter = buffer.start_iter();
@@ -1306,6 +1307,11 @@ impl EditorPage {
     }
 
     #[cfg(test)]
+    pub(crate) fn applied_css(&self) -> String {
+        self.css.to_string()
+    }
+
+    #[cfg(test)]
     pub(crate) fn chrome_dimmed(&self) -> bool {
         self.bottom.has_css_class("typing")
     }
@@ -1581,7 +1587,7 @@ impl EditorPage {
     }
 
     fn rollover_if_needed(&self) {
-        let today = local_date();
+        let today = time::date(&self.settings.borrow().time_zone);
         if today.is_empty() || today == *self.today_date.borrow() {
             return;
         }
@@ -1630,7 +1636,7 @@ impl EditorPage {
             parts.push(self.battery.label());
         }
         if settings.clock {
-            if let Some(time) = local_time() {
+            if let Some(time) = time::clock_text(&settings.time_zone) {
                 parts.push(time);
             }
         }
@@ -1763,21 +1769,6 @@ fn scroll_to_cursor(view: &sourceview::View, buffer: &sourceview::Buffer) {
         let mark = buffer.get_insert();
         view.scroll_to_mark(&mark, 0.0, true, 0.0, TYPEWRITER_LINE);
     });
-}
-
-fn local_date() -> String {
-    glib::DateTime::now_local()
-        .ok()
-        .and_then(|date| date.format("%Y-%m-%d").ok())
-        .map(|date| date.to_string())
-        .unwrap_or_default()
-}
-
-fn local_time() -> Option<String> {
-    glib::DateTime::now_local()
-        .ok()
-        .and_then(|date| date.format("%H:%M").ok())
-        .map(|time| time.to_string())
 }
 
 /// The index of the cached line holding character `cursor`, by the cache's

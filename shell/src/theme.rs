@@ -7,10 +7,10 @@
 //! so there is no second accent and no pure black.
 
 use gtk::gdk;
-use gtk::glib;
 use gtk::CssProvider;
 
 use crate::settings::{Settings, Theme};
+use crate::time;
 
 /// The one type scale for the whole interface, in pixels. Body rows follow
 /// the editor's body size (spec/03-ui.md: 19 px default, never under 16), so
@@ -254,25 +254,30 @@ impl Palette {
     }
 }
 
+/// The active theme on screen now. Automatic resolves to its day or night
+/// theme for the hour in `settings.time_zone`.
+pub fn active_theme(settings: &Settings) -> Theme {
+    settings.theme_at(local_hour(&settings.time_zone))
+}
+
 /// The palette on screen now. Automatic resolves to its day or night theme
-/// for the local hour; the app re-applies it when the hour turns.
+/// for the hour in the chosen time zone; the app re-applies it when the hour
+/// turns or the time zone changes.
 pub fn palette(settings: &Settings) -> Palette {
-    Palette::of(settings.theme_at(local_hour()))
+    Palette::of(active_theme(settings))
 }
 
 /// Whether GTK should be told the app is dark: true when the palette on
 /// screen is a night theme.
 pub fn prefers_dark(settings: &Settings) -> bool {
-    settings.theme_at(local_hour()).is_dark()
+    active_theme(settings).is_dark()
 }
 
-/// Local time on the device, 0–23. Carrel has no OS preference, so Automatic
-/// follows this instead (spec/03-ui.md). Noon when even the clock is unknown,
-/// because a day theme is the calmer mistake.
-pub fn local_hour() -> u8 {
-    glib::DateTime::now_local()
-        .map(|now| now.hour().clamp(0, 23) as u8)
-        .unwrap_or(12)
+/// Current hour (0–23) in `time_zone`. Carrel has no OS preference, so
+/// Automatic follows this instead (spec/03-ui.md). Noon when even the clock
+/// is unknown, because a day theme is the calmer mistake.
+pub fn local_hour(time_zone: &str) -> u8 {
+    time::hour(time_zone)
 }
 
 /// The WCAG AA minimum for body text. Dim text aims a little above it so

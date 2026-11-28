@@ -14,6 +14,7 @@ name = "carrel-crash-writer"
 path = "src/bin/crash-writer.rs"
 
 [dependencies]
+glib = { version = "0.21", features = ["v2_68"] }
 gtk = { package = "gtk4", version = "0.10", features = ["v4_18"] }
 sourceview = { package = "sourceview5", version = "0.10" }
 serde = { version = "1", features = ["derive"] }

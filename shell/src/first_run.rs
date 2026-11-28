@@ -230,6 +230,7 @@ pub struct FirstRunPage {
     sync: Rc<SyncPage>,
     session_keyboard: Option<String>,
     on_restart_session: Rc<dyn Fn()>,
+    on_change: Rc<dyn Fn()>,
 }
 
 impl FirstRunPage {
@@ -240,16 +241,22 @@ impl FirstRunPage {
         sync: Rc<SyncPage>,
         session_keyboard: Option<String>,
         on_restart_session: Rc<dyn Fn()>,
+        on_change: Rc<dyn Fn()>,
     ) -> Rc<Self> {
         // A brand-new device has no settings file yet, so the image's own
         // language, keyboard and zone are the first answers. Anything already
         // saved belongs to the writer and is left alone.
+        let mut defaults_applied = false;
         if !settings.borrow().first_run_complete && !settings_path(&root).exists() {
             let defaults = first_run_defaults::detect();
             let mut settings = settings.borrow_mut();
             settings.language = defaults.language;
             settings.keyboard = defaults.keyboard;
             settings.time_zone = defaults.time_zone;
+            defaults_applied = true;
+        }
+        if defaults_applied {
+            on_change();
         }
 
         let screen = ui::Screen::new(FirstStep::Welcome.title());
@@ -271,6 +278,7 @@ impl FirstRunPage {
             sync,
             session_keyboard,
             on_restart_session,
+            on_change,
         });
         page.install();
         page
@@ -354,16 +362,21 @@ impl FirstRunPage {
     }
 
     fn choose(self: &Rc<Self>) {
-        let (step_before, effect) = {
+        let (step_before, effect, zone_changed) = {
             let mut settings = self.settings.borrow_mut();
+            let previous_zone = settings.time_zone.clone();
             let max = self.state.borrow().choice_count().saturating_sub(1);
             let mut state = self.state.borrow_mut();
             state.selected = state.selected.min(max);
             let step = state.step();
-            (step, state.choose(&mut settings))
+            let effect = state.choose(&mut settings);
+            (step, effect, settings.time_zone != previous_zone)
         };
         if let Err(error) = self.settings.borrow().save(&self.root) {
             eprintln!("carrel: could not save first-run settings: {error}");
+        }
+        if zone_changed {
+            (self.on_change)();
         }
         // Apply a newly chosen keyboard layout right away so any Wi-Fi password
         // or server URL typed in the sync step (and the editor after it) uses
